@@ -173,6 +173,8 @@ impl FirebeeApp {
 impl eframe::App for FirebeeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_results(ctx);
+        crate::ui::env_bar::show(ctx, self);
+        crate::ui::export_dialog::show(ctx, self);
         crate::ui::sidebar::show(ctx, self);
         egui::CentralPanel::default().show(ctx, |ui| {
             crate::ui::request_panel::show(ui, self);
