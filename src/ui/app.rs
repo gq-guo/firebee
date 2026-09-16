@@ -171,6 +171,7 @@ impl eframe::App for FirebeeApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             crate::ui::request_panel::show(ui, self);
             ui.separator();
+            crate::ui::response_panel::show(ui, self);
         });
     }
 
