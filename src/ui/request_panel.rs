@@ -34,7 +34,7 @@ pub fn kv_table(
         rows.remove(i);
         changed = true;
     }
-    if ui.button("+ 添加").clicked() {
+    if ui.button("+ Add").clicked() {
         rows.push(KeyValue::new("", ""));
         changed = true;
     }
@@ -53,19 +53,19 @@ pub fn show(ui: &mut egui::Ui, app: &mut FirebeeApp) {
             });
         ui.add(
             egui::TextEdit::singleline(&mut app.current.url)
-                .hint_text("https://api.example.com/path，支持 {{变量}}")
+                .hint_text("https://api.example.com/path  ({{vars}} supported)")
                 .desired_width(ui.available_width() - 220.0),
         );
         if app.pending.is_some() {
-            if ui.button("取消").clicked() {
+            if ui.button("Cancel").clicked() {
                 app.cancel();
             }
             ui.spinner();
-        } else if ui.button("发送").clicked() {
+        } else if ui.button("Send").clicked() {
             app.send();
         }
-        ui.menu_button("导出 ▾", |ui| {
-            if ui.button("curl 命令").clicked() {
+        ui.menu_button("Export ▾", |ui| {
+            if ui.button("curl command").clicked() {
                 app.export_text = Some(crate::ui::export_dialog::render(app, crate::ui::export_dialog::Kind::Curl));
                 ui.close();
             }
@@ -79,7 +79,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut FirebeeApp) {
     if !app.missing_vars.is_empty() {
         ui.colored_label(
             egui::Color32::from_rgb(220, 120, 40),
-            format!("未定义变量：{}（再次点击「发送」将忽略并原样发送）", app.missing_vars.join(", ")),
+            format!("Undefined variables: {} (click Send again to send anyway)", app.missing_vars.join(", ")),
         );
     }
 
@@ -95,10 +95,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut FirebeeApp) {
     let mut dirty = false;
     match app.req_tab {
         ReqTab::Params => {
-            dirty = kv_table(ui, "params", &mut app.current.params, "参数名", "值");
+            dirty = kv_table(ui, "params", &mut app.current.params, "Key", "Value");
         }
         ReqTab::Headers => {
-            dirty = kv_table(ui, "headers", &mut app.current.headers, "Header", "值");
+            dirty = kv_table(ui, "headers", &mut app.current.headers, "Header", "Value");
         }
         ReqTab::Body => {
             ui.horizontal(|ui| {
@@ -130,7 +130,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut FirebeeApp) {
                         .changed();
                 }
                 BodyType::Form => {
-                    dirty = kv_table(ui, "form", &mut app.current.form, "字段名", "值");
+                    dirty = kv_table(ui, "form", &mut app.current.form, "Field", "Value");
                 }
                 BodyType::None => {}
             }
@@ -153,7 +153,7 @@ fn auth_editor(ui: &mut egui::Ui, auth: &mut Auth) -> bool {
         Auth::ApiKey { .. } => 3,
     };
     ui.horizontal(|ui| {
-        for (v, label) in [(0, "无"), (1, "Bearer Token"), (2, "Basic Auth"), (3, "API Key")] {
+        for (v, label) in [(0, "None"), (1, "Bearer Token"), (2, "Basic Auth"), (3, "API Key")] {
             if ui.radio(kind == v, label).clicked() && kind != v {
                 *auth = match v {
                     1 => Auth::Bearer { token: String::new() },
@@ -174,9 +174,9 @@ fn auth_editor(ui: &mut egui::Ui, auth: &mut Auth) -> bool {
         }
         Auth::Basic { username, password } => {
             ui.horizontal(|ui| {
-                ui.label("用户名:");
+                ui.label("Username:");
                 changed |= ui.text_edit_singleline(username).changed();
-                ui.label("密码:");
+                ui.label("Password:");
                 changed |= ui.add(egui::TextEdit::singleline(password).password(true)).changed();
             });
         }
@@ -186,7 +186,7 @@ fn auth_editor(ui: &mut egui::Ui, auth: &mut Auth) -> bool {
                 changed |= ui.text_edit_singleline(key).changed();
                 ui.label("Value:");
                 changed |= ui.text_edit_singleline(value).changed();
-                changed |= ui.checkbox(in_query, "放在 Query 参数").changed();
+                changed |= ui.checkbox(in_query, "Send in query params").changed();
             });
         }
         Auth::None => {}

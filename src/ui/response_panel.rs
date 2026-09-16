@@ -53,7 +53,7 @@ fn show_response(ui: &mut egui::Ui, resp_tab: &mut RespTab, resp: &ResponseMeta)
         ui.colored_label(status_color(resp.status), format!("{}", resp.status));
         ui.label(format!("{} ms", resp.duration_ms));
         ui.label(fmt_size(resp.size_bytes));
-        if ui.button("复制 Body").clicked() {
+        if ui.button("Copy Body").clicked() {
             ui.ctx().copy_text(String::from_utf8_lossy(&resp.body).to_string());
         }
     });
@@ -91,10 +91,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut FirebeeApp) {
         if pending {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("请求中…");
+                ui.label("Sending...");
             });
         } else {
-            ui.weak("尚未发送请求");
+            ui.weak("No request sent yet");
         }
         return;
     };

@@ -8,13 +8,13 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Error)]
 pub enum HttpError {
-    #[error("请求超时（{0:?}）")]
+    #[error("Request timed out ({0:?})")]
     Timeout(Duration),
-    #[error("请求已取消")]
+    #[error("Request cancelled")]
     Cancelled,
-    #[error("无效的 URL：{0}")]
+    #[error("Invalid URL: {0}")]
     InvalidUrl(String),
-    #[error("网络错误：{0}")]
+    #[error("Network error: {0}")]
     Network(String),
 }
 
@@ -130,7 +130,7 @@ fn map_reqwest_err(e: &reqwest::Error, timeout: Duration) -> HttpError {
     if e.is_timeout() {
         HttpError::Timeout(timeout)
     } else if e.is_connect() {
-        HttpError::Network("无法连接到服务器（连接被拒绝或 DNS 失败）".to_string())
+        HttpError::Network("Cannot connect to server (connection refused or DNS failure)".to_string())
     } else {
         HttpError::Network(e.to_string())
     }

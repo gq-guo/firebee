@@ -96,13 +96,13 @@ fn apply(app: &mut FirebeeApp, actions: Vec<Action>) {
         match a {
             Action::NewCollection => {
                 app.collections
-                    .push(Collection::new(format!("集合 {}", app.collections.len() + 1)));
+                    .push(Collection::new(format!("Collection {}", app.collections.len() + 1)));
                 app.mark_dirty();
             }
             Action::NewFolder(p) => {
                 if let Some(col) = app.collections.get_mut(p.col) {
                     if let Some(slot) = folders_container(col, &p.folders) {
-                        slot.push(Folder::new("新文件夹"));
+                        slot.push(Folder::new("New Folder"));
                         app.mark_dirty();
                     }
                 }
@@ -110,7 +110,7 @@ fn apply(app: &mut FirebeeApp, actions: Vec<Action>) {
             Action::NewRequest(p) => {
                 if let Some(col) = app.collections.get_mut(p.col) {
                     if let Some(slot) = requests_container(col, &p.folders) {
-                        slot.push(Request::new("新请求"));
+                        slot.push(Request::new("New Request"));
                         app.mark_dirty();
                     }
                 }
@@ -210,16 +210,16 @@ fn rename_editor(
 
 fn container_buttons(ui: &mut egui::Ui, path: &TreePath, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        if ui.small_button("＋请求").clicked() {
+        if ui.small_button("+ Req").clicked() {
             actions.push(Action::NewRequest(path.clone()));
         }
-        if ui.small_button("＋文件夹").clicked() {
+        if ui.small_button("+ Folder").clicked() {
             actions.push(Action::NewFolder(path.clone()));
         }
-        if ui.small_button("重命名").clicked() {
+        if ui.small_button("Rename").clicked() {
             actions.push(Action::StartRename(path.clone()));
         }
-        if ui.small_button("🗑").clicked() {
+        if ui.small_button("Del").clicked() {
             actions.push(Action::Delete(path.clone()));
         }
     });
@@ -243,11 +243,11 @@ fn request_row(
                 actions.push(Action::Select(path.clone()));
             }
             resp.context_menu(|ui| {
-                if ui.button("重命名").clicked() {
+                if ui.button("Rename").clicked() {
                     actions.push(Action::StartRename(path.clone()));
                     ui.close();
                 }
-                if ui.button("删除").clicked() {
+                if ui.button("Delete").clicked() {
                     actions.push(Action::Delete(path.clone()));
                     ui.close();
                 }
@@ -265,7 +265,7 @@ fn folder_ui(
 ) {
     let my_path = TreePath { col: path[0], folders: path[1..].to_vec(), req: None };
     let renaming = app.renaming.as_ref() == Some(&my_path);
-    egui::CollapsingHeader::new(if renaming { "✏️" } else { &folder.name })
+    egui::CollapsingHeader::new(if renaming { "[rename]" } else { &folder.name })
         .id_salt(("folder", folder.id))
         .default_open(true)
         .show(ui, |ui| {
@@ -294,13 +294,13 @@ pub fn show(ctx: &egui::Context, app: &mut FirebeeApp) {
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui
-                    .selectable_label(matches!(app.sidebar_tab, SidebarTab::Collections), "集合")
+                    .selectable_label(matches!(app.sidebar_tab, SidebarTab::Collections), "Collections")
                     .clicked()
                 {
                     app.sidebar_tab = SidebarTab::Collections;
                 }
                 if ui
-                    .selectable_label(matches!(app.sidebar_tab, SidebarTab::History), "历史记录")
+                    .selectable_label(matches!(app.sidebar_tab, SidebarTab::History), "History")
                     .clicked()
                 {
                     app.sidebar_tab = SidebarTab::History;
@@ -310,13 +310,13 @@ pub fn show(ctx: &egui::Context, app: &mut FirebeeApp) {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 match app.sidebar_tab {
                     SidebarTab::Collections => {
-                        if ui.button("＋ 新建集合").clicked() {
+                        if ui.button("+ New Collection").clicked() {
                             actions.push(Action::NewCollection);
                         }
                         for (ci, col) in app.collections.iter().enumerate() {
                             let col_path = TreePath { col: ci, folders: vec![], req: None };
                             let renaming = app.renaming.as_ref() == Some(&col_path);
-                            egui::CollapsingHeader::new(if renaming { "✏️" } else { &col.name })
+                            egui::CollapsingHeader::new(if renaming { "[rename]" } else { &col.name })
                                 .id_salt(("col", col.id))
                                 .default_open(true)
                                 .show(ui, |ui| {

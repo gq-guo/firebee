@@ -22,11 +22,11 @@ pub fn render(app: &mut FirebeeApp, kind: Kind) -> String {
 pub fn show(ctx: &egui::Context, app: &mut FirebeeApp) {
     let Some(text) = app.export_text.clone() else { return };
     let mut open = true;
-    egui::Window::new("导出")
+    egui::Window::new("Export")
         .open(&mut open)
         .default_size([560.0, 360.0])
         .show(ctx, |ui| {
-            if ui.button("📋 复制").clicked() {
+            if ui.button("Copy").clicked() {
                 ui.ctx().copy_text(text.clone());
             }
             let mut t = text;

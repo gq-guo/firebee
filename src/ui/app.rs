@@ -71,7 +71,7 @@ impl FirebeeApp {
             history: storage.load_history(),
             storage,
             active_env: None,
-            current: Request::new("新请求"),
+            current: Request::new("New Request"),
             response: None,
             pending: None,
             sidebar_tab: SidebarTab::Collections,
