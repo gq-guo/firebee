@@ -66,7 +66,7 @@ impl FirebeeApp {
         let (job_tx, job_rx) = std::sync::mpsc::channel();
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         crate::worker::spawn_worker(job_rx, result_tx);
-        let app = Self {
+        Self {
             collections: storage.load_collections(),
             environments: storage.load_environments(),
             history: storage.load_history(),
@@ -89,8 +89,7 @@ impl FirebeeApp {
             job_tx,
             result_rx,
             next_job_id: 1,
-        };
-        app
+        }
     }
 
     pub fn env_vars(&self) -> HashMap<String, String> {
