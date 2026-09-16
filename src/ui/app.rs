@@ -169,8 +169,8 @@ impl eframe::App for FirebeeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_results(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Firebee");
-            ui.label("骨架已运行，面板待实现");
+            crate::ui::request_panel::show(ui, self);
+            ui.separator();
         });
     }
 
