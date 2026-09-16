@@ -6,6 +6,7 @@ use crate::core::http::HttpError;
 use crate::core::models::*;
 use crate::core::storage::{Storage, HISTORY_LIMIT};
 use crate::core::vars::substitute_request;
+use crate::ui::sidebar::TreePath;
 use crate::worker::{Job, JobResult};
 
 pub enum SidebarTab {
@@ -50,6 +51,8 @@ pub struct FirebeeApp {
     pub missing_vars: Vec<String>,
     pub timeout_secs: u64,
     pub dirty_since: Option<Instant>,
+    pub renaming: Option<TreePath>,
+    pub rename_buf: String,
     job_tx: Sender<Job>,
     result_rx: Receiver<JobResult>,
     next_job_id: u64,
@@ -79,6 +82,8 @@ impl FirebeeApp {
             missing_vars: vec![],
             timeout_secs: crate::core::http::DEFAULT_TIMEOUT.as_secs(),
             dirty_since: None,
+            renaming: None,
+            rename_buf: String::new(),
             job_tx,
             result_rx,
             next_job_id: 1,
@@ -168,6 +173,7 @@ impl FirebeeApp {
 impl eframe::App for FirebeeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_results(ctx);
+        crate::ui::sidebar::show(ctx, self);
         egui::CentralPanel::default().show(ctx, |ui| {
             crate::ui::request_panel::show(ui, self);
             ui.separator();
