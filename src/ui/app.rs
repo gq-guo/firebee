@@ -60,12 +60,13 @@ pub struct FirebeeApp {
 }
 
 impl FirebeeApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        install_cjk_fonts(&cc.egui_ctx);
         let storage = Storage::new(Storage::default_dir());
         let (job_tx, job_rx) = std::sync::mpsc::channel();
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         crate::worker::spawn_worker(job_rx, result_tx);
-        Self {
+        let app = Self {
             collections: storage.load_collections(),
             environments: storage.load_environments(),
             history: storage.load_history(),
@@ -88,7 +89,8 @@ impl FirebeeApp {
             job_tx,
             result_rx,
             next_job_id: 1,
-        }
+        };
+        app
     }
 
     pub fn env_vars(&self) -> HashMap<String, String> {
@@ -189,4 +191,29 @@ impl eframe::App for FirebeeApp {
         let _ = self.storage.save_environments(&self.environments);
         let _ = self.storage.save_history(&self.history);
     }
+}
+
+/// egui 默认字体不含 CJK 字形。界面文案是英文，但 API 响应体和用户数据
+/// 常含中文，加载系统中文字体作为回退，避免数据显示为方块。
+fn install_cjk_fonts(ctx: &egui::Context) {
+    const CANDIDATES: &[&str] = &[
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", // macOS
+        "/Library/Fonts/Arial Unicode.ttf",
+        "C:/Windows/Fonts/msyh.ttf",                              // Windows 微软雅黑
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf", // Linux Noto
+    ];
+    for path in CANDIDATES {
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        let mut fonts = egui::FontDefinitions::default();
+        fonts
+            .font_data
+            .insert("cjk".to_owned(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().push("cjk".to_owned());
+        }
+        ctx.set_fonts(fonts);
+        tracing::info!("Loaded CJK font: {path}");
+        return;
+    }
+    tracing::warn!("No CJK font found; CJK characters may render as boxes");
 }

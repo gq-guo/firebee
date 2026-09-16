@@ -85,7 +85,7 @@ fn show_response(ui: &mut egui::Ui, resp_tab: &mut RespTab, resp: &ResponseMeta)
 }
 
 pub fn show(ui: &mut egui::Ui, app: &mut FirebeeApp) {
-    ui.heading("响应");
+    ui.heading("Response");
     let pending = app.pending.is_some();
     let Some(res) = &app.response else {
         if pending {

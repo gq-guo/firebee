@@ -238,7 +238,7 @@ fn request_row(
             let mut buf = rename_buf.to_string();
             rename_editor(ui, &path, &mut buf, actions);
         } else {
-            let resp = ui.button(format!("• {name}"));
+            let resp = ui.button(format!("- {name}"));
             if resp.clicked() {
                 actions.push(Action::Select(path.clone()));
             }
@@ -361,7 +361,7 @@ pub fn show(ctx: &egui::Context, app: &mut FirebeeApp) {
 
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() > max {
-        format!("{}…", s.chars().take(max).collect::<String>())
+        format!("{}...", s.chars().take(max).collect::<String>())
     } else {
         s.to_string()
     }

@@ -24,7 +24,7 @@ pub fn kv_table(
                 changed |= ui
                     .add(egui::TextEdit::singleline(&mut kv.value).hint_text(val_hint).desired_width(320.0))
                     .changed();
-                if ui.button("✕").clicked() {
+                if ui.button("x").clicked() {
                     remove = Some(i);
                 }
                 ui.end_row();
@@ -64,7 +64,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut FirebeeApp) {
         } else if ui.button("Send").clicked() {
             app.send();
         }
-        ui.menu_button("Export ▾", |ui| {
+        ui.menu_button("Export", |ui| {
             if ui.button("curl command").clicked() {
                 app.export_text = Some(crate::ui::export_dialog::render(app, crate::ui::export_dialog::Kind::Curl));
                 ui.close();
