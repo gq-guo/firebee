@@ -59,10 +59,8 @@ pub async fn execute(
         Auth::Basic { username, password } => {
             builder = builder.basic_auth(username, Some(password))
         }
-        Auth::ApiKey { key, value, in_query: false } => {
-            if !key.is_empty() {
-                builder = builder.header(key, value);
-            }
+        Auth::ApiKey { key, value, in_query: false } if !key.is_empty() => {
+            builder = builder.header(key, value);
         }
         _ => {}
     }

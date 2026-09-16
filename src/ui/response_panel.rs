@@ -24,11 +24,11 @@ fn fmt_size(n: usize) -> String {
 
 /// 只读代码视图，带语法高亮
 fn code_view(ui: &mut egui::Ui, id: &str, code: &str, language: &str) {
-    let theme = egui_extras::syntax_highlighting::CodeTheme::from_memory(ui.ctx(), &ui.style());
+    let theme = egui_extras::syntax_highlighting::CodeTheme::from_memory(ui.ctx(), ui.style());
     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
         let mut job = egui_extras::syntax_highlighting::highlight(
             ui.ctx(),
-            &ui.style(),
+            ui.style(),
             &theme,
             buf.as_str(),
             language,

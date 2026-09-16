@@ -28,6 +28,7 @@ pub enum RespTab {
     Headers,
 }
 
+#[allow(dead_code)] // id 保留：未来支持多并发请求时按 id 匹配结果
 pub struct Pending {
     pub id: u64,
     pub cancel_tx: tokio::sync::watch::Sender<bool>,

@@ -22,10 +22,8 @@ fn effective_headers(req: &Request) -> Vec<(String, String)> {
         Auth::Bearer { token } => {
             hs.push(("Authorization".into(), format!("Bearer {token}")))
         }
-        Auth::ApiKey { key, value, in_query: false } => {
-            if !key.is_empty() {
-                hs.push((key.clone(), value.clone()));
-            }
+        Auth::ApiKey { key, value, in_query: false } if !key.is_empty() => {
+            hs.push((key.clone(), value.clone()));
         }
         _ => {}
     }

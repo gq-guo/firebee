@@ -11,6 +11,7 @@ pub struct Job {
     pub cancel: tokio::sync::watch::Receiver<bool>,
 }
 
+#[allow(dead_code)] // 同上
 pub struct JobResult {
     pub id: u64,
     pub result: Result<ResponseMeta, HttpError>,
