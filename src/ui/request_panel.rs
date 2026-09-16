@@ -13,16 +13,19 @@ pub fn kv_table(
 ) -> bool {
     let mut changed = false;
     let mut remove: Option<usize> = None;
+    // 宽度：key 固定 220，value 占满剩余宽度（checkbox + x 按钮 + 间距约 300px）
+    let key_w = 220.0;
+    let val_w = (ui.available_width() - 300.0).max(240.0);
     egui::Grid::new(ui.id().with(id))
         .num_columns(4)
         .show(ui, |ui| {
             for (i, kv) in rows.iter_mut().enumerate() {
                 changed |= ui.checkbox(&mut kv.enabled, "").changed();
                 changed |= ui
-                    .add(egui::TextEdit::singleline(&mut kv.key).hint_text(key_hint).desired_width(180.0))
+                    .add(egui::TextEdit::singleline(&mut kv.key).hint_text(key_hint).desired_width(key_w))
                     .changed();
                 changed |= ui
-                    .add(egui::TextEdit::singleline(&mut kv.value).hint_text(val_hint).desired_width(320.0))
+                    .add(egui::TextEdit::singleline(&mut kv.value).hint_text(val_hint).desired_width(val_w))
                     .changed();
                 if ui.button("x").clicked() {
                     remove = Some(i);
