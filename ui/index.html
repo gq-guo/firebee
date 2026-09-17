@@ -10,8 +10,7 @@
   <label>Environment <select id="env-select" aria-label="Active environment"></select></label>
   <button id="env-manage" class="small">Manage…</button>
   <span class="spacer"></span>
-  <button id="clear-cookies" class="small ghost" title="Forget cookies received from servers in this session">Clear cookies</button>
-  <label>Timeout <input id="timeout" type="number" min="1" max="300" value="30" aria-label="Request timeout in seconds"> s</label>
+  <label>Timeout (s) <input id="timeout" type="number" min="1" max="300" value="30" aria-label="Request timeout in seconds"></label>
 </header>
 
 <aside id="sidebar">
@@ -27,17 +26,17 @@
 <main>
   <section id="request">
     <div id="req-head">
-      <input id="req-name" aria-label="Request name">
+      <input id="req-name" aria-label="Request name"><span id="req-name-measure" aria-hidden="true"></span>
       <span id="req-where"></span>
       <span class="spacer"></span>
     </div>
     <div class="row">
       <select id="method" aria-label="HTTP method"></select>
-      <input id="url" placeholder="https://api.example.com/path — {{vars}} supported" aria-label="Request URL" spellcheck="false">
+      <div class="url-wrap"><div id="url-mirror" aria-hidden="true"></div><input id="url" placeholder="https://api.example.com/path — {{vars}} supported" aria-label="Request URL" spellcheck="false" autocomplete="off"></div>
+      <span id="missing" class="warn hidden" role="status"></span>
       <button id="send" class="primary" title="Send (⌘↩)">Send</button>
       <button id="cancel" class="danger hidden">Cancel</button>
     </div>
-    <div id="missing" class="warn hidden"></div>
     <nav class="tabs" id="req-tabs" role="tablist">
       <button data-req="params" class="active">Params</button>
       <button data-req="headers">Headers</button>
@@ -70,6 +69,7 @@
     <div id="env-list"></div>
     <div id="env-editor"></div>
   </div>
+  <div class="row dialog-foot"><span class="muted">Cookies received from servers are kept for this session and sent back automatically.</span><span class="spacer"></span><button id="clear-cookies" class="small">Clear cookies</button></div>
 </dialog>
 
 <dialog id="import-dialog">
