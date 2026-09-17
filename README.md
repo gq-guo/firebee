@@ -28,12 +28,12 @@
 - 拖拽排序与跨文件夹移动；⌘点击多选，批量删除
 - 侧栏搜索：按集合 / 文件夹 / 请求名和 URL 过滤（⌘F 聚焦）
 - 历史最近 500 条，点击回填
-- 导入：粘贴 curl 到 URL 框或菜单导入；文件导入 Firebee 导出 / Postman Collection v2.x / Postman Environment
+- 导入：把 curl 粘贴到 URL 框即覆盖到当前请求（保留名字）；集合菜单可导入为新请求；文件导入 Firebee 导出 / Postman Collection v2.x / Postman Environment
 - 导出：curl（JSON 压成一行，方便粘贴终端）、Python (requests)；集合导出为 Firebee JSON
 
 **界面**
-- 三栏布局，分隔条可拖动，双击恢复；快捷键 ⌘↩ 发送、⌘S 存入集合、⌘N 新请求、⌘F 查找
-- 所有数据本地 JSON 文件持久化，原子写入，损坏自动备份
+- 三栏布局，分隔条可拖动，双击恢复；快捷键 ⌘↩ 发送、⌘N 新请求、⌘F 查找
+- 没有手动保存：每个请求都在集合里，任何改动防抖写入本地 JSON（原子写入，损坏自动备份）
 
 ## 运行
 
