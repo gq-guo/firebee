@@ -101,7 +101,9 @@ function openMenu(e, items) {
     h('button', { class: 'menu-item' + (opt.danger ? ' danger-item' : ''), role: 'menuitem',
       onclick: (ev) => { ev.stopPropagation(); menu.classList.add('hidden'); fn(ev); } },
       label, opt.kbd && h('span', { class: 'kbd' }, opt.kbd))));
-  const x = e.clientX || e.target.getBoundingClientRect().left, y = e.clientY || e.target.getBoundingClientRect().bottom;
+  // 鼠标事件在光标处打开；按钮/键盘触发时贴按钮下方并右对齐
+  const rect = e.currentTarget?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
+  const x = e.clientX || Math.max(8, rect.right - 170), y = e.clientY || rect.bottom + 4;
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
   menu.style.top = `${Math.min(y, window.innerHeight - items.length * 30 - 12)}px`;
   menu.classList.remove('hidden');
@@ -248,6 +250,7 @@ function containerNode(c, parentArr, isFolder = false) {
     ...view.folders.map((f) => containerNode(f, c.folders, true)),
     ...view.requests.map((r) => {
       const rmenu = (e) => openMenu(e, [
+        ...exportItems(r),
         ['Duplicate', () => { const d = structuredClone(r); d.id = crypto.randomUUID(); d.name += ' copy'; c.requests.splice(c.requests.indexOf(r) + 1, 0, d); dirty(); selectRequest(d); }],
         ['Rename', startRename(r)],
         ['Delete', remove(c.requests, r, 'request'), { danger: true }],
@@ -276,6 +279,16 @@ function locate(r, nodes = data.collections, path = []) {
   return null;
 }
 
+/** 当前请求所在的 requests 数组；不在集合里返回 null */
+function locateArr(r, nodes = data.collections) {
+  for (const n of nodes) {
+    if (n.requests.includes(r)) return n.requests;
+    const deep = locateArr(r, n.folders);
+    if (deep) return deep;
+  }
+  return null;
+}
+
 /** 把未保存的请求存进某个集合（引用进树，从此自动保存） */
 function saveMenu(e) {
   const into = (c) => { c.requests.push(current); collapsed.delete(c.id); dirty(); selectRequest(current); };
@@ -284,6 +297,13 @@ function saveMenu(e) {
     ['+ New collection', () => { const c = newContainer(`Collection ${data.collections.length + 1}`); data.collections.push(c); into(c); }],
   ]);
 }
+
+/** 导出 curl / Python 到对话框 */
+async function exportCode(req, kind) {
+  $('#export-text').textContent = await invoke('export_code', { request: req, env: activeEnv(), kind });
+  $('#export-dialog').showModal();
+}
+const exportItems = (req) => [['Export as curl', () => exportCode(req, 'curl')], ['Export as Python', () => exportCode(req, 'python')]];
 
 // ---------- 请求面板 ----------
 function renderRequestHeader() {
@@ -476,12 +496,10 @@ function bind() {
   $('#save').onclick = saveMenu;
   $('#send').onclick = send;
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pending });
-  $('#export').onchange = async (e) => {
-    const kind = e.target.value; e.target.value = '';
-    if (!kind) return;
-    $('#export-text').textContent = await invoke('export_code', { request: current, env: activeEnv(), kind });
-    $('#export-dialog').showModal();
-  };
+  $('#req-more').onclick = (e) => openMenu(e, [
+    ...exportItems(current),
+    ['Duplicate', () => { const d = structuredClone(current); d.id = crypto.randomUUID(); d.name += ' copy'; const where = locateArr(current); if (where) where.splice(where.indexOf(current) + 1, 0, d); dirty(); selectRequest(d); }],
+  ]);
   $('#export-copy').onclick = (e) => copyText($('#export-text').textContent, e.currentTarget);
   $('#export-close').onclick = () => $('#export-dialog').close();
   $('#env-select').onchange = (e) => { activeEnvId = e.target.value || null; missing = []; renderRequestHeader(); };

@@ -29,13 +29,13 @@
       <span id="req-where"></span>
       <span class="spacer"></span>
       <button id="save" class="small">Save to…</button>
+      <button id="req-more" class="small more" aria-label="Request actions">⋯</button>
     </div>
     <div class="row">
       <select id="method" aria-label="HTTP method"></select>
       <input id="url" placeholder="https://api.example.com/path — {{vars}} supported" aria-label="Request URL" spellcheck="false">
       <button id="send" class="primary" title="Send (⌘↩)">Send</button>
       <button id="cancel" class="danger hidden">Cancel</button>
-      <select id="export" aria-label="Export"><option value="">Export…</option><option value="curl">curl command</option><option value="python">Python (requests)</option></select>
     </div>
     <div id="missing" class="warn hidden"></div>
     <nav class="tabs" id="req-tabs" role="tablist">
