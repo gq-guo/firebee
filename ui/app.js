@@ -195,7 +195,7 @@ function renderSidebar() {
       const t = new Date(hist.timestamp);
       const hhmm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
       body.append(h('div', { class: 'hist', role: 'button', tabindex: 0, title: `${hist.request.method.toUpperCase()} ${hist.request.url}`,
-        onclick: () => selectRequest(structuredClone(hist.request)), onkeydown: activate },
+        onclick: () => openFromHistory(hist), onkeydown: activate },
         h('span', { class: 'muted' }, hhmm), methodTag(hist.request.method),
         h('span', { class: hist.status ? `s${Math.floor(hist.status / 100)}` : 's0' }, hist.status ?? 'ERR'),
         h('span', {}, hist.request.url || '(no URL)')));
@@ -251,7 +251,7 @@ const startRename = (obj) => (e) => { e.stopPropagation(); renaming = obj; rende
 /** 乐观删除 + Undo toast，不弹确认框 */
 const remove = (arr, obj, what) => () => {
   const idx = arr.indexOf(obj);
-  arr.splice(idx, 1); dirty(); renderSidebar(); renderRequestHeader();
+  arr.splice(idx, 1); dirty(); ensureCurrent(); renderSidebar(); renderRequestHeader();
   toast(`Deleted ${what} “${obj.name}”.`, { action: ['Undo', () => { arr.splice(idx, 0, obj); dirty(); renderSidebar(); renderRequestHeader(); }] });
 };
 
@@ -326,7 +326,7 @@ function deleteSelected() {
   const removed = [...selected].map((r) => { const arr = locateArr(r); return arr && { arr, idx: arr.indexOf(r), r }; }).filter(Boolean)
     .sort((a, b) => b.idx - a.idx);
   removed.forEach(({ arr, idx }) => arr.splice(idx, 1));
-  selected.clear(); dirty(); renderSidebar(); renderRequestHeader();
+  selected.clear(); dirty(); ensureCurrent(); renderSidebar(); renderRequestHeader();
   toast(`Deleted ${removed.length} requests.`, { action: ['Undo', () => {
     removed.sort((a, b) => a.idx - b.idx).forEach(({ arr, idx, r }) => arr.splice(idx, 0, r));
     dirty(); renderSidebar(); renderRequestHeader();
@@ -349,13 +349,38 @@ function locate(r, nodes = data.collections, path = []) {
   return null;
 }
 
-/** 把未保存的请求存进某个集合（引用进树，从此自动保存） */
-function saveMenu(e) {
-  const into = (c) => { c.requests.push(current); collapsed.delete(c.id); dirty(); selectRequest(current); };
-  openMenu(e, [
-    ...data.collections.map((c) => [c.name, () => into(c)]),
-    ['+ New collection', () => { const c = newContainer(`Collection ${data.collections.length + 1}`); data.collections.push(c); into(c); }],
-  ]);
+/** 所有请求都在集合里、全部自动保存。没有集合时自动建一个。 */
+function homeCollection() {
+  if (!data.collections.length) { data.collections.push(newContainer('My requests')); dirty(); }
+  return data.collections[0];
+}
+/** 当前请求所在的容器 requests 数组（用于"在旁边新建"），否则首个集合 */
+const homeArr = () => locateArr(current) || homeCollection().requests;
+function createRequest() {
+  const r = newRequest();
+  homeArr().push(r); dirty(); selectRequest(r);
+  return r;
+}
+function firstRequest(nodes = data.collections) {
+  for (const n of nodes) { if (n.requests[0]) return n.requests[0]; const d = firstRequest(n.folders); if (d) return d; }
+  return null;
+}
+/** 当前请求被删掉后，换到一个仍存在的请求 */
+function ensureCurrent() {
+  if (locateArr(current)) return;
+  const r = firstRequest();
+  r ? selectRequest(r) : createRequest();
+}
+/** 历史：原请求还在就直接打开它，否则按快照在首个集合里新建一个 */
+function openFromHistory(hist) {
+  const found = findById(hist.request.id);
+  if (found) return selectRequest(found);
+  const r = structuredClone(hist.request);
+  homeCollection().requests.push(r); dirty(); selectRequest(r);
+}
+function findById(id, nodes = data.collections) {
+  for (const n of nodes) { const r = n.requests.find((x) => x.id === id); if (r) return r; const d = findById(id, n.folders); if (d) return d; }
+  return null;
 }
 
 /** 导出 curl / Python 到对话框 */
@@ -365,12 +390,14 @@ async function exportCode(req, kind) {
 }
 const exportItems = (req) => [['Export as curl', () => exportCode(req, 'curl')], ['Export as Python', () => exportCode(req, 'python')]];
 
-/** curl 导入：into 给定时存入该集合/文件夹，否则成为未保存的当前请求；失败把原因交给 onError */
+/** curl 导入：into 给定时作为新请求存入该集合/文件夹；否则覆盖到当前请求上（保留 id 与自定义名字）。失败把原因交给 onError */
 async function importCurl(text, onError, into = null) {
   try {
     const r = await invoke('import_curl', { text });
-    if (into) { into.requests.push(r); collapsed.delete(into.id); dirty(); }
-    selectRequest(r);
+    if (into) { into.requests.push(r); collapsed.delete(into.id); dirty(); selectRequest(r); return true; }
+    const keepName = !/^(Untitled request|New Request)/i.test(current.name);
+    Object.assign(current, r, { id: current.id, name: keepName ? current.name : r.name });
+    dirty(); selectRequest(current);
     return true;
   } catch (e) { onError(String(e)); return false; }
 }
@@ -420,8 +447,7 @@ function splitter(el, cssVar, measure, min, max, key) {
 function renderRequestHeader() {
   $('#req-name').value = current.name;
   const where = locate(current);
-  $('#req-where').textContent = where ? `in ${where.join(' / ')}` : 'not saved to a collection';
-  $('#save').classList.toggle('hidden', !!where);
+  $('#req-where').textContent = where ? `in ${where.join(' / ')}` : '';
   $('#method').value = current.method;
   $('#url').value = current.url;
   $('#send').classList.toggle('hidden', isPending());
@@ -807,7 +833,6 @@ function bind() {
   $('#import-text').onkeydown = (e) => { if ((MAC ? e.metaKey : e.ctrlKey) && e.key === 'Enter') $('#import-run').click(); };
   $('#req-name').oninput = (e) => { current.name = e.target.value; dirty(); renderSidebar(); };
   $('#req-name').onkeydown = (e) => { if (e.key === 'Enter') e.target.blur(); };
-  $('#save').onclick = saveMenu;
   $('#send').onclick = send;
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pendings.get(current.id) });
   $('#export-copy').onclick = (e) => copyText($('#export-text').textContent, e.currentTarget);
@@ -825,8 +850,7 @@ function bind() {
     const mod = MAC ? e.metaKey : e.ctrlKey;
     if (!mod) return;
     if (e.key === 'Enter') { e.preventDefault(); send(); }
-    else if (e.key === 's') { e.preventDefault(); if (!locate(current)) saveMenu({ preventDefault() {}, stopPropagation() {}, target: $('#save') }); }
-    else if (e.key === 'n') { e.preventDefault(); selectRequest(newRequest()); $('#url').focus(); }
+    else if (e.key === 'n') { e.preventDefault(); createRequest(); $('#url').focus(); }
     else if (e.key === 'f') { e.preventDefault(); const f = $('#find') || $('#search'); f.focus(); f.select(); }
   });
   document.addEventListener('keydown', (e) => {
@@ -836,12 +860,13 @@ function bind() {
   splitter($('#split-side'), '--side-w', (ev) => ev.clientX, 180, () => window.innerWidth * 0.5, 'firebee.sideW');
   splitter($('#split-main'), '--req-w', (ev) => ev.clientX - $('#request').getBoundingClientRect().left, 360,
     () => $('main').getBoundingClientRect().width - 326, 'firebee.reqW');
-  $('#send').title = `Send (${MOD}↩)`; $('#save').title = `Save to a collection (${MOD}S)`;
+  $('#send').title = `Send (${MOD}↩)`;
 }
 
 async function main() {
   bind();
   data = await invoke('load_data');
+  current = firstRequest() || (homeCollection().requests.push(current), dirty(), current);
   renderTopbar(); renderSidebar(); renderRequest(); renderResponse();
   $('#url').focus();
 }
