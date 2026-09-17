@@ -10,6 +10,7 @@
   <label>Environment <select id="env-select" aria-label="Active environment"></select></label>
   <button id="env-manage" class="small">Manage…</button>
   <span class="spacer"></span>
+  <button id="clear-cookies" class="small ghost" title="Forget cookies received from servers in this session">Clear cookies</button>
   <label>Timeout <input id="timeout" type="number" min="1" max="300" value="30" aria-label="Request timeout in seconds"> s</label>
 </header>
 
@@ -18,8 +19,10 @@
     <button data-side="collections" class="active" role="tab" aria-selected="true">Collections</button>
     <button data-side="history" role="tab" aria-selected="false">History</button>
   </nav>
+  <input id="search" type="search" placeholder="Filter by name or URL" aria-label="Filter collections and history" spellcheck="false">
   <div id="side-body"></div>
 </aside>
+<div class="splitter" id="split-side" role="separator" aria-orientation="vertical" title="Drag to resize · double-click to reset"></div>
 
 <main>
   <section id="request">
@@ -34,7 +37,6 @@
       <input id="url" placeholder="https://api.example.com/path — {{vars}} supported" aria-label="Request URL" spellcheck="false">
       <button id="send" class="primary" title="Send (⌘↩)">Send</button>
       <button id="cancel" class="danger hidden">Cancel</button>
-      <select id="export" aria-label="Export"><option value="">Export…</option><option value="curl">curl command</option><option value="python">Python (requests)</option></select>
     </div>
     <div id="missing" class="warn hidden"></div>
     <nav class="tabs" id="req-tabs" role="tablist">
@@ -46,11 +48,13 @@
     <div id="req-body"></div>
   </section>
 
+  <div class="splitter" id="split-main" role="separator" aria-orientation="vertical" title="Drag to resize · double-click to reset"></div>
   <section id="response" aria-live="polite">
     <div id="resp-meta" class="row"></div>
     <nav class="tabs" id="resp-tabs" role="tablist">
       <button data-resp="body" class="active">Body</button>
       <button data-resp="headers">Headers</button>
+      <button data-resp="preview" class="hidden">Preview</button>
     </nav>
     <div id="resp-body"></div>
   </section>
@@ -69,6 +73,24 @@
   </div>
 </dialog>
 
+<dialog id="import-dialog">
+  <div class="row"><strong>Import from curl</strong><span class="spacer"></span><button id="import-close" class="small">Close</button></div>
+  <textarea id="import-text" spellcheck="false" aria-label="curl command" placeholder="curl -X POST 'https://api.example.com/items' -H 'Authorization: Bearer …' -d '{&quot;a&quot;:1}'"></textarea>
+  <div id="import-error" class="helper error"></div>
+  <div class="row"><span class="muted">Tip: pasting a curl command into the URL field imports it directly.</span><span class="spacer"></span><button id="import-run" class="primary">Import</button></div>
+</dialog>
+
+<datalist id="hdr-names">
+  <option>Accept</option><option>Accept-Encoding</option><option>Accept-Language</option><option>Authorization</option>
+  <option>Cache-Control</option><option>Content-Type</option><option>Cookie</option><option>If-Match</option><option>If-None-Match</option>
+  <option>Idempotency-Key</option><option>Origin</option><option>Referer</option><option>User-Agent</option>
+  <option>X-API-Key</option><option>X-Correlation-Id</option><option>X-Forwarded-For</option><option>X-Request-Id</option><option>am-api-key</option>
+</datalist>
+<datalist id="ct-values">
+  <option>application/json</option><option>application/x-www-form-urlencoded</option><option>multipart/form-data</option>
+  <option>text/plain</option><option>text/html</option><option>application/xml</option><option>application/octet-stream</option><option>*/*</option>
+</datalist>
+<div id="ac" class="hidden" role="listbox"></div>
 <div id="menu" class="hidden" role="menu"></div>
 <div id="toast" class="hidden" role="status"></div>
 <script src="app.js"></script>

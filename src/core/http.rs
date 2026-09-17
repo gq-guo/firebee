@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
@@ -41,14 +42,19 @@ pub fn build_url(req: &Request) -> Result<String, HttpError> {
 }
 
 /// 执行 HTTP 请求。取消方式：向 cancel watch channel 发送 true（底层 future 被 drop，请求中断）。
+/// jar：跨请求共享的 Cookie 罐（None 则不保存 Cookie）。
 pub async fn execute(
     req: &Request,
     timeout: Duration,
     cancel: tokio::sync::watch::Receiver<bool>,
+    jar: Option<Arc<reqwest::cookie::Jar>>,
 ) -> Result<ResponseMeta, HttpError> {
     let url = build_url(req)?;
-    let client = reqwest::Client::builder()
-        .timeout(timeout)
+    let mut builder = reqwest::Client::builder().timeout(timeout);
+    if let Some(jar) = jar {
+        builder = builder.cookie_provider(jar);
+    }
+    let client = builder
         .build()
         .map_err(|e| HttpError::Network(e.to_string()))?;
     let method = reqwest::Method::from_bytes(req.method.as_str().as_bytes())
@@ -168,7 +174,7 @@ mod tests {
         req.url = format!("{}/users", server.uri());
         req.params = vec![KeyValue::new("page", "1")];
         req.headers = vec![KeyValue::new("x-token", "abc")];
-        let resp = execute(&req, Duration::from_secs(5), no_cancel()).await.unwrap();
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None).await.unwrap();
         assert_eq!(resp.status, 200);
         assert!(String::from_utf8(resp.body).unwrap().contains("\"ok\":true"));
         assert!(resp.size_bytes > 0);
@@ -192,7 +198,7 @@ mod tests {
         req.body_type = BodyType::Json;
         req.body = r#"{"u":"a"}"#.into();
         req.auth = Auth::Bearer { token: "t123".into() };
-        let resp = execute(&req, Duration::from_secs(5), no_cancel()).await.unwrap();
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None).await.unwrap();
         assert_eq!(resp.status, 201);
     }
 
@@ -209,7 +215,7 @@ mod tests {
         let mut req = Request::new("t");
         req.url = format!("{}/data", server.uri());
         req.auth = Auth::ApiKey { key: "api_key".into(), value: "k9".into(), in_query: true };
-        let resp = execute(&req, Duration::from_secs(5), no_cancel()).await.unwrap();
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None).await.unwrap();
         assert_eq!(resp.status, 200);
     }
 
@@ -223,7 +229,7 @@ mod tests {
 
         let mut req = Request::new("t");
         req.url = server.uri();
-        let err = execute(&req, Duration::from_millis(100), no_cancel()).await.unwrap_err();
+        let err = execute(&req, Duration::from_millis(100), no_cancel(), None).await.unwrap_err();
         assert!(matches!(err, HttpError::Timeout(_)));
     }
 
@@ -238,7 +244,7 @@ mod tests {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let mut req = Request::new("t");
         req.url = server.uri();
-        let handle = tokio::spawn(async move { execute(&req, Duration::from_secs(10), rx).await });
+        let handle = tokio::spawn(async move { execute(&req, Duration::from_secs(10), rx, None).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         tx.send(true).unwrap();
         let err = handle.await.unwrap().unwrap_err();
@@ -249,7 +255,7 @@ mod tests {
     async fn invalid_url_error() {
         let mut req = Request::new("t");
         req.url = "not a url".into();
-        let err = execute(&req, Duration::from_secs(5), no_cancel()).await.unwrap_err();
+        let err = execute(&req, Duration::from_secs(5), no_cancel(), None).await.unwrap_err();
         assert!(matches!(err, HttpError::InvalidUrl(_)));
     }
 
@@ -257,8 +263,32 @@ mod tests {
     async fn connection_refused_is_network_error() {
         let mut req = Request::new("t");
         req.url = "http://127.0.0.1:1/".into();
-        let err = execute(&req, Duration::from_secs(2), no_cancel()).await.unwrap_err();
+        let err = execute(&req, Duration::from_secs(2), no_cancel(), None).await.unwrap_err();
         assert!(matches!(err, HttpError::Network(_)));
+    }
+
+    #[tokio::test]
+    async fn cookie_jar_is_shared_across_requests() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/login"))
+            .respond_with(ResponseTemplate::new(200).insert_header("set-cookie", "sid=abc; Path=/"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/me"))
+            .and(header("cookie", "sid=abc"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let jar = Arc::new(reqwest::cookie::Jar::default());
+        let mut login = Request::new("l");
+        login.url = format!("{}/login", server.uri());
+        execute(&login, Duration::from_secs(5), no_cancel(), Some(jar.clone())).await.unwrap();
+        let mut me = Request::new("m");
+        me.url = format!("{}/me", server.uri());
+        let resp = execute(&me, Duration::from_secs(5), no_cancel(), Some(jar)).await.unwrap();
+        assert_eq!(resp.status, 200);
     }
 
     #[test]
