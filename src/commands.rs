@@ -99,6 +99,11 @@ pub fn cancel_request(pending: State<Pending>, job_id: u64) {
     }
 }
 
+#[tauri::command]
+pub fn import_curl(text: String) -> Result<Request, String> {
+    crate::core::import::from_curl(&text)
+}
+
 /// kind: "curl" | "python"。先变量替换，再构造最终 URL。
 #[tauri::command]
 pub fn export_code(request: Request, env: Option<Environment>, kind: String) -> String {

@@ -167,6 +167,10 @@ dialog { position: fixed; inset: 0; margin: auto; height: fit-content; max-heigh
 dialog::backdrop { background: oklch(10% 0.01 250 / 0.55); }
 dialog[open] { animation: dialog-in var(--dur-short) var(--ease-out); }
 @keyframes dialog-in { from { opacity: 0; transform: scale(0.98); } }
+#import-text { min-height: 200px; margin-bottom: var(--space-2xs); }
+.jp { display: flex; align-items: center; gap: var(--space-xs); margin-bottom: var(--space-xs); }
+.jp input { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--text-mono); height: 28px; }
+.jp .meta { white-space: nowrap; }
 #export-text { max-height: 60vh; overflow: auto; background: var(--color-paper); padding: var(--space-sm); border-radius: var(--radius-input); border: 1px solid var(--color-rule); }
 .env-layout { display: flex; gap: var(--space-md); }
 #env-list { width: 170px; display: flex; flex-direction: column; gap: 2px; }

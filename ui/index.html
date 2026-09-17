@@ -70,6 +70,13 @@
   </div>
 </dialog>
 
+<dialog id="import-dialog">
+  <div class="row"><strong>Import from curl</strong><span class="spacer"></span><button id="import-close" class="small">Close</button></div>
+  <textarea id="import-text" spellcheck="false" aria-label="curl command" placeholder="curl -X POST 'https://api.example.com/items' -H 'Authorization: Bearer …' -d '{&quot;a&quot;:1}'"></textarea>
+  <div id="import-error" class="helper error"></div>
+  <div class="row"><span class="muted">Tip: pasting a curl command into the URL field imports it directly.</span><span class="spacer"></span><button id="import-run" class="primary">Import</button></div>
+</dialog>
+
 <div id="menu" class="hidden" role="menu"></div>
 <div id="toast" class="hidden" role="status"></div>
 <script src="app.js"></script>

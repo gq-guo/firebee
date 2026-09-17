@@ -13,6 +13,8 @@
 - 认证：Bearer Token、Basic Auth、API Key（Header / Query）
 - 历史记录：最近 500 条，点击回填编辑器
 - 导出：curl 命令、Python (requests) 代码，一键复制
+- 导入：粘贴 curl 命令到 URL 框或通过菜单导入（-X/-H/-d/--data-urlencode/-u/-G 等）
+- 响应 JSONPath 过滤：`$.data.orders.*.app.key`、`$.data.orders.2.app.key`、`$..key`
 - 请求可取消、超时可配置（顶栏右侧）
 
 ## 运行
@@ -25,7 +27,7 @@ cargo run --release    # 直接运行（前端资源已编译进二进制）
 ## 测试
 
 ```bash
-cargo test          # 24 个单元/集成测试（core 层全覆盖，http 用 wiremock）
+cargo test          # 32 个单元/集成测试（core 层全覆盖，http 用 wiremock）
 cargo clippy --all-targets -- -D warnings
 ```
 
@@ -33,7 +35,7 @@ cargo clippy --all-targets -- -D warnings
 
 ```
 src/
-  core/         models · storage · vars · http · export   （不依赖 UI，全部可单测）
+  core/         models · storage · vars · http · export · import   （不依赖 UI，全部可单测）
   commands.rs   Tauri commands：load/save 数据、send/cancel 请求（tokio 异步，可取消）、变量检查、导出
   lib.rs        注册 commands 与托管状态；main.rs 只做日志初始化
 ui/

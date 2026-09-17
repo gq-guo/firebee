@@ -24,6 +24,7 @@ let renaming = null;   // 正在重命名的对象（collection / folder / reque
 let envSel = null;     // env 对话框中选中的环境
 let saveTimer = null;
 let filter = '';       // 侧栏搜索关键字（匹配集合/文件夹/请求名、URL）
+let jsonPath = '';     // 响应 JSONPath 过滤，跨请求保留
 const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘时保持）
 
 function newRequest(name = 'Untitled request') {
@@ -305,6 +306,19 @@ async function exportCode(req, kind) {
 }
 const exportItems = (req) => [['Export as curl', () => exportCode(req, 'curl')], ['Export as Python', () => exportCode(req, 'python')]];
 
+/** curl 导入：成功则成为当前（未保存）请求，失败把原因交给 onError */
+async function importCurl(text, onError) {
+  try {
+    selectRequest(await invoke('import_curl', { text }));
+    return true;
+  } catch (e) { onError(String(e)); return false; }
+}
+function openImport() {
+  $('#import-error').textContent = '';
+  $('#import-dialog').showModal();
+  $('#import-text').focus();
+}
+
 // ---------- 请求面板 ----------
 function renderRequestHeader() {
   $('#req-name').value = current.name;
@@ -450,11 +464,56 @@ function renderResponse() {
     return;
   }
   if (!r.body) { body.append(h('span', { class: 'muted' }, 'Empty body.')); return; }
-  let text = r.body, isJson = false;
-  try { text = JSON.stringify(JSON.parse(r.body), null, 2); isJson = true; } catch { /* not JSON */ }
+  let parsed, isJson = false;
+  try { parsed = JSON.parse(r.body); isJson = true; } catch { /* not JSON */ }
   const pre = h('pre', {});
-  if (isJson) pre.innerHTML = highlightJson(text); else pre.textContent = text;
-  body.append(pre);
+  if (!isJson) { pre.textContent = r.body; body.append(pre); return; }
+  // JSONPath 过滤行：只重绘 pre，输入框保持焦点
+  const count = h('span', { class: 'meta' });
+  const apply = () => {
+    count.className = 'meta';
+    if (!jsonPath.trim()) { pre.innerHTML = highlightJson(JSON.stringify(parsed, null, 2)); count.textContent = ''; return; }
+    try {
+      const out = jsonPath_(parsed, jsonPath);
+      pre.innerHTML = highlightJson(JSON.stringify(out.length === 1 ? out[0] : out, null, 2));
+      count.textContent = out.length === 1 ? '1 match' : `${out.length} matches`;
+    } catch (e) { count.className = 'meta error'; count.textContent = e.message; pre.innerHTML = highlightJson(JSON.stringify(parsed, null, 2)); }
+  };
+  let t;
+  body.append(h('div', { class: 'jp' },
+    h('input', { value: jsonPath, placeholder: '$.data.orders.*.app.key', 'aria-label': 'JSONPath filter', spellcheck: 'false',
+      oninput: (e) => { jsonPath = e.target.value; clearTimeout(t); t = setTimeout(apply, 150); },
+      onkeydown: (e) => { if (e.key === 'Escape' && jsonPath) { e.stopPropagation(); jsonPath = e.target.value = ''; apply(); } } }),
+    count), pre);
+  apply();
+}
+
+/** JSONPath 子集：$ · .key · .N · [N] · [-N] · ['key'] · * · [*] · ..key（递归）。返回匹配数组。 */
+function jsonPath_(root, path) {
+  let p = path.trim();
+  if (!p.startsWith('$')) throw new Error('Path must start with $');
+  p = p.slice(1);
+  const re = /\.\.([\w$-]+|\*)|\.([\w$-]+|\*)|\[(\*|-?\d+|'([^']*)'|"([^"]*)")\]/y;
+  const tokens = [];
+  for (let i = 0; i < p.length;) {
+    re.lastIndex = i;
+    const m = re.exec(p);
+    if (!m) throw new Error(`Can't read “${p.slice(i, i + 10)}” at position ${i + 1}`);
+    i = re.lastIndex;
+    if (m[1] !== undefined) tokens.push({ deep: m[1] });
+    else tokens.push({ key: m[2] ?? m[4] ?? m[5] ?? m[3] });
+  }
+  const isObj = (v) => v !== null && typeof v === 'object';
+  const children = (v) => Array.isArray(v) ? v : isObj(v) ? Object.values(v) : [];
+  const get = (v, k) => {
+    if (k === '*') return children(v);
+    if (Array.isArray(v)) { const n = Number(k); if (!Number.isInteger(n)) return []; const i = n < 0 ? v.length + n : n; return i in v ? [v[i]] : []; }
+    return isObj(v) && k in v ? [v[k]] : [];
+  };
+  const descend = (v, acc = []) => { acc.push(v); children(v).forEach((c) => descend(c, acc)); return acc; };
+  let cur = [root];
+  for (const tk of tokens) cur = cur.flatMap((v) => tk.deep !== undefined ? descend(v).flatMap((d) => get(d, tk.deep)) : get(v, tk.key));
+  return cur;
 }
 
 // ---------- 环境管理对话框 ----------
@@ -491,12 +550,22 @@ function bind() {
   $('#method').onchange = (e) => { current.method = e.target.value; dirty(); renderSidebar(); };
   $('#url').oninput = (e) => { current.url = e.target.value; dirty(); };
   $('#url').onkeydown = (e) => { if (e.key === 'Enter') send(); };
+  $('#url').onpaste = (e) => {
+    const t = e.clipboardData?.getData('text') || '';
+    if (/^\s*curl(\.exe)?\s/.test(t)) { e.preventDefault(); importCurl(t, (m) => toast(m, { error: true })); }
+  };
+  $('#import-close').onclick = () => $('#import-dialog').close();
+  $('#import-run').onclick = async () => {
+    if (await importCurl($('#import-text').value, (m) => { $('#import-error').textContent = m; })) { $('#import-text').value = ''; $('#import-dialog').close(); }
+  };
+  $('#import-text').onkeydown = (e) => { if ((MAC ? e.metaKey : e.ctrlKey) && e.key === 'Enter') $('#import-run').click(); };
   $('#req-name').oninput = (e) => { current.name = e.target.value; dirty(); renderSidebar(); };
   $('#req-name').onkeydown = (e) => { if (e.key === 'Enter') e.target.blur(); };
   $('#save').onclick = saveMenu;
   $('#send').onclick = send;
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pending });
   $('#req-more').onclick = (e) => openMenu(e, [
+    ['Import from curl…', openImport],
     ...exportItems(current),
     ['Duplicate', () => { const d = structuredClone(current); d.id = crypto.randomUUID(); d.name += ' copy'; const where = locateArr(current); if (where) where.splice(where.indexOf(current) + 1, 0, d); dirty(); selectRequest(d); }],
   ]);
