@@ -241,6 +241,7 @@ function containerNode(c, parentArr, isFolder = false) {
   const menu = (e) => openMenu(e, [
     ['New request', () => { const r = newRequest(); c.requests.push(r); collapsed.delete(c.id); dirty(); selectRequest(r); }],
     ['New folder', () => { c.folders.push(newContainer('New folder')); collapsed.delete(c.id); dirty(); renderSidebar(); }],
+    ['Import from curl…', () => openImport(c)],
     ['Rename', startRename(c)],
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
@@ -280,16 +281,6 @@ function locate(r, nodes = data.collections, path = []) {
   return null;
 }
 
-/** 当前请求所在的 requests 数组；不在集合里返回 null */
-function locateArr(r, nodes = data.collections) {
-  for (const n of nodes) {
-    if (n.requests.includes(r)) return n.requests;
-    const deep = locateArr(r, n.folders);
-    if (deep) return deep;
-  }
-  return null;
-}
-
 /** 把未保存的请求存进某个集合（引用进树，从此自动保存） */
 function saveMenu(e) {
   const into = (c) => { c.requests.push(current); collapsed.delete(c.id); dirty(); selectRequest(current); };
@@ -306,14 +297,18 @@ async function exportCode(req, kind) {
 }
 const exportItems = (req) => [['Export as curl', () => exportCode(req, 'curl')], ['Export as Python', () => exportCode(req, 'python')]];
 
-/** curl 导入：成功则成为当前（未保存）请求，失败把原因交给 onError */
-async function importCurl(text, onError) {
+/** curl 导入：into 给定时存入该集合/文件夹，否则成为未保存的当前请求；失败把原因交给 onError */
+async function importCurl(text, onError, into = null) {
   try {
-    selectRequest(await invoke('import_curl', { text }));
+    const r = await invoke('import_curl', { text });
+    if (into) { into.requests.push(r); collapsed.delete(into.id); dirty(); }
+    selectRequest(r);
     return true;
   } catch (e) { onError(String(e)); return false; }
 }
-function openImport() {
+let importInto = null;
+function openImport(into = null) {
+  importInto = into;
   $('#import-error').textContent = '';
   $('#import-dialog').showModal();
   $('#import-text').focus();
@@ -556,7 +551,7 @@ function bind() {
   };
   $('#import-close').onclick = () => $('#import-dialog').close();
   $('#import-run').onclick = async () => {
-    if (await importCurl($('#import-text').value, (m) => { $('#import-error').textContent = m; })) { $('#import-text').value = ''; $('#import-dialog').close(); }
+    if (await importCurl($('#import-text').value, (m) => { $('#import-error').textContent = m; }, importInto)) { $('#import-text').value = ''; $('#import-dialog').close(); }
   };
   $('#import-text').onkeydown = (e) => { if ((MAC ? e.metaKey : e.ctrlKey) && e.key === 'Enter') $('#import-run').click(); };
   $('#req-name').oninput = (e) => { current.name = e.target.value; dirty(); renderSidebar(); };
@@ -564,11 +559,6 @@ function bind() {
   $('#save').onclick = saveMenu;
   $('#send').onclick = send;
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pending });
-  $('#req-more').onclick = (e) => openMenu(e, [
-    ['Import from curl…', openImport],
-    ...exportItems(current),
-    ['Duplicate', () => { const d = structuredClone(current); d.id = crypto.randomUUID(); d.name += ' copy'; const where = locateArr(current); if (where) where.splice(where.indexOf(current) + 1, 0, d); dirty(); selectRequest(d); }],
-  ]);
   $('#export-copy').onclick = (e) => copyText($('#export-text').textContent, e.currentTarget);
   $('#export-close').onclick = () => $('#export-dialog').close();
   $('#env-select').onchange = (e) => { activeEnvId = e.target.value || null; missing = []; renderRequestHeader(); };
