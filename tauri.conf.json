@@ -9,7 +9,7 @@
   "app": {
     "withGlobalTauri": true,
     "windows": [
-      { "title": "Firebee", "width": 1280, "height": 800, "minWidth": 900, "minHeight": 600 }
+      { "title": "Firebee", "width": 1280, "height": 800, "minWidth": 900, "minHeight": 600, "dragDropEnabled": false }
     ]
   },
   "bundle": { "active": false }
