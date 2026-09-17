@@ -6,18 +6,34 @@
 
 ## 功能
 
-- HTTP 请求：全部常用方法，Params / Headers / Body（JSON、Text、Form）
-- 响应展示：JSON 语法高亮、状态码、耗时、大小、响应头；体内查找（⌘F）、可折叠树视图、超大响应先截断、HTML 沙箱预览、图片预览、保存到文件
-- 集合管理：文件夹嵌套、右键重命名/删除/复制、拖拽排序与跨文件夹移动、⌘点击多选批量删除，JSON 文件持久化；集合导出为 Firebee JSON，导入 Firebee 导出 / Postman Collection v2.x / Postman Environment
-- 环境变量：多环境切换，`{{variable}}` 替换（未定义变量发送前提示，二次点击强制发送）；输入 `{{` 自动补全；动态变量 `{{$uuid}}` `{{$timestamp}}` `{{$isoTimestamp}}` `{{$randomInt}}`
-- Cookie 在会话内自动保持（登录后可连着调会话接口），顶栏可一键清除
-- 认证：Bearer Token、Basic Auth、API Key（Header / Query）
-- 历史记录：最近 500 条，点击回填编辑器
-- 导出：curl 命令、Python (requests) 代码，一键复制
-- 导入：粘贴 curl 命令到 URL 框或通过菜单导入（-X/-H/-d/--data-urlencode/-u/-G 等）
-- 响应 JSONPath 过滤：`$.data.orders.*.app.key`、`$.data.orders.2.app.key`、`$..key`
-- 请求可取消、超时可配置（顶栏右侧）；多个请求可同时在飞，响应按请求保留在内存里（切换不丢，最多 50 条）
-- 三栏宽度可拖动，双击分隔条恢复默认
+**请求**
+- 全部常用方法；Params / Headers / Body（JSON、Text、Form）/ Auth（Bearer、Basic、API Key）
+- Header 名与 Content-Type / Accept 值自动补全；JSON body 一键格式化并定位错误
+- 可取消、超时可配；多个请求可同时在飞，响应按请求保留（切换不丢，内存中最多 50 条）
+- Cookie 在会话内自动保持，登录后可连着调会话接口；顶栏一键清除
+
+**响应**
+- 状态码与原因短语、耗时、大小、响应头；JSON 语法高亮
+- JSONPath 过滤：`$.data.orders.*.app.key`、`$.data.orders.2.app.key`、`$..key`
+- 体内查找（⌘F，Enter / Shift+Enter 跳转）；可折叠树视图；超大响应先截断再按需全量
+- HTML 沙箱预览、图片预览、保存到文件
+
+**变量与环境**
+- 多环境切换，`{{variable}}` 在 URL / 参数 / 头 / 体 / 认证中替换；未定义变量发送前提示，再点一次强制发送
+- 输入 `{{` 自动补全环境变量与动态变量
+- 动态变量：`{{$uuid}}`、`{{$timestamp}}`、`{{$isoTimestamp}}`、`{{$randomInt}}`
+
+**集合与历史**
+- 文件夹嵌套；右键 / `⋯` 菜单重命名、复制、删除，删除可撤销
+- 拖拽排序与跨文件夹移动；⌘点击多选，批量删除
+- 侧栏搜索：按集合 / 文件夹 / 请求名和 URL 过滤（⌘F 聚焦）
+- 历史最近 500 条，点击回填
+- 导入：粘贴 curl 到 URL 框或菜单导入；文件导入 Firebee 导出 / Postman Collection v2.x / Postman Environment
+- 导出：curl（JSON 压成一行，方便粘贴终端）、Python (requests)；集合导出为 Firebee JSON
+
+**界面**
+- 三栏布局，分隔条可拖动，双击恢复；快捷键 ⌘↩ 发送、⌘S 存入集合、⌘N 新请求、⌘F 查找
+- 所有数据本地 JSON 文件持久化，原子写入，损坏自动备份
 
 ## 运行
 
