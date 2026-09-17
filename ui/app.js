@@ -212,7 +212,8 @@ function renderTopbar() {
   sel.replaceChildren(
     h('option', { value: '' }, 'No environment'),
     ...data.environments.map((e) => h('option', { value: e.id }, e.name)),
-    h('optgroup', { label: '────────' }, h('option', { value: '__manage' }, 'Manage environments…')),
+    h('option', { disabled: true }, '──────────'),
+    h('option', { value: '__manage' }, 'Manage environments…'),
   );
   sel.value = activeEnvId || '';
 }

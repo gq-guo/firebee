@@ -97,7 +97,9 @@ button.primary { background: var(--color-accent); border-color: var(--color-acce
 @media (hover: hover) { button.primary:hover { background: var(--color-focus); } }
 button.danger { background: var(--color-err); border-color: var(--color-err); color: var(--color-err-ink); }
 button.small { height: 24px; padding: 0 var(--space-xs); font-size: var(--text-xs); }
-button.ghost { background: none; border-color: transparent; }
+button.ghost, select.ghost { background: none; border-color: transparent; }
+#env-select { font-weight: 600; max-width: 260px; }
+@media (hover: hover) { select.ghost:hover { background: var(--color-paper-3); } }
 button[data-state="copied"] { color: var(--color-ok); border-color: var(--color-ok); }
 /* URL：透明文字的 input 叠在着色镜像上，{{var}} 按是否可解析着色 */
 .url-wrap { position: relative; flex: 1; min-width: 0; height: var(--control-h); }
