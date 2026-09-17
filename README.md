@@ -7,9 +7,10 @@
 ## 功能
 
 - HTTP 请求：全部常用方法，Params / Headers / Body（JSON、Text、Form）
-- 响应展示：JSON 语法高亮、状态码、耗时、大小、响应头
-- 集合管理：文件夹嵌套、右键重命名/删除/复制，JSON 文件持久化；集合导出为 Firebee JSON，导入 Firebee 导出 / Postman Collection v2.x / Postman Environment
-- 环境变量：多环境切换，`{{variable}}` 替换（未定义变量发送前提示，二次点击强制发送）
+- 响应展示：JSON 语法高亮、状态码、耗时、大小、响应头；体内查找（⌘F）、可折叠树视图、超大响应先截断、HTML 沙箱预览、图片预览、保存到文件
+- 集合管理：文件夹嵌套、右键重命名/删除/复制、拖拽排序与跨文件夹移动、⌘点击多选批量删除，JSON 文件持久化；集合导出为 Firebee JSON，导入 Firebee 导出 / Postman Collection v2.x / Postman Environment
+- 环境变量：多环境切换，`{{variable}}` 替换（未定义变量发送前提示，二次点击强制发送）；输入 `{{` 自动补全；动态变量 `{{$uuid}}` `{{$timestamp}}` `{{$isoTimestamp}}` `{{$randomInt}}`
+- Cookie 在会话内自动保持（登录后可连着调会话接口），顶栏可一键清除
 - 认证：Bearer Token、Basic Auth、API Key（Header / Query）
 - 历史记录：最近 500 条，点击回填编辑器
 - 导出：curl 命令、Python (requests) 代码，一键复制
@@ -28,7 +29,7 @@ cargo run --release    # 直接运行（前端资源已编译进二进制）
 ## 测试
 
 ```bash
-cargo test          # 34 个单元/集成测试（core 层全覆盖，http 用 wiremock）
+cargo test          # 36 个单元/集成测试（core 层全覆盖，http 用 wiremock）
 cargo clippy --all-targets -- -D warnings
 ```
 

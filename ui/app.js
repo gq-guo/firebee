@@ -8,6 +8,8 @@ const MOD = MAC ? '⌘' : 'Ctrl+';
 
 const METHODS = ['Get', 'Post', 'Put', 'Delete', 'Patch', 'Head', 'Options'];
 const HISTORY_LIMIT = 500;
+const DYNAMIC_VARS = [['$uuid', 'random UUID v4'], ['$timestamp', 'unix seconds'], ['$isoTimestamp', 'ISO 8601 UTC'], ['$randomInt', '0–1000']];
+const TRUNCATE_AT = 300_000; // 超过就先显示前 300KB，点 Show all 再全量
 const REASON = { 200: 'OK', 201: 'Created', 204: 'No Content', 301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified',
   400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed', 408: 'Timeout',
   409: 'Conflict', 422: 'Unprocessable', 429: 'Too Many Requests', 500: 'Server Error', 502: 'Bad Gateway', 503: 'Unavailable', 504: 'Gateway Timeout' };
@@ -34,6 +36,11 @@ let envSel = null;     // env 对话框中选中的环境
 let saveTimer = null;
 let filter = '';       // 侧栏搜索关键字（匹配集合/文件夹/请求名、URL）
 let jsonPath = '';     // 响应 JSONPath 过滤，跨请求保留
+let treeView = false;  // 响应 JSON 以可折叠树显示
+let findText = '';     // 响应体内查找
+const showAll = new Set();     // 已点过 Show all 的 request.id
+const selected = new Set();    // 侧栏多选（⌘点击）的请求
+let dragging = null;           // { arr, r } 正在拖动的请求
 const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘时保持）
 
 function newRequest(name = 'Untitled request') {
@@ -132,16 +139,18 @@ document.addEventListener('keydown', (e) => {
 });
 
 /** 通用 key-value 表格；增删行时调 rerender 重建，输入只写模型不重绘（保焦点）。 */
-function kvTable(rows, keyHint, valHint, rerender) {
+function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = null } = {}) {
   const table = h('table', { class: 'kv' });
+  const listFor = (key) => (valList && /^(content-type|accept)$/i.test(key.trim()) ? valList : null);
   rows.forEach((r, i) => {
+    const val = h('input', { placeholder: valHint, value: r.value, 'aria-label': valHint, spellcheck: 'false', list: listFor(r.key),
+      oninput: (e) => { r.value = e.target.value; dirty(); } });
     const tr = h('tr', { class: r.enabled ? '' : 'off' },
       h('td', { class: 'ctl' }, h('input', { type: 'checkbox', checked: r.enabled, 'aria-label': 'Enabled',
         onchange: (e) => { r.enabled = e.target.checked; tr.classList.toggle('off', !r.enabled); dirty(); renderTabCounts(); } })),
-      h('td', { class: 'key' }, h('input', { placeholder: keyHint, value: r.key, 'aria-label': keyHint, spellcheck: 'false',
-        oninput: (e) => { r.key = e.target.value; dirty(); renderTabCounts(); } })),
-      h('td', { class: 'val' }, h('input', { placeholder: valHint, value: r.value, 'aria-label': valHint, spellcheck: 'false',
-        oninput: (e) => { r.value = e.target.value; dirty(); } })),
+      h('td', { class: 'key' }, h('input', { placeholder: keyHint, value: r.key, 'aria-label': keyHint, spellcheck: 'false', list: keyList,
+        oninput: (e) => { r.key = e.target.value; const l = listFor(r.key); l ? val.setAttribute('list', l) : val.removeAttribute('list'); dirty(); renderTabCounts(); } })),
+      h('td', { class: 'val' }, val),
       h('td', { class: 'ctl' }, btn('×', () => { rows.splice(i, 1); dirty(); rerender(); }, 'small ghost')),
     );
     tr.lastChild.firstChild.setAttribute('aria-label', 'Remove row');
@@ -257,25 +266,72 @@ function containerNode(c, parentArr, isFolder = false) {
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
   const view = filterView(c);
+  // 拖到容器标题上 → 追加到该容器末尾
+  const dropOnContainer = (e) => { e.preventDefault(); e.currentTarget.classList.remove('dropping'); moveDragged(c.requests, c.requests.length); collapsed.delete(c.id); };
   return h('details', { open: q() ? true : !collapsed.has(c.id), ontoggle: (e) => { if (!q()) e.target.open ? collapsed.delete(c.id) : collapsed.add(c.id); } },
-    h('summary', { oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); } },
+    h('summary', { oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
+      ondragover: (e) => { if (dragging) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
+      ondragleave: (e) => e.currentTarget.classList.remove('dropping'), ondrop: dropOnContainer },
       nameNode(c), btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
     ...view.folders.map((f) => containerNode(f, c.folders, true)),
     ...view.requests.map((r) => {
+      const many = selected.has(r) && selected.size > 1;
       const rmenu = (e) => openMenu(e, [
         ...exportItems(r),
         ['Duplicate', () => { const d = structuredClone(r); d.id = crypto.randomUUID(); d.name += ' copy'; c.requests.splice(c.requests.indexOf(r) + 1, 0, d); dirty(); selectRequest(d); }],
         ['Rename', startRename(r)],
-        ['Delete', remove(c.requests, r, 'request'), { danger: true }],
+        many ? [`Delete ${selected.size} selected`, deleteSelected, { danger: true, kbd: '⌫' }] : ['Delete', remove(c.requests, r, 'request'), { danger: true }],
       ]);
-      return h('div', { class: 'req' + (r === current ? ' active' : ''), role: 'button', tabindex: 0, 'aria-current': r === current || undefined,
-        onclick: () => selectRequest(r), onkeydown: activate, oncontextmenu: rmenu },
+      return h('div', { class: 'req' + (r === current ? ' active' : '') + (selected.has(r) ? ' sel' : ''), role: 'button', tabindex: 0,
+        'aria-current': r === current || undefined, 'aria-selected': selected.has(r) || undefined, draggable: 'true',
+        onclick: (e) => { if (e.metaKey || e.ctrlKey) { selected.has(r) ? selected.delete(r) : selected.add(r); renderSidebar(); } else { selected.clear(); selectRequest(r); } },
+        onkeydown: activate, oncontextmenu: rmenu,
+        ondragstart: (e) => { dragging = { arr: c.requests, r }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', r.name); },
+        ondragend: () => { dragging = null; document.querySelectorAll('.dropping').forEach((x) => x.classList.remove('dropping')); },
+        ondragover: (e) => { if (dragging && dragging.r !== r) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
+        ondragleave: (e) => e.currentTarget.classList.remove('dropping'),
+        ondrop: (e) => { e.preventDefault(); e.stopPropagation(); moveDragged(c.requests, c.requests.indexOf(r)); } },
         methodTag(r.method), nameNode(r), pendings.has(r.id) && h('span', { class: 'spinner', title: 'Sending…' }),
         btn('⋯', rmenu, 'small more').withAttr('aria-label', 'Request actions'));
     }),
   );
 }
 Element.prototype.withAttr = function (k, v) { if (v !== undefined) this.setAttribute(k, v); return this; };
+
+/** 把正在拖动的请求放到 targetArr 的 index 之前（同数组内移动会先移除再插入） */
+function moveDragged(targetArr, index) {
+  if (!dragging) return;
+  const { arr, r } = dragging;
+  dragging = null;
+  const from = arr.indexOf(r);
+  if (from < 0) return;
+  arr.splice(from, 1);
+  if (arr === targetArr && from < index) index -= 1;
+  targetArr.splice(index, 0, r);
+  dirty(); renderSidebar();
+}
+
+/** 当前请求所在的 requests 数组；不在集合里返回 null */
+function locateArr(r, nodes = data.collections) {
+  for (const n of nodes) {
+    if (n.requests.includes(r)) return n.requests;
+    const deep = locateArr(r, n.folders);
+    if (deep) return deep;
+  }
+  return null;
+}
+
+/** 批量删除多选的请求，一次 Undo 全部恢复 */
+function deleteSelected() {
+  const removed = [...selected].map((r) => { const arr = locateArr(r); return arr && { arr, idx: arr.indexOf(r), r }; }).filter(Boolean)
+    .sort((a, b) => b.idx - a.idx);
+  removed.forEach(({ arr, idx }) => arr.splice(idx, 1));
+  selected.clear(); dirty(); renderSidebar(); renderRequestHeader();
+  toast(`Deleted ${removed.length} requests.`, { action: ['Undo', () => {
+    removed.sort((a, b) => a.idx - b.idx).forEach(({ arr, idx, r }) => arr.splice(idx, 0, r));
+    dirty(); renderSidebar(); renderRequestHeader();
+  }] });
+}
 
 /** 选中请求：来自集合时直接引用（编辑即写回集合并保存），来自历史时为副本。 */
 function selectRequest(r) {
@@ -394,7 +450,7 @@ function renderRequest() {
   const body = $('#req-body');
   body.replaceChildren();
   if (reqTab === 'params') body.append(kvTable(current.params, 'Key', 'Value', renderRequest));
-  else if (reqTab === 'headers') body.append(kvTable(current.headers, 'Header', 'Value', renderRequest));
+  else if (reqTab === 'headers') body.append(kvTable(current.headers, 'Header', 'Value', renderRequest, { keyList: 'hdr-names', valList: 'ct-values' }));
   else if (reqTab === 'body') body.append(bodyEditor());
   else body.append(authEditor());
 }
@@ -480,6 +536,8 @@ function highlightJson(s) {
 }
 const fmtSize = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n} B`;
 
+const contentType = (r) => (r.headers.find(([k]) => k.toLowerCase() === 'content-type')?.[1] || '').toLowerCase();
+
 function renderResponse() {
   const meta = $('#resp-meta'), body = $('#resp-body'), tabs = $('#resp-tabs');
   const response = resp(), pending = isPending();
@@ -492,41 +550,139 @@ function renderResponse() {
   }
   if (response.cancelled) { meta.append(h('span', { class: 'muted' }, 'Cancelled — nothing was received.')); return; }
   if (response.error) { meta.append(h('span', { class: 'error' }, h('span', {}, '⚠'), h('span', {}, response.error))); return; }
-  const r = response.ok;
+  const r = response.ok, ct = contentType(r);
+  const isImage = ct.startsWith('image/'), isHtml = ct.includes('text/html');
   const copy = btn('Copy body', () => copyText(r.body, copy));
   meta.append(
     h('span', { class: `status s${Math.floor(r.status / 100)}` }, `${r.status} ${REASON[r.status] || ''}`.trim()),
     h('span', { class: 'meta' }, `${r.duration_ms} ms`), h('span', { class: 'meta' }, fmtSize(r.size_bytes)),
-    h('span', { class: 'spacer' }), copy,
+    h('span', { class: 'spacer' }), r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct)),
   );
+  const previewTab = document.querySelector('[data-resp=preview]');
+  previewTab.classList.toggle('hidden', !isHtml);
+  if (respTab === 'preview' && !isHtml) respTab = 'body';
   setTab('resp', respTab);
   if (respTab === 'headers') {
     body.append(h('table', { class: 'hdrs' }, ...r.headers.map(([k, v]) => h('tr', {}, h('td', {}, k), h('td', {}, v)))));
     return;
   }
+  if (respTab === 'preview') {
+    // 沙箱 iframe：无脚本、无同源、无表单提交
+    body.append(h('iframe', { sandbox: '', srcdoc: r.body, title: 'HTML preview' }));
+    return;
+  }
+  if (r.body_base64) {
+    if (isImage) body.append(h('img', { src: `data:${ct};base64,${r.body_base64}`, alt: 'Response image' }));
+    else body.append(emptyState('Binary body', `${fmtSize(r.size_bytes)} that isn't text. Use Save… to write it to a file.`));
+    return;
+  }
   if (!r.body) { body.append(h('span', { class: 'muted' }, 'Empty body.')); return; }
   let parsed, isJson = false;
   try { parsed = JSON.parse(r.body); isJson = true; } catch { /* not JSON */ }
-  const pre = h('pre', {});
-  if (!isJson) { pre.textContent = r.body; body.append(pre); return; }
-  // JSONPath 过滤行：只重绘 pre，输入框保持焦点
+
+  // 工具行：JSONPath（仅 JSON）· Tree 切换（仅 JSON）· 查找 · 计数
   const count = h('span', { class: 'meta' });
-  const apply = () => {
-    count.className = 'meta';
-    if (!jsonPath.trim()) { pre.innerHTML = highlightJson(JSON.stringify(parsed, null, 2)); count.textContent = ''; return; }
-    try {
-      const out = jsonPath_(parsed, jsonPath);
-      pre.innerHTML = highlightJson(JSON.stringify(out.length === 1 ? out[0] : out, null, 2));
-      count.textContent = out.length === 1 ? '1 match' : `${out.length} matches`;
-    } catch (e) { count.className = 'meta error'; count.textContent = e.message; pre.innerHTML = highlightJson(JSON.stringify(parsed, null, 2)); }
+  const findCount = h('span', { class: 'meta' });
+  const out = h('div', { class: 'out' });
+  let marks = [], cur = -1;
+  const paint = () => {
+    out.replaceChildren();
+    let value = parsed, text = r.body, err = null;
+    if (isJson && jsonPath.trim()) {
+      try { const res = jsonPath_(parsed, jsonPath); value = res.length === 1 ? res[0] : res; count.className = 'meta'; count.textContent = res.length === 1 ? '1 match' : `${res.length} matches`; }
+      catch (e) { err = e.message; count.className = 'meta error'; count.textContent = err; }
+    } else count.textContent = '';
+    if (isJson) text = JSON.stringify(value, null, 2);
+    if (isJson && treeView && !err) { out.append(jsonTree(value, null, 0, text.length > 50_000)); }
+    else {
+      const full = showAll.has(current.id) || text.length <= TRUNCATE_AT;
+      const shown = full ? text : text.slice(0, TRUNCATE_AT);
+      const pre = h('pre', {});
+      if (isJson && shown.length <= 1_000_000) pre.innerHTML = highlightJson(shown); else pre.textContent = shown;
+      out.append(pre);
+      if (!full) out.append(h('div', { class: 'truncated' }, h('span', { class: 'muted' }, `Showing the first ${fmtSize(TRUNCATE_AT)} of ${fmtSize(text.length)}. `),
+        btn(`Show all`, () => { showAll.add(current.id); paint(); })));
+    }
+    applyFind();
   };
-  let t;
+  const applyFind = () => {
+    marks.forEach((m) => m.replaceWith(...m.childNodes));
+    out.normalize();
+    marks = []; cur = -1;
+    const q = findText.trim().toLowerCase();
+    if (!q) { findCount.textContent = ''; return; }
+    marks = markMatches(out, q);
+    findCount.textContent = marks.length ? `${marks.length} found` : 'No matches';
+    if (marks.length) gotoMark(1);
+  };
+  const gotoMark = (dir) => {
+    if (!marks.length) return;
+    marks[cur]?.classList.remove('cur');
+    cur = (cur + dir + marks.length) % marks.length;
+    marks[cur].classList.add('cur');
+    marks[cur].scrollIntoView({ block: 'center' });
+    findCount.textContent = `${cur + 1} / ${marks.length}`;
+  };
+  let t1, t2;
+  const treeBtn = btn('Tree', () => { treeView = !treeView; treeBtn.classList.toggle('on', treeView); paint(); }, 'small' + (treeView ? ' on' : ''));
+  treeBtn.title = 'Toggle collapsible tree view';
   body.append(h('div', { class: 'jp' },
-    h('input', { value: jsonPath, placeholder: '$.data.orders.*.app.key', 'aria-label': 'JSONPath filter', spellcheck: 'false',
-      oninput: (e) => { jsonPath = e.target.value; clearTimeout(t); t = setTimeout(apply, 150); },
-      onkeydown: (e) => { if (e.key === 'Escape' && jsonPath) { e.stopPropagation(); jsonPath = e.target.value = ''; apply(); } } }),
-    count), pre);
-  apply();
+    isJson && h('input', { value: jsonPath, placeholder: '$.data.orders.*.app.key', 'aria-label': 'JSONPath filter', spellcheck: 'false',
+      oninput: (e) => { jsonPath = e.target.value; clearTimeout(t1); t1 = setTimeout(paint, 150); },
+      onkeydown: (e) => { if (e.key === 'Escape' && jsonPath) { e.stopPropagation(); jsonPath = e.target.value = ''; paint(); } } }),
+    isJson && count, isJson && treeBtn,
+    h('input', { id: 'find', class: 'find', value: findText, placeholder: `Find in body (${MOD}F)`, 'aria-label': 'Find in response body', spellcheck: 'false',
+      oninput: (e) => { findText = e.target.value; clearTimeout(t2); t2 = setTimeout(applyFind, 150); },
+      onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); gotoMark(e.shiftKey ? -1 : 1); } else if (e.key === 'Escape' && findText) { e.stopPropagation(); findText = e.target.value = ''; applyFind(); } } }),
+    findCount), out);
+  paint();
+}
+
+/** 在 root 的文本节点里给 q（已小写）的每次出现包上 <mark>，返回 mark 列表 */
+function markMatches(root, q) {
+  const marks = [], walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  for (let n; (n = walker.nextNode());) if (n.nodeValue.toLowerCase().includes(q)) nodes.push(n);
+  for (const n of nodes) {
+    const text = n.nodeValue, lower = text.toLowerCase(), frag = document.createDocumentFragment();
+    let i = 0, j;
+    while ((j = lower.indexOf(q, i)) >= 0) {
+      if (j > i) frag.append(text.slice(i, j));
+      const m = h('mark', {}, text.slice(j, j + q.length));
+      marks.push(m); frag.append(m); i = j + q.length;
+      if (marks.length > 2000) break; // ponytail: 上限，避免超大响应卡死
+    }
+    if (i < text.length) frag.append(text.slice(i));
+    n.replaceWith(frag);
+  }
+  return marks;
+}
+
+/** JSON → 可折叠树（原生 <details>）。big 时深度 ≥ 2 默认折叠。 */
+function jsonTree(v, key, depth, big) {
+  const label = key === null ? null : h('span', { class: Array.isArray(key) ? 'num' : 'key' }, Array.isArray(key) ? `${key[0]}` : `"${key}"`);
+  const isObj = v !== null && typeof v === 'object';
+  if (!isObj) {
+    const cls = v === null ? 'null' : typeof v === 'string' ? 'str' : typeof v === 'boolean' ? 'bool' : 'num';
+    return h('div', { class: 'tl' }, label, label && ': ', h('span', { class: cls }, JSON.stringify(v)), ',');
+  }
+  const entries = Array.isArray(v) ? v.map((x, i) => [[i], x]) : Object.entries(v);
+  const open = Array.isArray(v) ? '[' : '{', close = Array.isArray(v) ? ']' : '}';
+  const d = h('details', { class: depth === 0 ? 'tree' : null, open: !(big && depth >= 2) },
+    h('summary', {}, label, label && ': ', open, h('span', { class: 'n' }, `${entries.length} ${Array.isArray(v) ? 'items' : 'keys'}`)),
+    ...entries.map(([k, x]) => jsonTree(x, k, depth + 1, big)),
+    h('div', { class: 'tl' }, close, depth ? ',' : ''));
+  return d;
+}
+
+/** 响应体保存到文件；按 Content-Type 猜扩展名 */
+async function saveBody(r, ct) {
+  const ext = ct.includes('json') ? 'json' : ct.includes('html') ? 'html' : ct.includes('xml') ? 'xml' : ct.includes('csv') ? 'csv'
+    : ct.startsWith('image/') ? ct.split('/')[1].split(';')[0].replace('jpeg', 'jpg').replace('svg+xml', 'svg') : r.body_base64 ? 'bin' : 'txt';
+  const path = await dialog.save({ defaultPath: `${(current.name || 'response').replace(/[\\/:*?"<>|]+/g, '_')}.${ext}` });
+  if (!path) return;
+  try { await invoke('save_file', { path, text: r.body_base64 ? null : r.body, base64_data: r.body_base64 || null }); toast(`Saved to ${path}`); }
+  catch (e) { toast(String(e), { error: true }); }
 }
 
 /** JSONPath 子集：$ · .key · .N · [N] · [-N] · ['key'] · * · [*] · ..key（递归）。返回匹配数组。 */
@@ -585,8 +741,57 @@ function renderEnvDialog() {
   );
 }
 
+// ---------- {{变量}} 自动补全 ----------
+const ac = { el: null, field: null, items: [], cur: 0, start: 0 };
+const acEligible = (el) => (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && (el.type === 'text' || !el.getAttribute('type'))))
+  && el.closest('#request, #env-editor') && !el.matches('#req-name, .find, .jp input');
+function acUpdate(el) {
+  const before = el.value.slice(0, el.selectionStart);
+  const m = /\{\{([\w$-]*)$/.exec(before);
+  if (!m) return acHide();
+  const prefix = m[1].toLowerCase();
+  const env = activeEnv();
+  const names = [...(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.value]) : []), ...DYNAMIC_VARS]
+    .filter(([k]) => k.toLowerCase().startsWith(prefix));
+  if (!names.length) return acHide();
+  Object.assign(ac, { field: el, items: names, cur: 0, start: el.selectionStart - m[1].length });
+  const rect = el.getBoundingClientRect();
+  ac.el.style.left = `${Math.min(rect.left, window.innerWidth - 260)}px`;
+  ac.el.style.top = `${rect.bottom + 4}px`;
+  ac.el.replaceChildren(...names.map(([k, v], i) => h('div', { class: 'item' + (i === 0 ? ' cur' : ''), role: 'option',
+    onmousedown: (e) => { e.preventDefault(); acAccept(i); } }, `{{${k}}}`, h('span', { class: 'muted' }, v))));
+  ac.el.classList.remove('hidden');
+}
+function acAccept(i = ac.cur) {
+  const el = ac.field, name = ac.items[i][0];
+  const after = el.value.slice(el.selectionStart);
+  const tail = after.startsWith('}}') ? after.slice(2) : after;
+  el.value = `${el.value.slice(0, ac.start)}${name}}}${tail}`;
+  const pos = ac.start + name.length + 2;
+  el.setSelectionRange(pos, pos);
+  acHide();
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+function acHide() { ac.el.classList.add('hidden'); ac.field = null; }
+function acBind() {
+  ac.el = $('#ac');
+  document.addEventListener('input', (e) => { if (acEligible(e.target)) acUpdate(e.target); }, true);
+  document.addEventListener('keydown', (e) => {
+    if (!ac.field) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      ac.cur = (ac.cur + (e.key === 'ArrowDown' ? 1 : -1) + ac.items.length) % ac.items.length;
+      [...ac.el.children].forEach((c, i) => c.classList.toggle('cur', i === ac.cur));
+    } else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); acAccept(); }
+    else if (e.key === 'Escape') { e.stopPropagation(); acHide(); }
+  }, true);
+  document.addEventListener('focusout', (e) => { if (e.target === ac.field) setTimeout(() => { if (document.activeElement !== ac.field) acHide(); }, 0); });
+}
+
 // ---------- 事件绑定 ----------
 function bind() {
+  acBind();
+  $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies cleared for this session.'); };
   $('#method').replaceChildren(...METHODS.map((m) => h('option', { value: m }, m.toUpperCase())));
   $('#method').onchange = (e) => { current.method = e.target.value; dirty(); renderSidebar(); };
   $('#url').oninput = (e) => { current.url = e.target.value; dirty(); };
@@ -622,7 +827,11 @@ function bind() {
     if (e.key === 'Enter') { e.preventDefault(); send(); }
     else if (e.key === 's') { e.preventDefault(); if (!locate(current)) saveMenu({ preventDefault() {}, stopPropagation() {}, target: $('#save') }); }
     else if (e.key === 'n') { e.preventDefault(); selectRequest(newRequest()); $('#url').focus(); }
-    else if (e.key === 'f') { e.preventDefault(); $('#search').focus(); $('#search').select(); }
+    else if (e.key === 'f') { e.preventDefault(); const f = $('#find') || $('#search'); f.focus(); f.select(); }
+  });
+  document.addEventListener('keydown', (e) => {
+    if ((e.key === 'Backspace' || e.key === 'Delete') && selected.size > 1 && document.activeElement?.closest('#sidebar')) { e.preventDefault(); deleteSelected(); }
+    else if (e.key === 'Escape' && selected.size) { selected.clear(); renderSidebar(); }
   });
   splitter($('#split-side'), '--side-w', (ev) => ev.clientX, 180, () => window.innerWidth * 0.5, 'firebee.sideW');
   splitter($('#split-main'), '--req-w', (ev) => ev.clientX - $('#request').getBoundingClientRect().left, 360,

@@ -7,7 +7,22 @@ pub struct SubstituteResult {
     pub missing: Vec<String>,
 }
 
-/// 把 {{name}} 替换为 vars[name]；未定义的变量原样保留并记入 missing（去重、按出现顺序）。
+/// 动态变量：`$` 开头，每次出现都重新生成（与 Postman 一致）
+pub const DYNAMIC_VARS: &[&str] = &["$uuid", "$timestamp", "$isoTimestamp", "$randomInt"];
+
+fn dynamic(name: &str) -> Option<String> {
+    // 用 uuid v4 的随机字节当随机源，省一个 rand 依赖
+    let rnd = || u32::from_le_bytes(uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap());
+    Some(match name {
+        "$uuid" => uuid::Uuid::new_v4().to_string(),
+        "$timestamp" => chrono::Utc::now().timestamp().to_string(),
+        "$isoTimestamp" => chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "$randomInt" => (rnd() % 1001).to_string(),
+        _ => return None,
+    })
+}
+
+/// 把 {{name}} 替换为 vars[name]（或动态变量）；未定义的变量原样保留并记入 missing（去重、按出现顺序）。
 pub fn substitute(input: &str, vars: &HashMap<String, String>) -> SubstituteResult {
     let mut output = String::with_capacity(input.len());
     let mut missing: Vec<String> = Vec::new();
@@ -18,8 +33,8 @@ pub fn substitute(input: &str, vars: &HashMap<String, String>) -> SubstituteResu
         match after.find("}}") {
             Some(end) => {
                 let name = after[..end].trim();
-                match vars.get(name) {
-                    Some(v) => output.push_str(v),
+                match vars.get(name).cloned().or_else(|| dynamic(name)) {
+                    Some(v) => output.push_str(&v),
                     None => {
                         if !missing.iter().any(|m| m == name) {
                             missing.push(name.to_string());
@@ -101,6 +116,21 @@ mod tests {
         let r = substitute("{{base_url}}/users/{{uid}}", &vars());
         assert_eq!(r.output, "https://api.dev/users/{{uid}}");
         assert_eq!(r.missing, vec!["uid".to_string()]);
+    }
+
+    #[test]
+    fn dynamic_vars_generate_fresh_values() {
+        let r = substitute("{{$uuid}}/{{$uuid}}/{{$timestamp}}/{{$randomInt}}/{{$nope}}", &HashMap::new());
+        assert_eq!(r.missing, vec!["$nope".to_string()]);
+        let parts: Vec<&str> = r.output.split('/').collect();
+        assert_ne!(parts[0], parts[1]); // 每次出现都不同
+        assert_eq!(parts[0].len(), 36);
+        assert!(parts[2].parse::<i64>().unwrap() > 1_700_000_000);
+        assert!(parts[3].parse::<u32>().unwrap() <= 1000);
+        assert_eq!(parts[4], "{{$nope}}");
+        // 用户定义的同名变量优先
+        let vars = HashMap::from([("$uuid".to_string(), "fixed".to_string())]);
+        assert_eq!(substitute("{{$uuid}}", &vars).output, "fixed");
     }
 
     #[test]

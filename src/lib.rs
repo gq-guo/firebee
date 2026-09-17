@@ -8,6 +8,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Storage::new(Storage::default_dir()))
         .manage(commands::Pending::default())
+        .manage(commands::Cookies::default())
         .invoke_handler(tauri::generate_handler![
             commands::load_data,
             commands::save_collections,
@@ -20,6 +21,8 @@ pub fn run() {
             commands::import_curl,
             commands::export_collection,
             commands::import_file,
+            commands::clear_cookies,
+            commands::save_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,9 +1,10 @@
 //! Tauri commands：前端持有全部 UI 状态，后端只做存储 / HTTP / 变量替换 / 导出。
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use base64::Engine;
 use serde::Serialize;
 use tauri::State;
 use tokio::sync::watch;
@@ -18,6 +19,14 @@ use crate::core::vars::substitute_request;
 #[derive(Default)]
 pub struct Pending(Mutex<HashMap<u64, watch::Sender<bool>>>);
 
+/// 应用生命周期内共享的 Cookie 罐（登录后会话接口能连着调）；Clear 即换新罐
+pub struct Cookies(pub Mutex<Arc<reqwest::cookie::Jar>>);
+impl Default for Cookies {
+    fn default() -> Self {
+        Self(Mutex::new(Arc::new(reqwest::cookie::Jar::default())))
+    }
+}
+
 #[derive(Serialize)]
 pub struct AppData {
     collections: Vec<Collection>,
@@ -25,12 +34,13 @@ pub struct AppData {
     history: Vec<HistoryEntry>,
 }
 
-/// ResponseMeta 的前端视图：body 以字符串下发（Vec<u8> 序列化成 JSON 数组太大）
+/// ResponseMeta 的前端视图：文本 body 以字符串下发；图片或非 UTF-8 走 body_base64
 #[derive(Serialize)]
 pub struct ResponseDto {
     status: u16,
     headers: Vec<(String, String)>,
     body: String,
+    body_base64: Option<String>,
     duration_ms: u128,
     size_bytes: usize,
 }
@@ -71,6 +81,7 @@ pub fn missing_vars(request: Request, env: Option<Environment>) -> Vec<String> {
 #[tauri::command(rename_all = "snake_case")]
 pub async fn send_request(
     pending: State<'_, Pending>,
+    cookies: State<'_, Cookies>,
     job_id: u64,
     request: Request,
     env: Option<Environment>,
@@ -79,17 +90,38 @@ pub async fn send_request(
     let (req, _) = substitute_request(&request, &vars(&env));
     let (tx, rx) = watch::channel(false);
     pending.0.lock().unwrap().insert(job_id, tx);
-    let result = execute(&req, Duration::from_secs(timeout_secs.max(1)), rx).await;
+    let jar = cookies.0.lock().unwrap().clone();
+    let result = execute(&req, Duration::from_secs(timeout_secs.max(1)), rx, Some(jar)).await;
     pending.0.lock().unwrap().remove(&job_id);
     result
-        .map(|r| ResponseDto {
-            status: r.status,
-            headers: r.headers,
-            body: String::from_utf8_lossy(&r.body).into_owned(),
-            duration_ms: r.duration_ms,
-            size_bytes: r.size_bytes,
+        .map(|r| {
+            let is_image = r
+                .headers
+                .iter()
+                .any(|(k, v)| k.eq_ignore_ascii_case("content-type") && v.starts_with("image/"));
+            let (body, body_base64) = match (is_image, String::from_utf8(r.body)) {
+                (false, Ok(text)) => (text, None),
+                (_, Ok(text)) => (String::new(), Some(base64::engine::general_purpose::STANDARD.encode(text.as_bytes()))),
+                (_, Err(e)) => (String::new(), Some(base64::engine::general_purpose::STANDARD.encode(e.as_bytes()))),
+            };
+            ResponseDto { status: r.status, headers: r.headers, body, body_base64, duration_ms: r.duration_ms, size_bytes: r.size_bytes }
         })
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_cookies(cookies: State<Cookies>) {
+    *cookies.0.lock().unwrap() = Arc::new(reqwest::cookie::Jar::default());
+}
+
+/// 把响应体保存到文件：文本直接写，二进制走 base64 解码
+#[tauri::command(rename_all = "snake_case")]
+pub fn save_file(path: String, text: Option<String>, base64_data: Option<String>) -> Result<(), String> {
+    let bytes = match base64_data {
+        Some(b) => base64::engine::general_purpose::STANDARD.decode(b).map_err(|e| e.to_string())?,
+        None => text.unwrap_or_default().into_bytes(),
+    };
+    std::fs::write(&path, bytes).map_err(|e| format!("Couldn't write {path}: {e}"))
 }
 
 #[tauri::command(rename_all = "snake_case")]

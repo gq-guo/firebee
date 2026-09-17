@@ -10,6 +10,7 @@
   <label>Environment <select id="env-select" aria-label="Active environment"></select></label>
   <button id="env-manage" class="small">Manage…</button>
   <span class="spacer"></span>
+  <button id="clear-cookies" class="small ghost" title="Forget cookies received from servers in this session">Clear cookies</button>
   <label>Timeout <input id="timeout" type="number" min="1" max="300" value="30" aria-label="Request timeout in seconds"> s</label>
 </header>
 
@@ -53,6 +54,7 @@
     <nav class="tabs" id="resp-tabs" role="tablist">
       <button data-resp="body" class="active">Body</button>
       <button data-resp="headers">Headers</button>
+      <button data-resp="preview" class="hidden">Preview</button>
     </nav>
     <div id="resp-body"></div>
   </section>
@@ -78,6 +80,17 @@
   <div class="row"><span class="muted">Tip: pasting a curl command into the URL field imports it directly.</span><span class="spacer"></span><button id="import-run" class="primary">Import</button></div>
 </dialog>
 
+<datalist id="hdr-names">
+  <option>Accept</option><option>Accept-Encoding</option><option>Accept-Language</option><option>Authorization</option>
+  <option>Cache-Control</option><option>Content-Type</option><option>Cookie</option><option>If-Match</option><option>If-None-Match</option>
+  <option>Idempotency-Key</option><option>Origin</option><option>Referer</option><option>User-Agent</option>
+  <option>X-API-Key</option><option>X-Correlation-Id</option><option>X-Forwarded-For</option><option>X-Request-Id</option><option>am-api-key</option>
+</datalist>
+<datalist id="ct-values">
+  <option>application/json</option><option>application/x-www-form-urlencoded</option><option>multipart/form-data</option>
+  <option>text/plain</option><option>text/html</option><option>application/xml</option><option>application/octet-stream</option><option>*/*</option>
+</datalist>
+<div id="ac" class="hidden" role="listbox"></div>
 <div id="menu" class="hidden" role="menu"></div>
 <div id="toast" class="hidden" role="status"></div>
 <script src="app.js"></script>
