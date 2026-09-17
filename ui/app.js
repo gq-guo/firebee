@@ -208,9 +208,11 @@ function renderMissing() {
 // ---------- 顶栏 ----------
 function renderTopbar() {
   const sel = $('#env-select');
+  // 管理入口放在列表最下方，选中即打开对话框并恢复原选择
   sel.replaceChildren(
     h('option', { value: '' }, 'No environment'),
     ...data.environments.map((e) => h('option', { value: e.id }, e.name)),
+    h('optgroup', { label: '────────' }, h('option', { value: '__manage' }, 'Manage environments…')),
   );
   sel.value = activeEnvId || '';
 }
@@ -633,8 +635,8 @@ function renderResponse() {
     else {
       const last = [...data.history].reverse().find((x) => x.request.id === current.id);
       const when = last && new Date(last.timestamp);
-      body.append(emptyState('Response will show here', `Fill in a URL and press Send, or ${MOD}↩ from anywhere in the editor.`),
-        last && h('div', { class: 'empty' }, h('span', { class: 'muted' }, `Last sent ${when.toLocaleDateString()} ${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')} · `,
+      body.append(emptyState('Response will show here', `Fill in a URL and press Send, or ${MOD}↩ from anywhere in the editor.`));
+      if (last) body.append(h('div', { class: 'empty' }, h('span', { class: 'muted' }, `Last sent ${when.toLocaleDateString()} ${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')} · `,
           h('span', { class: last.status ? `s${Math.floor(last.status / 100)}` : 's0' }, last.status ? `${last.status} ${REASON[last.status] || ''}`.trim() : 'failed'),
           last.duration_ms != null ? ` · ${last.duration_ms} ms` : '')));
     }
@@ -904,7 +906,10 @@ function bind() {
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pendings.get(current.id) });
   $('#export-copy').onclick = (e) => copyText($('#export-text').textContent, e.currentTarget);
   $('#export-close').onclick = () => $('#export-dialog').close();
-  $('#env-select').onchange = (e) => { activeEnvId = e.target.value || null; missing = []; renderRequestHeader(); };
+  $('#env-select').onchange = (e) => {
+    if (e.target.value === '__manage') { e.target.value = activeEnvId || ''; envSel = activeEnv(); renderEnvDialog(); $('#env-dialog').showModal(); return; }
+    activeEnvId = e.target.value || null; missing = []; renderRequestHeader();
+  };
   // 原生菜单（macOS 菜单栏里可见快捷键）触发的动作
   window.__TAURI__.event?.listen('menu', ({ payload }) => {
     if (payload === 'send') send();
@@ -912,7 +917,6 @@ function bind() {
     else if (payload === 'find') { const f = $('#find') || $('#search'); f.focus(); f.select(); }
     else if (payload === 'filter') { $('#search').focus(); $('#search').select(); }
   });
-  $('#env-manage').onclick = () => { renderEnvDialog(); $('#env-dialog').showModal(); };
   $('#env-close').onclick = () => $('#env-dialog').close();
   document.querySelectorAll('[data-side]').forEach((b) => b.onclick = () => { sideTab = b.dataset.side; renderSidebar(); });
   $('#search').oninput = (e) => { filter = e.target.value; renderSidebar(); };
