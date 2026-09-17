@@ -1,6 +1,7 @@
 // Firebee 前端：全部 UI 状态在此，后端（Rust）只负责存储 / HTTP / 变量替换 / 导出。
 // 数据结构与 core/models.rs 的 serde 形态一致（Auth 外部标签枚举、方法名 "Get" 等）。
 const invoke = window.__TAURI__.core.invoke;
+const dialog = window.__TAURI__.dialog;
 const $ = (s) => document.querySelector(s);
 const MAC = navigator.platform.startsWith('Mac');
 const MOD = MAC ? '⌘' : 'Ctrl+';
@@ -15,8 +16,16 @@ const REASON = { 200: 'OK', 201: 'Created', 204: 'No Content', 301: 'Moved Perma
 let data = { collections: [], environments: [], history: [] };
 let activeEnvId = null;
 let current = newRequest();
-let response = null;   // { ok: dto } | { error: string } | { cancelled: true } | null
-let pending = null;    // 进行中的 job_id
+// 响应按请求 id 保留在内存里（切换请求不丢），最多 50 条；进行中的请求按 id 记 job_id，互不阻塞
+const responses = new Map(); // request.id → { ok: dto } | { error: string } | { cancelled: true }
+const pendings = new Map();  // request.id → job_id
+const resp = () => responses.get(current.id);
+const isPending = () => pendings.has(current.id);
+function setResponse(rid, r) {
+  responses.delete(rid);
+  if (responses.size >= 50) responses.delete(responses.keys().next().value); // ponytail: 简单 FIFO，够用
+  responses.set(rid, r);
+}
 let jobSeq = 0;
 let missing = [];
 let reqTab = 'params', respTab = 'body', sideTab = 'collections';
@@ -98,6 +107,7 @@ function hideToast() { clearTimeout(toastTimer); $('#toast').classList.add('hidd
 function openMenu(e, items) {
   e.preventDefault(); e.stopPropagation();
   const menu = $('#menu');
+  items = items.filter(Boolean);
   menu.replaceChildren(...items.map(([label, fn, opt = {}]) =>
     h('button', { class: 'menu-item' + (opt.danger ? ' danger-item' : ''), role: 'menuitem',
       onclick: (ev) => { ev.stopPropagation(); menu.classList.add('hidden'); fn(ev); } },
@@ -190,7 +200,7 @@ function renderSidebar() {
   }
   const shown = data.collections.filter((c) => filterView(c).show);
   if (q() && !shown.length) { body.append(emptyState(`Nothing matches “${filter.trim()}”`, 'Names of collections, folders and requests are searched, and request URLs.')); return; }
-  body.append(btn('+ New collection', addCol, 'small'));
+  body.append(h('div', { class: 'row' }, btn('+ New collection', addCol, 'small'), btn('Import…', importFile, 'small ghost')));
   shown.forEach((c) => body.append(containerNode(c, data.collections)));
   body.querySelector('input.rename')?.focus();
 }
@@ -242,6 +252,7 @@ function containerNode(c, parentArr, isFolder = false) {
     ['New request', () => { const r = newRequest(); c.requests.push(r); collapsed.delete(c.id); dirty(); selectRequest(r); }],
     ['New folder', () => { c.folders.push(newContainer('New folder')); collapsed.delete(c.id); dirty(); renderSidebar(); }],
     ['Import from curl…', () => openImport(c)],
+    !isFolder && ['Export collection…', () => exportCollection(c)],
     ['Rename', startRename(c)],
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
@@ -259,7 +270,8 @@ function containerNode(c, parentArr, isFolder = false) {
       ]);
       return h('div', { class: 'req' + (r === current ? ' active' : ''), role: 'button', tabindex: 0, 'aria-current': r === current || undefined,
         onclick: () => selectRequest(r), onkeydown: activate, oncontextmenu: rmenu },
-        methodTag(r.method), nameNode(r), btn('⋯', rmenu, 'small more').withAttr('aria-label', 'Request actions'));
+        methodTag(r.method), nameNode(r), pendings.has(r.id) && h('span', { class: 'spinner', title: 'Sending…' }),
+        btn('⋯', rmenu, 'small more').withAttr('aria-label', 'Request actions'));
     }),
   );
 }
@@ -267,7 +279,7 @@ Element.prototype.withAttr = function (k, v) { if (v !== undefined) this.setAttr
 
 /** 选中请求：来自集合时直接引用（编辑即写回集合并保存），来自历史时为副本。 */
 function selectRequest(r) {
-  current = r; response = null; missing = [];
+  current = r; missing = [];
   renderRequest(); renderResponse(); renderSidebar();
 }
 
@@ -314,6 +326,40 @@ function openImport(into = null) {
   $('#import-text').focus();
 }
 
+/** 集合导出为 Firebee JSON 文件 */
+async function exportCollection(c) {
+  const path = await dialog.save({ defaultPath: `${c.name}.firebee.json`, filters: [{ name: 'JSON', extensions: ['json'] }] });
+  if (!path) return;
+  try { await invoke('export_collection', { collection: c, path }); toast(`Exported “${c.name}” to ${path}`); }
+  catch (e) { toast(String(e), { error: true }); }
+}
+/** 导入 Firebee 导出 / Postman collection / Postman environment */
+async function importFile() {
+  const path = await dialog.open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] });
+  if (!path) return;
+  try {
+    const r = await invoke('import_file', { path });
+    if (r.collection) { data.collections.push(r.collection); dirty(); renderSidebar(); toast(`Imported collection “${r.collection.name}”.`); }
+    if (r.environment) { data.environments.push(r.environment); dirty(); renderTopbar(); toast(`Imported environment “${r.environment.name}” — pick it in the Environment menu.`); }
+  } catch (e) { toast(String(e), { error: true }); }
+}
+
+/** 可拖动分栏：写 CSS 变量，宽度记在 localStorage（仅本机偏好）；双击恢复默认 */
+function splitter(el, cssVar, measure, min, max, key) {
+  const root = document.documentElement.style;
+  try { const saved = localStorage.getItem(key); if (saved) root.setProperty(cssVar, saved); } catch { /* private mode */ }
+  el.onpointerdown = (e) => {
+    e.preventDefault(); el.setPointerCapture(e.pointerId); el.classList.add('drag'); document.body.classList.add('dragging');
+    el.onpointermove = (ev) => root.setProperty(cssVar, `${Math.round(Math.min(max(), Math.max(min, measure(ev))))}px`);
+    el.onpointerup = el.onpointercancel = () => {
+      el.onpointermove = el.onpointerup = el.onpointercancel = null;
+      el.classList.remove('drag'); document.body.classList.remove('dragging');
+      try { localStorage.setItem(key, root.getPropertyValue(cssVar)); } catch { /* ignore */ }
+    };
+  };
+  el.ondblclick = () => { root.removeProperty(cssVar); try { localStorage.removeItem(key); } catch { /* ignore */ } };
+}
+
 // ---------- 请求面板 ----------
 function renderRequestHeader() {
   $('#req-name').value = current.name;
@@ -322,8 +368,8 @@ function renderRequestHeader() {
   $('#save').classList.toggle('hidden', !!where);
   $('#method').value = current.method;
   $('#url').value = current.url;
-  $('#send').classList.toggle('hidden', pending !== null);
-  $('#cancel').classList.toggle('hidden', pending === null);
+  $('#send').classList.toggle('hidden', isPending());
+  $('#cancel').classList.toggle('hidden', !isPending());
   const m = $('#missing');
   m.classList.toggle('hidden', missing.length === 0);
   m.replaceChildren(missing.length ? h('span', {}, `⚠ ${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} not defined in the active environment. `,
@@ -398,29 +444,28 @@ function authEditor() {
 
 // ---------- 发送 / 取消 ----------
 async function send() {
-  if (pending !== null) return;
+  if (isPending()) return;
   if (!current.url.trim()) { $('#url').focus(); return; }
   const m = await invoke('missing_vars', { request: current, env: activeEnv() });
   // 有未定义变量：第一次点击只提示，第二次（列表未变）强制发送
   if (m.length && JSON.stringify(m) !== JSON.stringify(missing)) { missing = m; renderRequestHeader(); return; }
   missing = [];
-  const id = ++jobSeq;
-  pending = id; response = null;
-  renderRequestHeader(); renderResponse();
-  const req = structuredClone(current);
-  let status = null, duration_ms = null;
+  const id = ++jobSeq, rid = current.id, req = structuredClone(current);
+  pendings.set(rid, id); responses.delete(rid);
+  renderRequestHeader(); renderResponse(); renderSidebar();
+  let status = null, duration_ms = null, result;
   try {
     const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(), timeout_secs: Number($('#timeout').value) || 30 });
-    response = { ok: r }; status = r.status; duration_ms = r.duration_ms;
+    result = { ok: r }; status = r.status; duration_ms = r.duration_ms;
   } catch (e) {
-    response = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
+    result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
   }
-  if (pending === id) pending = null;
+  pendings.delete(rid); setResponse(rid, result);
   data.history.push({ timestamp: new Date().toISOString(), request: req, status, duration_ms });
   if (data.history.length > HISTORY_LIMIT) data.history.splice(0, data.history.length - HISTORY_LIMIT);
   invoke('save_history', { history: data.history }).catch((e) => toast(`Couldn't save history. ${e}`, { error: true }));
-  renderRequestHeader(); renderResponse();
-  if (sideTab === 'history') renderSidebar();
+  if (current.id === rid) { renderRequestHeader(); renderResponse(); }
+  renderSidebar();
 }
 
 // ---------- 响应面板 ----------
@@ -437,10 +482,11 @@ const fmtSize = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 10
 
 function renderResponse() {
   const meta = $('#resp-meta'), body = $('#resp-body'), tabs = $('#resp-tabs');
+  const response = resp(), pending = isPending();
   meta.replaceChildren(); body.replaceChildren();
   tabs.classList.toggle('hidden', !response?.ok);
   if (!response) {
-    if (pending !== null) meta.append(h('span', { class: 'spinner' }), h('span', { class: 'muted' }, 'Sending…'));
+    if (pending) meta.append(h('span', { class: 'spinner' }), h('span', { class: 'muted' }, 'Sending…'));
     else body.append(emptyState('Response will show here', `Fill in a URL and press Send, or ${MOD}↩ from anywhere in the editor.`));
     return;
   }
@@ -558,7 +604,7 @@ function bind() {
   $('#req-name').onkeydown = (e) => { if (e.key === 'Enter') e.target.blur(); };
   $('#save').onclick = saveMenu;
   $('#send').onclick = send;
-  $('#cancel').onclick = () => invoke('cancel_request', { job_id: pending });
+  $('#cancel').onclick = () => invoke('cancel_request', { job_id: pendings.get(current.id) });
   $('#export-copy').onclick = (e) => copyText($('#export-text').textContent, e.currentTarget);
   $('#export-close').onclick = () => $('#export-dialog').close();
   $('#env-select').onchange = (e) => { activeEnvId = e.target.value || null; missing = []; renderRequestHeader(); };
@@ -578,6 +624,9 @@ function bind() {
     else if (e.key === 'n') { e.preventDefault(); selectRequest(newRequest()); $('#url').focus(); }
     else if (e.key === 'f') { e.preventDefault(); $('#search').focus(); $('#search').select(); }
   });
+  splitter($('#split-side'), '--side-w', (ev) => ev.clientX, 180, () => window.innerWidth * 0.5, 'firebee.sideW');
+  splitter($('#split-main'), '--req-w', (ev) => ev.clientX - $('#request').getBoundingClientRect().left, 360,
+    () => $('main').getBoundingClientRect().width - 326, 'firebee.reqW');
   $('#send').title = `Send (${MOD}↩)`; $('#save').title = `Save to a collection (${MOD}S)`;
 }
 

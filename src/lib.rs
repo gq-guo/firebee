@@ -5,6 +5,7 @@ use crate::core::storage::Storage;
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(Storage::new(Storage::default_dir()))
         .manage(commands::Pending::default())
         .invoke_handler(tauri::generate_handler![
@@ -17,6 +18,8 @@ pub fn run() {
             commands::cancel_request,
             commands::export_code,
             commands::import_curl,
+            commands::export_collection,
+            commands::import_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

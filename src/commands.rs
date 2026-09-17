@@ -99,6 +99,39 @@ pub fn cancel_request(pending: State<Pending>, job_id: u64) {
     }
 }
 
+/// 导出单个集合到文件（Firebee 原生格式，带版本号便于以后迁移）
+#[tauri::command]
+pub fn export_collection(collection: Collection, path: String) -> Result<(), String> {
+    let doc = serde_json::json!({ "firebee": 1, "collection": collection });
+    let data = serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?;
+    std::fs::write(&path, data).map_err(|e| format!("Couldn't write {path}: {e}"))
+}
+
+#[derive(Serialize, Default)]
+pub struct Imported {
+    collection: Option<Collection>,
+    environment: Option<Environment>,
+}
+
+/// 导入文件：Firebee 导出、Postman Collection v2.x、Postman Environment
+#[tauri::command]
+pub fn import_file(path: String) -> Result<Imported, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("Couldn't read {path}: {e}"))?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("Not valid JSON: {e}"))?;
+    if v.get("firebee").is_some() {
+        let collection = serde_json::from_value(v["collection"].clone())
+            .map_err(|e| format!("Not a Firebee collection file: {e}"))?;
+        return Ok(Imported { collection: Some(collection), ..Default::default() });
+    }
+    if crate::core::postman::is_collection(&v) {
+        return Ok(Imported { collection: Some(crate::core::postman::to_collection(&v)), ..Default::default() });
+    }
+    if crate::core::postman::is_environment(&v) {
+        return Ok(Imported { environment: Some(crate::core::postman::to_environment(&v)), ..Default::default() });
+    }
+    Err("Unrecognised file — expected a Firebee export, a Postman collection (v2.x) or a Postman environment".into())
+}
+
 #[tauri::command]
 pub fn import_curl(text: String) -> Result<Request, String> {
     crate::core::import::from_curl(&text)
