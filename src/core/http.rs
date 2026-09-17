@@ -33,6 +33,10 @@ pub fn build_url(req: &Request) -> Result<String, HttpError> {
             }
         }
     }
+    // query_pairs_mut 在没有 append 时会留下空的 "?"，去掉
+    if url.query() == Some("") {
+        url.set_query(None);
+    }
     Ok(url.to_string())
 }
 
@@ -267,5 +271,12 @@ mod tests {
             KeyValue::new("", "skip"),
         ];
         assert_eq!(build_url(&req).unwrap(), "https://api.dev/users?a=1");
+    }
+
+    #[test]
+    fn build_url_without_params_has_no_trailing_question_mark() {
+        let mut req = Request::new("t");
+        req.url = "https://api.dev/users/".into();
+        assert_eq!(build_url(&req).unwrap(), "https://api.dev/users/");
     }
 }

@@ -33,6 +33,17 @@ fn effective_headers(req: &Request) -> Vec<(String, String)> {
     hs
 }
 
+/// curl 的 -d 用单行 JSON：几百行的美化 JSON 粘进终端会撑爆行编辑器，回车也发不出去。
+/// 不是合法 JSON 时原样保留。
+fn curl_body(req: &Request) -> String {
+    if req.body_type == BodyType::Json {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&req.body) {
+            return v.to_string();
+        }
+    }
+    req.body.clone()
+}
+
 pub fn to_curl(req: &Request, url: &str) -> String {
     let mut parts = vec![format!("curl -X {}", req.method.as_str()), sh(url)];
     if let Auth::Basic { username, password } = &req.auth {
@@ -44,7 +55,7 @@ pub fn to_curl(req: &Request, url: &str) -> String {
     match &req.body_type {
         BodyType::Json | BodyType::Text => {
             if !req.body.is_empty() {
-                parts.push(format!("-d {}", sh(&req.body)));
+                parts.push(format!("-d {}", sh(&curl_body(req))));
             }
         }
         BodyType::Form => {
@@ -116,6 +127,17 @@ mod tests {
         assert!(c.contains("-H 'Authorization: Bearer t123'"), "{c}");
         assert!(c.contains("Content-Type: application/json"), "{c}");
         assert!(c.contains(r#"-d '{"u":"a","p":"b'\''s"}'"#), "{c}");
+    }
+
+    #[test]
+    fn curl_minifies_pretty_json_body() {
+        let mut r = sample();
+        r.body = "{\n  \"a\": 1,\n  \"b\": [\n    1,\n    2\n  ]\n}".into();
+        let c = to_curl(&r, "https://api.dev/login");
+        assert!(c.contains(r#"-d '{"a":1,"b":[1,2]}'"#), "{c}");
+        // 非法 JSON 原样保留
+        r.body = "{not json\n}".into();
+        assert!(to_curl(&r, "u").contains("-d '{not json\n}'"));
     }
 
     #[test]

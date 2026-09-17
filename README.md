@@ -1,6 +1,8 @@
 # Firebee
 
-用 Rust + egui 编写的轻量桌面 API client（精简版 Postman）。设计目标：快、稳定、克制。
+用 Rust + Tauri 编写的轻量桌面 API client（精简版 Postman）。设计目标：快、稳定、克制。
+
+后端是 Rust（存储 / HTTP / 变量替换 / 导出），前端是零依赖的 HTML/CSS/JS（无 npm 工具链）。
 
 ## 功能
 
@@ -16,7 +18,8 @@
 ## 运行
 
 ```bash
-cargo run --release
+cargo tauri dev        # 开发（需要 cargo install tauri-cli）
+cargo run --release    # 直接运行（前端资源已编译进二进制）
 ```
 
 ## 测试
@@ -30,10 +33,15 @@ cargo clippy --all-targets -- -D warnings
 
 ```
 src/
-  core/    models · storage · vars · http · export   （不依赖 UI，全部可单测）
-  worker.rs  专用 tokio 线程执行请求，mpsc channel 与 UI 通信（UI 永不阻塞）
-  ui/      egui 三栏界面：顶栏环境、侧边栏集合/历史、请求面板、响应面板
+  core/         models · storage · vars · http · export   （不依赖 UI，全部可单测）
+  commands.rs   Tauri commands：load/save 数据、send/cancel 请求（tokio 异步，可取消）、变量检查、导出
+  lib.rs        注册 commands 与托管状态；main.rs 只做日志初始化
+ui/
+  index.html · style.css · app.js   全部 UI 状态在前端；数据形态与 core/models.rs 的 serde 格式一致
+tauri.conf.json · build.rs · icons/
 ```
+
+前端选中集合中的请求后直接引用该对象，编辑即写回集合并防抖保存（egui 版编辑的是副本，不会回写）。
 
 ## 数据位置
 

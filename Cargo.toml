@@ -3,14 +3,18 @@ name = "firebee"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "firebee_lib"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
 [dependencies]
-eframe = { version = "0.32", default-features = false, features = ["default_fonts", "glow"] }
-egui = "0.32"
-egui_extras = { version = "0.32", features = ["syntect"] }
+tauri = { version = "2", features = [] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
