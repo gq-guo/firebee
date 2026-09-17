@@ -199,12 +199,24 @@ dialog[open] { animation: dialog-in var(--dur-short) var(--ease-out); }
 .jp input { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--text-mono); height: 28px; }
 .jp .meta { white-space: nowrap; }
 #export-text { max-height: 60vh; overflow: auto; background: var(--color-paper); padding: var(--space-sm); border-radius: var(--radius-input); border: 1px solid var(--color-rule); }
-.env-layout { display: flex; gap: var(--space-md); }
-#env-list { width: 170px; display: flex; flex-direction: column; gap: 2px; }
-#env-list .item { display: block; width: 100%; text-align: left; background: none; border-color: transparent; }
+.env-dialog { width: min(820px, 92vw); height: min(72vh, 600px); max-height: none; display: flex; flex-direction: column; padding: var(--space-sm) var(--space-md); }
+.env-dialog:not([open]) { display: none; }
+.dialog-head { margin-bottom: var(--space-sm); }
+.dialog-head .muted { font-size: var(--text-xs); }
+.env-layout { display: flex; gap: var(--space-md); flex: 1; min-height: 0; }
+#env-list { width: 200px; flex: none; display: flex; flex-direction: column; gap: 2px; overflow: auto; border-right: 1px solid var(--color-rule); padding-right: var(--space-sm); }
+#env-list .item { display: flex; align-items: center; gap: var(--space-xs); width: 100%; text-align: left; background: none; border-color: transparent; height: 32px; padding: 0 var(--space-xs); }
+#env-list .item .name { flex: 1; }
+#env-list .item .meta { font-size: var(--text-xs); }
 #env-list .item.active { background: var(--color-selected); }
-#env-editor { flex: 1; min-width: 0; }
-#env-editor > input { width: 100%; font-weight: 600; }
+#env-list .badge { font-size: var(--text-xs); color: var(--color-ok); border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; line-height: 16px; }
+#env-list .new { margin-top: auto; align-self: flex-start; }
+#env-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+#env-editor .head { display: flex; align-items: center; gap: var(--space-xs); margin-bottom: var(--space-sm); }
+#env-editor .head input { flex: 1; min-width: 0; font-size: var(--text-md); font-weight: 600; }
+#env-editor .vars { overflow: auto; flex: 1; min-height: 0; }
+#env-editor .vars-head { display: grid; grid-template-columns: 28px 220px 1fr 28px; padding: 0 3px var(--space-2xs); font-size: var(--text-xs); color: var(--color-muted); }
+.dialog-foot { margin: var(--space-sm) 0 0; padding-top: var(--space-sm); border-top: 1px solid var(--color-rule); font-size: var(--text-xs); }
 
 /* ---- autocomplete ---- */
 #ac { position: fixed; z-index: var(--z-dropdown); min-width: 200px; max-height: 240px; overflow: auto; background: var(--color-paper-2); border: 1px solid var(--color-rule); border-radius: var(--radius-card); padding: var(--space-2xs); box-shadow: 0 8px 24px oklch(8% 0.01 250 / 0.5); font-family: var(--font-mono); font-size: var(--text-mono); }

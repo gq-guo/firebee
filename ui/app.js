@@ -811,28 +811,38 @@ function jsonPath_(root, path) {
 // ---------- 环境管理对话框 ----------
 function renderEnvDialog() {
   const list = $('#env-list'), editor = $('#env-editor');
-  list.replaceChildren(...[
-    ...data.environments.map((e) => btn(e.name, () => { envSel = e; renderEnvDialog(); }, 'item' + (e === envSel ? ' active' : ''))),
-    btn('+ New environment', () => {
-      envSel = { id: crypto.randomUUID(), name: `Environment ${data.environments.length + 1}`, variables: [] };
-      data.environments.push(envSel); dirty(); renderEnvDialog(); renderTopbar();
-      setTimeout(() => $('#env-editor input')?.select(), 0);
-    }, 'small'),
-    envSel && btn('Delete', () => {
-      const env = envSel, idx = data.environments.indexOf(env);
-      data.environments.splice(idx, 1);
-      const wasActive = activeEnvId === env.id;
-      if (wasActive) activeEnvId = null;
-      envSel = null; dirty(); renderEnvDialog(); renderTopbar();
-      toast(`Deleted environment “${env.name}”.`, { action: ['Undo', () => { data.environments.splice(idx, 0, env); if (wasActive) activeEnvId = env.id; envSel = env; dirty(); renderEnvDialog(); renderTopbar(); }] });
-    }, 'small'),
-  ].filter(Boolean));
+  const newEnv = () => {
+    envSel = { id: crypto.randomUUID(), name: `Environment ${data.environments.length + 1}`, variables: [] };
+    data.environments.push(envSel); dirty(); renderEnvDialog(); renderTopbar();
+    setTimeout(() => $('#env-editor .head input')?.select(), 0);
+  };
+  list.replaceChildren(
+    ...data.environments.map((e) => h('button', { class: 'item' + (e === envSel ? ' active' : ''), onclick: () => { envSel = e; renderEnvDialog(); } },
+      h('span', { class: 'name' }, e.name),
+      e.id === activeEnvId ? h('span', { class: 'badge' }, 'Active') : h('span', { class: 'meta muted' }, `${e.variables.filter((v) => v.key).length}`))),
+    btn('+ New environment', newEnv, 'small ghost new'),
+  );
   editor.replaceChildren();
-  if (!envSel) { editor.append(emptyState('Pick an environment', 'Variables here replace {{name}} in URLs, headers, bodies and auth.')); return; }
+  if (!data.environments.length) { editor.append(emptyState('No environments yet', 'An environment is a named set of variables — dev, staging, production. Switch between them from the top bar.', ['Create environment', newEnv])); return; }
+  if (!envSel) { editor.append(emptyState('Pick an environment', 'Select one on the left to edit its variables.')); return; }
+  const env = envSel, isActive = env.id === activeEnvId;
+  const del = () => {
+    const idx = data.environments.indexOf(env);
+    data.environments.splice(idx, 1);
+    if (isActive) activeEnvId = null;
+    envSel = data.environments[Math.min(idx, data.environments.length - 1)] || null;
+    dirty(); renderEnvDialog(); renderTopbar(); renderRequestHeader();
+    toast(`Deleted environment “${env.name}”.`, { action: ['Undo', () => { data.environments.splice(idx, 0, env); if (isActive) activeEnvId = env.id; envSel = env; dirty(); renderEnvDialog(); renderTopbar(); renderRequestHeader(); }] });
+  };
   editor.append(
-    h('input', { value: envSel.name, 'aria-label': 'Environment name', oninput: (e) => { envSel.name = e.target.value; dirty(); renderTopbar(); $('#env-list .item.active').textContent = envSel.name; } }),
-    h('p', { class: 'muted' }, 'Variables — use them as {{name}} anywhere in a request.'),
-    kvTable(envSel.variables, 'Name', 'Value', renderEnvDialog),
+    h('div', { class: 'head' },
+      h('input', { value: env.name, 'aria-label': 'Environment name', oninput: (e) => { env.name = e.target.value; dirty(); renderTopbar(); $('#env-list .item.active .name').textContent = env.name; } }),
+      isActive ? h('span', { class: 'badge' }, 'Active') : btn('Set active', () => { activeEnvId = env.id; missing = []; renderTopbar(); renderRequestHeader(); renderEnvDialog(); }),
+      btn('Duplicate', () => { const d = structuredClone(env); d.id = crypto.randomUUID(); d.name += ' copy'; data.environments.splice(data.environments.indexOf(env) + 1, 0, d); envSel = d; dirty(); renderEnvDialog(); renderTopbar(); }),
+      btn('Delete', del, 'small ghost'),
+    ),
+    h('div', { class: 'vars-head' }, h('span'), h('span', {}, 'Name'), h('span', {}, 'Value'), h('span')),
+    h('div', { class: 'vars' }, kvTable(env.variables, 'e.g. base_url', 'e.g. https://api.example.com', renderEnvDialog)),
   );
 }
 

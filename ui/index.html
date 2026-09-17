@@ -62,13 +62,13 @@
   <pre id="export-text"></pre>
 </dialog>
 
-<dialog id="env-dialog">
-  <div class="row"><strong>Environments</strong><span class="spacer"></span><button id="env-close" class="small">Close</button></div>
+<dialog id="env-dialog" class="env-dialog">
+  <div class="row dialog-head"><strong>Environments</strong><span class="muted">Variables are used as {{name}} in URLs, params, headers, bodies and auth.</span><span class="spacer"></span><button id="env-close" class="small">Close</button></div>
   <div class="env-layout">
     <div id="env-list"></div>
     <div id="env-editor"></div>
   </div>
-  <div class="row dialog-foot"><span class="muted">Cookies received from servers are kept for this session and sent back automatically.</span><span class="spacer"></span><button id="clear-cookies" class="small">Clear cookies</button></div>
+  <div class="row dialog-foot"><span class="muted">Cookies from servers are kept for this session.</span><span class="spacer"></span><button id="clear-cookies" class="small ghost">Clear cookies</button></div>
 </dialog>
 
 <dialog id="import-dialog">
