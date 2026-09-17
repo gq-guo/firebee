@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Firebee</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <label>Environment <select id="env-select" aria-label="Active environment"></select></label>
+  <button id="env-manage" class="small">Manage…</button>
+  <span class="spacer"></span>
+  <label>Timeout <input id="timeout" type="number" min="1" max="300" value="30" aria-label="Request timeout in seconds"> s</label>
+</header>
+
+<aside id="sidebar">
+  <nav class="tabs" role="tablist">
+    <button data-side="collections" class="active" role="tab" aria-selected="true">Collections</button>
+    <button data-side="history" role="tab" aria-selected="false">History</button>
+  </nav>
+  <div id="side-body"></div>
+</aside>
+
+<main>
+  <section id="request">
+    <div id="req-head">
+      <input id="req-name" aria-label="Request name">
+      <span id="req-where"></span>
+      <span class="spacer"></span>
+      <button id="save" class="small">Save to…</button>
+    </div>
+    <div class="row">
+      <select id="method" aria-label="HTTP method"></select>
+      <input id="url" placeholder="https://api.example.com/path — {{vars}} supported" aria-label="Request URL" spellcheck="false">
+      <button id="send" class="primary" title="Send (⌘↩)">Send</button>
+      <button id="cancel" class="danger hidden">Cancel</button>
+      <select id="export" aria-label="Export"><option value="">Export…</option><option value="curl">curl command</option><option value="python">Python (requests)</option></select>
+    </div>
+    <div id="missing" class="warn hidden"></div>
+    <nav class="tabs" id="req-tabs" role="tablist">
+      <button data-req="params" class="active">Params</button>
+      <button data-req="headers">Headers</button>
+      <button data-req="body">Body</button>
+      <button data-req="auth">Auth</button>
+    </nav>
+    <div id="req-body"></div>
+  </section>
+
+  <section id="response" aria-live="polite">
+    <div id="resp-meta" class="row"></div>
+    <nav class="tabs" id="resp-tabs" role="tablist">
+      <button data-resp="body" class="active">Body</button>
+      <button data-resp="headers">Headers</button>
+    </nav>
+    <div id="resp-body"></div>
+  </section>
+</main>
+
+<dialog id="export-dialog">
+  <div class="row"><strong>Export</strong><span class="spacer"></span><button id="export-copy" class="small">Copy</button><button id="export-close" class="small">Close</button></div>
+  <pre id="export-text"></pre>
+</dialog>
+
+<dialog id="env-dialog">
+  <div class="row"><strong>Environments</strong><span class="spacer"></span><button id="env-close" class="small">Close</button></div>
+  <div class="env-layout">
+    <div id="env-list"></div>
+    <div id="env-editor"></div>
+  </div>
+</dialog>
+
+<div id="menu" class="hidden" role="menu"></div>
+<div id="toast" class="hidden" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>

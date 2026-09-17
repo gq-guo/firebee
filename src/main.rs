@@ -1,22 +1,14 @@
-mod core;
-mod ui;
-mod worker;
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-fn main() -> eframe::Result<()> {
+use firebee_lib::core::storage::Storage;
+
+fn main() {
     init_logging();
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "Firebee",
-        options,
-        Box::new(|cc| Ok(Box::new(ui::app::FirebeeApp::new(cc)))),
-    )
+    firebee_lib::run();
 }
 
 fn init_logging() {
-    let dir = core::storage::Storage::default_dir();
+    let dir = Storage::default_dir();
     let _ = std::fs::create_dir_all(&dir);
     let file_appender = tracing_appender::rolling::daily(dir, "firebee.log");
     tracing_subscriber::fmt()
