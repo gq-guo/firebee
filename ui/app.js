@@ -23,6 +23,7 @@ let reqTab = 'params', respTab = 'body', sideTab = 'collections';
 let renaming = null;   // 正在重命名的对象（collection / folder / request）
 let envSel = null;     // env 对话框中选中的环境
 let saveTimer = null;
+let filter = '';       // 侧栏搜索关键字（匹配集合/文件夹/请求名、URL）
 const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘时保持）
 
 function newRequest(name = 'Untitled request') {
@@ -166,7 +167,9 @@ function renderSidebar() {
   body.replaceChildren();
   if (sideTab === 'history') {
     if (!data.history.length) { body.append(emptyState('No requests sent yet', 'Every request you send is kept here, so you can reopen it later.')); return; }
-    for (const hist of [...data.history].reverse()) {
+    const shown = data.history.filter((x) => !q() || hit(x.request.name) || hit(x.request.url));
+    if (!shown.length) { body.append(emptyState(`No history matches “${filter.trim()}”`, 'Try part of a URL or a request name.')); return; }
+    for (const hist of shown.reverse()) {
       const t = new Date(hist.timestamp);
       const hhmm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
       body.append(h('div', { class: 'hist', role: 'button', tabindex: 0, title: `${hist.request.method.toUpperCase()} ${hist.request.url}`,
@@ -182,9 +185,22 @@ function renderSidebar() {
     body.append(emptyState('No collections yet', 'A collection keeps the requests you want to reuse, in folders if you like.', ['Create a collection', addCol]));
     return;
   }
+  const shown = data.collections.filter((c) => filterView(c).show);
+  if (q() && !shown.length) { body.append(emptyState(`Nothing matches “${filter.trim()}”`, 'Names of collections, folders and requests are searched, and request URLs.')); return; }
   body.append(btn('+ New collection', addCol, 'small'));
-  data.collections.forEach((c) => body.append(containerNode(c, data.collections)));
+  shown.forEach((c) => body.append(containerNode(c, data.collections)));
   body.querySelector('input.rename')?.focus();
+}
+
+// ---------- 搜索过滤 ----------
+const q = () => filter.trim().toLowerCase();
+const hit = (s) => !!q() && (s || '').toLowerCase().includes(q());
+/** 容器名命中 → 整个子树都显示；否则只显示命中的后代，且至少有一个才显示容器本身 */
+function filterView(c) {
+  if (!q() || hit(c.name)) return { folders: c.folders, requests: c.requests, show: true };
+  const folders = c.folders.filter((f) => filterView(f).show);
+  const requests = c.requests.filter((r) => hit(r.name) || hit(r.url));
+  return { folders, requests, show: folders.length + requests.length > 0 };
 }
 
 /** Enter / Space 触发点击（给 role=button 的 div 用） */
@@ -225,11 +241,12 @@ function containerNode(c, parentArr, isFolder = false) {
     ['Rename', startRename(c)],
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
-  return h('details', { open: !collapsed.has(c.id), ontoggle: (e) => { e.target.open ? collapsed.delete(c.id) : collapsed.add(c.id); } },
+  const view = filterView(c);
+  return h('details', { open: q() ? true : !collapsed.has(c.id), ontoggle: (e) => { if (!q()) e.target.open ? collapsed.delete(c.id) : collapsed.add(c.id); } },
     h('summary', { oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); } },
       nameNode(c), btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
-    ...c.folders.map((f) => containerNode(f, c.folders, true)),
-    ...c.requests.map((r) => {
+    ...view.folders.map((f) => containerNode(f, c.folders, true)),
+    ...view.requests.map((r) => {
       const rmenu = (e) => openMenu(e, [
         ['Duplicate', () => { const d = structuredClone(r); d.id = crypto.randomUUID(); d.name += ' copy'; c.requests.splice(c.requests.indexOf(r) + 1, 0, d); dirty(); selectRequest(d); }],
         ['Rename', startRename(r)],
@@ -471,6 +488,8 @@ function bind() {
   $('#env-manage').onclick = () => { renderEnvDialog(); $('#env-dialog').showModal(); };
   $('#env-close').onclick = () => $('#env-dialog').close();
   document.querySelectorAll('[data-side]').forEach((b) => b.onclick = () => { sideTab = b.dataset.side; renderSidebar(); });
+  $('#search').oninput = (e) => { filter = e.target.value; renderSidebar(); };
+  $('#search').onkeydown = (e) => { if (e.key === 'Escape' && filter) { e.stopPropagation(); filter = e.target.value = ''; renderSidebar(); } };
   document.querySelectorAll('[data-req]').forEach((b) => b.onclick = () => { reqTab = b.dataset.req; renderRequest(); });
   document.querySelectorAll('[data-resp]').forEach((b) => b.onclick = () => { respTab = b.dataset.resp; renderResponse(); });
   // 全局快捷键：⌘↩ 发送 · ⌘S 保存到集合 · ⌘N 新请求
@@ -480,6 +499,7 @@ function bind() {
     if (e.key === 'Enter') { e.preventDefault(); send(); }
     else if (e.key === 's') { e.preventDefault(); if (!locate(current)) saveMenu({ preventDefault() {}, stopPropagation() {}, target: $('#save') }); }
     else if (e.key === 'n') { e.preventDefault(); selectRequest(newRequest()); $('#url').focus(); }
+    else if (e.key === 'f') { e.preventDefault(); $('#search').focus(); $('#search').select(); }
   });
   $('#send').title = `Send (${MOD}↩)`; $('#save').title = `Save to a collection (${MOD}S)`;
 }
