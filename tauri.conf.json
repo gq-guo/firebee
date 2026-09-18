@@ -9,8 +9,23 @@
   "app": {
     "withGlobalTauri": true,
     "windows": [
-      { "title": "Firebee", "width": 1280, "height": 800, "minWidth": 900, "minHeight": 600, "dragDropEnabled": false }
+      {
+        "title": "Firebee",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "dragDropEnabled": false
+      }
     ]
   },
-  "bundle": { "active": false }
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
+  }
 }

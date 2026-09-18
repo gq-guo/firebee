@@ -2,7 +2,9 @@
 
 use serde_json::Value;
 
-use crate::core::models::{Auth, BodyType, Collection, Environment, Folder, HttpMethod, KeyValue, Request};
+use crate::core::models::{
+    Auth, BodyType, Collection, Environment, Folder, HttpMethod, KeyValue, Request,
+};
 
 fn s(v: &Value) -> String {
     match v {
@@ -40,9 +42,18 @@ fn auth(v: Option<&Value>) -> Option<Auth> {
             .unwrap_or_default()
     };
     Some(match kind {
-        "bearer" => Auth::Bearer { token: get("token") },
-        "basic" => Auth::Basic { username: get("username"), password: get("password") },
-        "apikey" => Auth::ApiKey { key: get("key"), value: get("value"), in_query: get("in") == "query" },
+        "bearer" => Auth::Bearer {
+            token: get("token"),
+        },
+        "basic" => Auth::Basic {
+            username: get("username"),
+            password: get("password"),
+        },
+        "apikey" => Auth::ApiKey {
+            key: get("key"),
+            value: get("value"),
+            in_query: get("in") == "query",
+        },
         _ => Auth::None,
     })
 }
@@ -56,7 +67,10 @@ fn request(item: &Value, inherited: &Auth) -> Request {
         return req;
     }
     let m = s(&r["method"]).to_ascii_uppercase();
-    req.method = HttpMethod::ALL.into_iter().find(|x| x.as_str() == m).unwrap_or(HttpMethod::Get);
+    req.method = HttpMethod::ALL
+        .into_iter()
+        .find(|x| x.as_str() == m)
+        .unwrap_or(HttpMethod::Get);
     match &r["url"] {
         Value::String(u) => req.url = u.clone(),
         u @ Value::Object(_) => {
@@ -75,9 +89,14 @@ fn request(item: &Value, inherited: &Auth) -> Request {
                 req.body = s(&body["raw"]);
                 let lang = s(&body["options"]["raw"]["language"]);
                 let is_json = lang == "json" || serde_json::from_str::<Value>(&req.body).is_ok();
-                req.body_type = if is_json { BodyType::Json } else { BodyType::Text };
+                req.body_type = if is_json {
+                    BodyType::Json
+                } else {
+                    BodyType::Text
+                };
                 if is_json {
-                    req.headers.retain(|h| !h.key.eq_ignore_ascii_case("content-type"));
+                    req.headers
+                        .retain(|h| !h.key.eq_ignore_ascii_case("content-type"));
                 }
             }
             "urlencoded" => {
@@ -132,7 +151,11 @@ pub fn to_environment(v: &Value) -> Environment {
         id: uuid::Uuid::new_v4(),
         name: {
             let n = s(&v["name"]);
-            if n.is_empty() { "Imported environment".into() } else { n }
+            if n.is_empty() {
+                "Imported environment".into()
+            } else {
+                n
+            }
         },
         variables: v["values"]
             .as_array()
@@ -183,7 +206,12 @@ mod tests {
         assert_eq!(get.url, "{{base}}/users/1");
         assert_eq!(get.params.len(), 2);
         assert!(!get.params[1].enabled);
-        assert_eq!(get.auth, Auth::Bearer { token: "{{token}}".into() }); // 继承集合级 auth
+        assert_eq!(
+            get.auth,
+            Auth::Bearer {
+                token: "{{token}}".into()
+            }
+        ); // 继承集合级 auth
         assert_eq!(get.headers[0].key, "X-Trace");
 
         let login = &c.requests[0];
@@ -191,7 +219,13 @@ mod tests {
         assert_eq!(login.body_type, BodyType::Json);
         assert_eq!(login.body, r#"{"u":"a"}"#);
         assert!(login.headers.is_empty()); // JSON 的 Content-Type 由发送时补
-        assert_eq!(login.auth, Auth::Basic { username: "u".into(), password: "p".into() });
+        assert_eq!(
+            login.auth,
+            Auth::Basic {
+                username: "u".into(),
+                password: "p".into()
+            }
+        );
 
         let form = &c.requests[1];
         assert_eq!(form.body_type, BodyType::Form);

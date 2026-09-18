@@ -19,10 +19,12 @@ fn effective_headers(req: &Request) -> Vec<(String, String)> {
         .map(|h| (h.key.clone(), h.value.clone()))
         .collect();
     match &req.auth {
-        Auth::Bearer { token } => {
-            hs.push(("Authorization".into(), format!("Bearer {token}")))
-        }
-        Auth::ApiKey { key, value, in_query: false } if !key.is_empty() => {
+        Auth::Bearer { token } => hs.push(("Authorization".into(), format!("Bearer {token}"))),
+        Auth::ApiKey {
+            key,
+            value,
+            in_query: false,
+        } if !key.is_empty() => {
             hs.push((key.clone(), value.clone()));
         }
         _ => {}
@@ -60,7 +62,10 @@ pub fn to_curl(req: &Request, url: &str) -> String {
         }
         BodyType::Form => {
             for f in req.form.iter().filter(|f| f.enabled && !f.key.is_empty()) {
-                parts.push(format!("--data-urlencode {}", sh(&format!("{}={}", f.key, f.value))));
+                parts.push(format!(
+                    "--data-urlencode {}",
+                    sh(&format!("{}={}", f.key, f.value))
+                ));
             }
         }
         BodyType::None => {}
@@ -71,7 +76,11 @@ pub fn to_curl(req: &Request, url: &str) -> String {
 pub fn to_python(req: &Request, url: &str) -> String {
     let mut s = String::from("import requests\n\n");
     s.push_str("response = requests.request(\n");
-    s.push_str(&format!("    {},\n    {},\n", py(req.method.as_str()), py(url)));
+    s.push_str(&format!(
+        "    {},\n    {},\n",
+        py(req.method.as_str()),
+        py(url)
+    ));
     let hs = effective_headers(req);
     if !hs.is_empty() {
         s.push_str("    headers={\n");
@@ -114,7 +123,9 @@ mod tests {
         r.headers = vec![KeyValue::new("X-App", "firebee")];
         r.body_type = BodyType::Json;
         r.body = r#"{"u":"a","p":"b's"}"#.into();
-        r.auth = Auth::Bearer { token: "t123".into() };
+        r.auth = Auth::Bearer {
+            token: "t123".into(),
+        };
         r
     }
 
@@ -144,7 +155,10 @@ mod tests {
     fn curl_basic_auth() {
         let mut r = Request::new("t");
         r.url = "https://api.dev/x".into();
-        r.auth = Auth::Basic { username: "u".into(), password: "p".into() };
+        r.auth = Auth::Basic {
+            username: "u".into(),
+            password: "p".into(),
+        };
         let c = to_curl(&r, "https://api.dev/x");
         assert!(c.contains("-u 'u:p'"), "{c}");
         assert!(!c.contains("Authorization"), "{c}");
