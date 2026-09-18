@@ -120,7 +120,10 @@ mod tests {
 
     #[test]
     fn dynamic_vars_generate_fresh_values() {
-        let r = substitute("{{$uuid}}/{{$uuid}}/{{$timestamp}}/{{$randomInt}}/{{$nope}}", &HashMap::new());
+        let r = substitute(
+            "{{$uuid}}/{{$uuid}}/{{$timestamp}}/{{$randomInt}}/{{$nope}}",
+            &HashMap::new(),
+        );
         assert_eq!(r.missing, vec!["$nope".to_string()]);
         let parts: Vec<&str> = r.output.split('/').collect();
         assert_ne!(parts[0], parts[1]); // 每次出现都不同
@@ -153,12 +156,19 @@ mod tests {
         req.url = "{{base_url}}/login".into();
         req.headers = vec![KeyValue::new("X-Env", "{{mode}}")];
         req.body = "{\"t\":\"{{token}}\"}".into();
-        req.auth = Auth::Bearer { token: "{{token}}".into() };
+        req.auth = Auth::Bearer {
+            token: "{{token}}".into(),
+        };
         let (out, missing) = substitute_request(&req, &vars());
         assert_eq!(out.url, "https://api.dev/login");
         assert_eq!(out.headers[0].value, "{{mode}}");
         assert_eq!(out.body, "{\"t\":\"abc\"}");
-        assert_eq!(out.auth, Auth::Bearer { token: "abc".into() });
+        assert_eq!(
+            out.auth,
+            Auth::Bearer {
+                token: "abc".into()
+            }
+        );
         assert_eq!(missing, vec!["mode".to_string()]);
         // 原请求不被修改
         assert_eq!(req.url, "{{base_url}}/login");

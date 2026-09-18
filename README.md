@@ -49,6 +49,21 @@ cargo test          # 36 个单元/集成测试（core 层全覆盖，http 用 w
 cargo clippy --all-targets -- -D warnings
 ```
 
+## 发布
+
+版本号只维护在 `VERSION`，`Cargo.toml` 与 `tauri.conf.json` 的 `version` 必须与之一致（`scripts/check-version.sh` 会校验，CI 也会跑）。
+
+```bash
+# 1. 升版本：改 VERSION、Cargo.toml、tauri.conf.json 三处为同一个号，例如 0.1.1
+scripts/check-version.sh            # 本地校验
+# 2. 提交后打 tag 推送，Release 工作流自动打包
+git tag v0.1.1 && git push origin v0.1.1
+```
+
+Release 工作流（`.github/workflows/release.yml`）先校验 tag 与 `VERSION` 一致，再在 macOS runner 上构建 universal（Intel + Apple Silicon）的 `.dmg` / `.app.zip`，附 `SHA256SUMS.txt` 发布到 GitHub Release。tag 与版本号不一致时直接失败，不会产出包。
+
+本地打包：`cargo tauri build --target universal-apple-darwin` 得到 `.app`，再 `scripts/make-dmg.sh target/universal-apple-darwin/release/bundle/macos/Firebee.app Firebee.dmg` 生成 DMG（APFS，避开 macOS 26 上 HFS+ 的 hdiutil 问题）。包未经 Apple 公证，首次打开需 `xattr -dr com.apple.quarantine /Applications/Firebee.app` 或右键 → 打开。
+
 ## 架构
 
 ```

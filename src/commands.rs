@@ -59,13 +59,23 @@ pub fn load_data(storage: State<Storage>) -> AppData {
 }
 
 #[tauri::command]
-pub fn save_collections(storage: State<Storage>, collections: Vec<Collection>) -> Result<(), String> {
-    storage.save_collections(&collections).map_err(|e| e.to_string())
+pub fn save_collections(
+    storage: State<Storage>,
+    collections: Vec<Collection>,
+) -> Result<(), String> {
+    storage
+        .save_collections(&collections)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn save_environments(storage: State<Storage>, environments: Vec<Environment>) -> Result<(), String> {
-    storage.save_environments(&environments).map_err(|e| e.to_string())
+pub fn save_environments(
+    storage: State<Storage>,
+    environments: Vec<Environment>,
+) -> Result<(), String> {
+    storage
+        .save_environments(&environments)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -91,7 +101,13 @@ pub async fn send_request(
     let (tx, rx) = watch::channel(false);
     pending.0.lock().unwrap().insert(job_id, tx);
     let jar = cookies.0.lock().unwrap().clone();
-    let result = execute(&req, Duration::from_secs(timeout_secs.max(1)), rx, Some(jar)).await;
+    let result = execute(
+        &req,
+        Duration::from_secs(timeout_secs.max(1)),
+        rx,
+        Some(jar),
+    )
+    .await;
     pending.0.lock().unwrap().remove(&job_id);
     result
         .map(|r| {
@@ -101,10 +117,23 @@ pub async fn send_request(
                 .any(|(k, v)| k.eq_ignore_ascii_case("content-type") && v.starts_with("image/"));
             let (body, body_base64) = match (is_image, String::from_utf8(r.body)) {
                 (false, Ok(text)) => (text, None),
-                (_, Ok(text)) => (String::new(), Some(base64::engine::general_purpose::STANDARD.encode(text.as_bytes()))),
-                (_, Err(e)) => (String::new(), Some(base64::engine::general_purpose::STANDARD.encode(e.as_bytes()))),
+                (_, Ok(text)) => (
+                    String::new(),
+                    Some(base64::engine::general_purpose::STANDARD.encode(text.as_bytes())),
+                ),
+                (_, Err(e)) => (
+                    String::new(),
+                    Some(base64::engine::general_purpose::STANDARD.encode(e.as_bytes())),
+                ),
             };
-            ResponseDto { status: r.status, headers: r.headers, body, body_base64, duration_ms: r.duration_ms, size_bytes: r.size_bytes }
+            ResponseDto {
+                status: r.status,
+                headers: r.headers,
+                body,
+                body_base64,
+                duration_ms: r.duration_ms,
+                size_bytes: r.size_bytes,
+            }
         })
         .map_err(|e| e.to_string())
 }
@@ -116,9 +145,15 @@ pub fn clear_cookies(cookies: State<Cookies>) {
 
 /// 把响应体保存到文件：文本直接写，二进制走 base64 解码
 #[tauri::command(rename_all = "snake_case")]
-pub fn save_file(path: String, text: Option<String>, base64_data: Option<String>) -> Result<(), String> {
+pub fn save_file(
+    path: String,
+    text: Option<String>,
+    base64_data: Option<String>,
+) -> Result<(), String> {
     let bytes = match base64_data {
-        Some(b) => base64::engine::general_purpose::STANDARD.decode(b).map_err(|e| e.to_string())?,
+        Some(b) => base64::engine::general_purpose::STANDARD
+            .decode(b)
+            .map_err(|e| e.to_string())?,
         None => text.unwrap_or_default().into_bytes(),
     };
     std::fs::write(&path, bytes).map_err(|e| format!("Couldn't write {path}: {e}"))
@@ -149,17 +184,27 @@ pub struct Imported {
 #[tauri::command]
 pub fn import_file(path: String) -> Result<Imported, String> {
     let bytes = std::fs::read(&path).map_err(|e| format!("Couldn't read {path}: {e}"))?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("Not valid JSON: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("Not valid JSON: {e}"))?;
     if v.get("firebee").is_some() {
         let collection = serde_json::from_value(v["collection"].clone())
             .map_err(|e| format!("Not a Firebee collection file: {e}"))?;
-        return Ok(Imported { collection: Some(collection), ..Default::default() });
+        return Ok(Imported {
+            collection: Some(collection),
+            ..Default::default()
+        });
     }
     if crate::core::postman::is_collection(&v) {
-        return Ok(Imported { collection: Some(crate::core::postman::to_collection(&v)), ..Default::default() });
+        return Ok(Imported {
+            collection: Some(crate::core::postman::to_collection(&v)),
+            ..Default::default()
+        });
     }
     if crate::core::postman::is_environment(&v) {
-        return Ok(Imported { environment: Some(crate::core::postman::to_environment(&v)), ..Default::default() });
+        return Ok(Imported {
+            environment: Some(crate::core::postman::to_environment(&v)),
+            ..Default::default()
+        });
     }
     Err("Unrecognised file — expected a Firebee export, a Postman collection (v2.x) or a Postman environment".into())
 }

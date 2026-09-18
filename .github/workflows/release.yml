@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches VERSION, Cargo.toml and tauri.conf.json
+        run: scripts/check-version.sh "${GITHUB_REF_NAME}"
+
+  build-macos:
+    needs: check-version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build universal .app
+        run: npx --yes @tauri-apps/cli@^2 build --target universal-apple-darwin
+      - name: Package .dmg and .app.zip
+        run: |
+          set -eu
+          out=dist && mkdir -p "$out"
+          app=target/universal-apple-darwin/release/bundle/macos/Firebee.app
+          scripts/make-dmg.sh "$app" "$out/Firebee-${GITHUB_REF_NAME}-macos-universal.dmg"
+          ditto -c -k --keepParent "$app" "$out/Firebee-${GITHUB_REF_NAME}-macos-universal.app.zip"
+          (cd "$out" && shasum -a 256 * > SHA256SUMS.txt)
+          ls -la "$out"
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Firebee ${{ github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## Install (macOS, Intel & Apple Silicon)
+
+            1. Download the `.dmg`, open it and drag **Firebee** to Applications.
+            2. The build is not notarized with an Apple Developer account, so on first launch macOS may say the app is damaged or from an unidentified developer. Clear the quarantine flag once:
+
+               ```bash
+               xattr -dr com.apple.quarantine /Applications/Firebee.app
+               ```
+
+               or right-click the app → Open.
+
+            Data lives in `~/Library/Application Support/firebee/`. Checksums are in `SHA256SUMS.txt`.

@@ -45,7 +45,11 @@ pub struct KeyValue {
 
 impl KeyValue {
     pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
-        Self { enabled: true, key: key.into(), value: value.into() }
+        Self {
+            enabled: true,
+            key: key.into(),
+            value: value.into(),
+        }
     }
 }
 
@@ -60,10 +64,19 @@ pub enum BodyType {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Auth {
     None,
-    Bearer { token: String },
-    Basic { username: String, password: String },
+    Bearer {
+        token: String,
+    },
+    Basic {
+        username: String,
+        password: String,
+    },
     /// in_query=true 时放 query string，否则放 header
-    ApiKey { key: String, value: String, in_query: bool },
+    ApiKey {
+        key: String,
+        value: String,
+        in_query: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,7 +120,12 @@ pub struct Folder {
 
 impl Folder {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { id: Uuid::new_v4(), name: name.into(), folders: vec![], requests: vec![] }
+        Self {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            folders: vec![],
+            requests: vec![],
+        }
     }
 }
 
@@ -121,7 +139,12 @@ pub struct Collection {
 
 impl Collection {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { id: Uuid::new_v4(), name: name.into(), folders: vec![], requests: vec![] }
+        Self {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            folders: vec![],
+            requests: vec![],
+        }
     }
 }
 
@@ -178,12 +201,19 @@ mod tests {
         r.headers = vec![KeyValue::new("Content-Type", "application/json")];
         r.body_type = BodyType::Json;
         r.body = r#"{"u":"a"}"#.into();
-        r.auth = Auth::Bearer { token: "t123".into() };
+        r.auth = Auth::Bearer {
+            token: "t123".into(),
+        };
         let json = serde_json::to_string(&r).unwrap();
         let back: Request = serde_json::from_str(&json).unwrap();
         assert_eq!(back.name, "登录");
         assert_eq!(back.method, HttpMethod::Post);
-        assert_eq!(back.auth, Auth::Bearer { token: "t123".into() });
+        assert_eq!(
+            back.auth,
+            Auth::Bearer {
+                token: "t123".into()
+            }
+        );
     }
 
     #[test]
@@ -193,7 +223,11 @@ mod tests {
             name: "dev".into(),
             variables: vec![
                 KeyValue::new("base_url", "https://dev.api.com"),
-                KeyValue { enabled: false, key: "skip".into(), value: "x".into() },
+                KeyValue {
+                    enabled: false,
+                    key: "skip".into(),
+                    value: "x".into(),
+                },
                 KeyValue::new("", "no-key"),
             ],
         };

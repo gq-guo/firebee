@@ -101,9 +101,32 @@ fn split_kv(s: &str) -> KeyValue {
 
 // 带值但我们不关心的选项：跳过它们的值，避免被当成 URL
 const SKIP_WITH_VALUE: &[&str] = &[
-    "-o", "--output", "-m", "--max-time", "--connect-timeout", "-w", "--write-out", "-x", "--proxy",
-    "--retry", "-T", "--upload-file", "-c", "--cookie-jar", "--cacert", "--cert", "-E", "--key",
-    "--resolve", "--interface", "--max-redirs", "-K", "--config", "--limit-rate", "-D", "--dump-header",
+    "-o",
+    "--output",
+    "-m",
+    "--max-time",
+    "--connect-timeout",
+    "-w",
+    "--write-out",
+    "-x",
+    "--proxy",
+    "--retry",
+    "-T",
+    "--upload-file",
+    "-c",
+    "--cookie-jar",
+    "--cacert",
+    "--cert",
+    "-E",
+    "--key",
+    "--resolve",
+    "--interface",
+    "--max-redirs",
+    "-K",
+    "--config",
+    "--limit-rate",
+    "-D",
+    "--dump-header",
 ];
 
 pub fn from_curl(text: &str) -> Result<Request, String> {
@@ -134,16 +157,29 @@ pub fn from_curl(text: &str) -> Result<Request, String> {
             "-d" | "--data" | "--data-raw" | "--data-binary" | "--data-ascii" | "--json" => {
                 let d = value(&mut it, &w)?;
                 if w == "--json" {
-                    req.headers.push(KeyValue::new("Content-Type", "application/json"));
+                    req.headers
+                        .push(KeyValue::new("Content-Type", "application/json"));
                 }
-                data.push(d.strip_prefix('@').map(|f| format!("@{f}")).unwrap_or(d.clone()));
+                data.push(
+                    d.strip_prefix('@')
+                        .map(|f| format!("@{f}"))
+                        .unwrap_or(d.clone()),
+                );
             }
-            "--data-urlencode" | "-F" | "--form" | "--form-string" => form.push(split_kv(&value(&mut it, &w)?)),
+            "--data-urlencode" | "-F" | "--form" | "--form-string" => {
+                form.push(split_kv(&value(&mut it, &w)?))
+            }
             "-u" | "--user" => user = Some(value(&mut it, &w)?),
             "--url" => url = Some(value(&mut it, &w)?),
-            "-A" | "--user-agent" => req.headers.push(KeyValue::new("User-Agent", value(&mut it, &w)?)),
-            "-e" | "--referer" => req.headers.push(KeyValue::new("Referer", value(&mut it, &w)?)),
-            "-b" | "--cookie" => req.headers.push(KeyValue::new("Cookie", value(&mut it, &w)?)),
+            "-A" | "--user-agent" => req
+                .headers
+                .push(KeyValue::new("User-Agent", value(&mut it, &w)?)),
+            "-e" | "--referer" => req
+                .headers
+                .push(KeyValue::new("Referer", value(&mut it, &w)?)),
+            "-b" | "--cookie" => req
+                .headers
+                .push(KeyValue::new("Cookie", value(&mut it, &w)?)),
             "-G" | "--get" => as_get = true,
             f if SKIP_WITH_VALUE.contains(&f) => {
                 value(&mut it, &w)?;
@@ -159,19 +195,35 @@ pub fn from_curl(text: &str) -> Result<Request, String> {
 
     // URL：补 scheme，把 query 拆到 params
     let raw = url.ok_or("No URL found in the command")?;
-    let raw = if raw.contains("://") { raw } else { format!("http://{raw}") };
+    let raw = if raw.contains("://") {
+        raw
+    } else {
+        format!("http://{raw}")
+    };
     let mut parsed = reqwest::Url::parse(&raw).map_err(|e| format!("Invalid URL `{raw}`: {e}"))?;
-    req.params = parsed.query_pairs().map(|(k, v)| KeyValue::new(k, v)).collect();
+    req.params = parsed
+        .query_pairs()
+        .map(|(k, v)| KeyValue::new(k, v))
+        .collect();
     parsed.set_query(None);
     req.url = parsed.to_string();
 
     // 认证
     if let Some(u) = user {
         let (name, pass) = u.split_once(':').unwrap_or((&u, ""));
-        req.auth = Auth::Basic { username: name.into(), password: pass.into() };
-    } else if let Some(i) = req.headers.iter().position(|h| h.key.eq_ignore_ascii_case("authorization")) {
+        req.auth = Auth::Basic {
+            username: name.into(),
+            password: pass.into(),
+        };
+    } else if let Some(i) = req
+        .headers
+        .iter()
+        .position(|h| h.key.eq_ignore_ascii_case("authorization"))
+    {
         if let Some(tok) = req.headers[i].value.strip_prefix("Bearer ") {
-            req.auth = Auth::Bearer { token: tok.trim().into() };
+            req.auth = Auth::Bearer {
+                token: tok.trim().into(),
+            };
             req.headers.remove(i);
         }
     }
@@ -201,10 +253,15 @@ pub fn from_curl(text: &str) -> Result<Request, String> {
         if serde_json::from_str::<serde_json::Value>(&joined).is_ok() {
             req.body_type = BodyType::Json;
             // Firebee 发送 JSON 时自动带 Content-Type，去掉导入的以免重复
-            req.headers.retain(|h| !h.key.eq_ignore_ascii_case("content-type"));
+            req.headers
+                .retain(|h| !h.key.eq_ignore_ascii_case("content-type"));
         } else if content_type.contains("x-www-form-urlencoded") {
             req.body_type = BodyType::Form;
-            req.form = joined.split('&').filter(|s| !s.is_empty()).map(split_kv).collect();
+            req.form = joined
+                .split('&')
+                .filter(|s| !s.is_empty())
+                .map(split_kv)
+                .collect();
         } else {
             req.body_type = BodyType::Text;
         }
@@ -213,7 +270,11 @@ pub fn from_curl(text: &str) -> Result<Request, String> {
         }
     }
 
-    req.method = method.unwrap_or(if req.body_type == BodyType::None { HttpMethod::Get } else { HttpMethod::Post });
+    req.method = method.unwrap_or(if req.body_type == BodyType::None {
+        HttpMethod::Get
+    } else {
+        HttpMethod::Post
+    });
     req.name = format!("{} {}", req.method.as_str(), parsed.path());
     Ok(req)
 }
@@ -225,7 +286,10 @@ mod tests {
     #[test]
     fn shell_words_handles_quotes_and_continuations() {
         let w = shell_words("curl -X POST \\\n  'a b' \"c \\\"d\\\"\" $'x\\ny' plain");
-        assert_eq!(w, vec!["curl", "-X", "POST", "a b", "c \"d\"", "x\ny", "plain"]);
+        assert_eq!(
+            w,
+            vec!["curl", "-X", "POST", "a b", "c \"d\"", "x\ny", "plain"]
+        );
     }
 
     #[test]
@@ -238,7 +302,10 @@ mod tests {
         let r = from_curl(cmd).unwrap();
         assert_eq!(r.method, HttpMethod::Post);
         assert_eq!(r.url, "https://api.dev/v2/products/");
-        assert_eq!(r.params, vec![KeyValue::new("page", "2"), KeyValue::new("x", "y")]);
+        assert_eq!(
+            r.params,
+            vec![KeyValue::new("page", "2"), KeyValue::new("x", "y")]
+        );
         assert_eq!(r.headers, vec![KeyValue::new("am-api-key", "k1")]); // Content-Type 被去掉
         assert_eq!(r.body_type, BodyType::Json);
         assert_eq!(r.body, r#"{"a":1,"b":[1,2]}"#);
@@ -247,20 +314,36 @@ mod tests {
 
     #[test]
     fn bare_url_is_get_and_bearer_header_becomes_auth() {
-        let r = from_curl("curl -sL api.dev/x -H 'Authorization: Bearer t0k' --compressed").unwrap();
+        let r =
+            from_curl("curl -sL api.dev/x -H 'Authorization: Bearer t0k' --compressed").unwrap();
         assert_eq!(r.method, HttpMethod::Get);
         assert_eq!(r.url, "http://api.dev/x");
-        assert_eq!(r.auth, Auth::Bearer { token: "t0k".into() });
+        assert_eq!(
+            r.auth,
+            Auth::Bearer {
+                token: "t0k".into()
+            }
+        );
         assert!(r.headers.is_empty());
     }
 
     #[test]
     fn basic_auth_form_and_attached_method() {
-        let r = from_curl("curl -XPUT -u me:pw --data-urlencode 'q=a b' -d k=v https://api.dev/f").unwrap();
+        let r = from_curl("curl -XPUT -u me:pw --data-urlencode 'q=a b' -d k=v https://api.dev/f")
+            .unwrap();
         assert_eq!(r.method, HttpMethod::Put);
-        assert_eq!(r.auth, Auth::Basic { username: "me".into(), password: "pw".into() });
+        assert_eq!(
+            r.auth,
+            Auth::Basic {
+                username: "me".into(),
+                password: "pw".into()
+            }
+        );
         assert_eq!(r.body_type, BodyType::Form);
-        assert_eq!(r.form, vec![KeyValue::new("q", "a b"), KeyValue::new("k", "v")]);
+        assert_eq!(
+            r.form,
+            vec![KeyValue::new("q", "a b"), KeyValue::new("k", "v")]
+        );
     }
 
     #[test]
@@ -270,7 +353,10 @@ mod tests {
         assert_eq!(r.body_type, BodyType::Text);
         let g = from_curl("curl -G https://api.dev/s -d a=1 -d b=2").unwrap();
         assert_eq!(g.method, HttpMethod::Get);
-        assert_eq!(g.params, vec![KeyValue::new("a", "1"), KeyValue::new("b", "2")]);
+        assert_eq!(
+            g.params,
+            vec![KeyValue::new("a", "1"), KeyValue::new("b", "2")]
+        );
     }
 
     #[test]
