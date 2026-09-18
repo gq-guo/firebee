@@ -142,31 +142,78 @@ document.addEventListener('keydown', (e) => {
 function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = null } = {}) {
   const table = h('table', { class: 'kv' });
   const listFor = (key) => (valList && /^(content-type|accept)$/i.test(key.trim()) ? valList : null);
-  rows.forEach((r, i) => {
-    const val = h('input', { placeholder: valHint, value: r.value, 'aria-label': valHint, spellcheck: 'false', list: listFor(r.key),
-      oninput: (e) => { r.value = e.target.value; dirty(); } });
-    const tr = h('tr', { class: r.enabled ? '' : 'off' },
-      h('td', { class: 'ctl' }, h('input', { type: 'checkbox', checked: r.enabled, 'aria-label': 'Enabled',
-        onchange: (e) => { r.enabled = e.target.checked; tr.classList.toggle('off', !r.enabled); dirty(); renderTabCounts(); } })),
-      h('td', { class: 'key' }, h('input', { placeholder: keyHint, value: r.key, 'aria-label': keyHint, spellcheck: 'false', list: keyList,
-        oninput: (e) => { r.key = e.target.value; const l = listFor(r.key); l ? val.setAttribute('list', l) : val.removeAttribute('list'); dirty(); renderTabCounts(); } })),
+  // 最后一行永远是空白"幽灵行"：一敲字就变成真实行并追加新的幽灵行，不用点 Add
+  const all = [...rows, null];
+  all.forEach((r, i) => {
+    const ghost = r === null;
+    const promote = (field, value) => {
+      const nr = kv(); nr[field] = value; rows.push(nr); dirty(); rerender(); renderTabCounts();
+      const cell = document.querySelector(`table.kv tr:nth-last-child(2) td.${field === 'key' ? 'key' : 'val'} input`);
+      if (cell) { cell.focus(); cell.setSelectionRange(cell.value.length, cell.value.length); }
+    };
+    const val = h('input', { placeholder: valHint, value: ghost ? '' : r.value, 'aria-label': valHint, spellcheck: 'false', list: ghost ? null : listFor(r.key),
+      oninput: (e) => { if (ghost) return promote('value', e.target.value); r.value = e.target.value; dirty(); } });
+    const tr = h('tr', { class: ghost ? 'ghost' : (r.enabled ? '' : 'off') },
+      h('td', { class: 'ctl' }, h('input', { type: 'checkbox', checked: ghost ? false : r.enabled, 'aria-label': 'Enabled', tabindex: ghost ? -1 : null,
+        onchange: (e) => { if (ghost) return; r.enabled = e.target.checked; tr.classList.toggle('off', !r.enabled); dirty(); renderTabCounts(); } })),
+      h('td', { class: 'key' }, h('input', { placeholder: keyHint, value: ghost ? '' : r.key, 'aria-label': keyHint, spellcheck: 'false', list: keyList,
+        oninput: (e) => { if (ghost) return promote('key', e.target.value); r.key = e.target.value; const l = listFor(r.key); l ? val.setAttribute('list', l) : val.removeAttribute('list'); dirty(); renderTabCounts(); } })),
       h('td', { class: 'val' }, val),
-      h('td', { class: 'ctl' }, btn('×', () => { rows.splice(i, 1); dirty(); rerender(); }, 'small ghost')),
+      h('td', { class: 'ctl' }, ghost ? null : btn('×', () => { rows.splice(i, 1); dirty(); rerender(); renderTabCounts(); }, 'small ghost').withAttr('aria-label', 'Remove row')),
     );
-    tr.lastChild.firstChild.setAttribute('aria-label', 'Remove row');
     table.append(tr);
   });
-  const add = btn('+ Add row', () => { rows.push(kv()); dirty(); rerender(); focusLastKey(); }, 'small kv-add');
-  const focusLastKey = () => setTimeout(() => document.querySelector('table.kv tr:last-child td.key input')?.focus(), 0);
-  return h('div', {}, table, add);
+  return table;
+}
+
+// ---------- 变量解析（与 core/vars.rs 同规则：{{name}}，环境变量优先，其次 $动态变量）----------
+const VAR_RE = /\{\{\s*([^{}]*?)\s*\}\}/g;
+function varMap() {
+  const env = activeEnv();
+  return new Set(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => v.key) : []);
+}
+const isResolved = (name, vars) => vars.has(name) || DYNAMIC_VARS.some(([k]) => k === name);
+/** 当前请求里所有未解析的变量名（去重、按出现顺序） */
+function unresolvedVars(req = current) {
+  const vars = varMap(), out = [];
+  const scan = (str) => { for (const m of (str || '').matchAll(VAR_RE)) { const n = m[1]; if (!isResolved(n, vars) && !out.includes(n)) out.push(n); } };
+  scan(req.url); scan(req.body);
+  for (const kvr of [...req.params, ...req.headers, ...req.form]) { scan(kvr.key); scan(kvr.value); }
+  const a = req.auth; if (a !== 'None') Object.values(Object.values(a)[0]).forEach((v) => typeof v === 'string' && scan(v));
+  return out;
+}
+/** URL 镜像：把 {{var}} 按可解析与否着色，其余原样 */
+function renderUrlMirror() {
+  const el = $('#url-mirror'), vars = varMap(), url = $('#url').value;
+  el.replaceChildren();
+  let last = 0;
+  for (const m of url.matchAll(VAR_RE)) {
+    if (m.index > last) el.append(url.slice(last, m.index));
+    el.append(h('span', { class: isResolved(m[1], vars) ? 'v-ok' : 'v-bad' }, m[0]));
+    last = m.index + m[0].length;
+  }
+  el.append(url.slice(last), '\u200b');
+  el.scrollLeft = $('#url').scrollLeft;
+}
+/** 未解析变量提示：常驻在 Send 左侧的固定槽位，不撑开布局 */
+function renderMissing() {
+  const m = $('#missing'), list = unresolvedVars();
+  m.classList.toggle('hidden', list.length === 0);
+  if (!list.length) { missing = []; return; }
+  const armed = JSON.stringify(missing) === JSON.stringify(list);
+  m.textContent = armed ? 'Send again to send with placeholders as-is' : `${list.length} unresolved: ${list.join(', ')}`;
+  m.title = armed ? '' : `Not defined in the active environment: ${list.join(', ')}`;
 }
 
 // ---------- 顶栏 ----------
 function renderTopbar() {
   const sel = $('#env-select');
+  // 管理入口放在列表最下方，选中即打开对话框并恢复原选择
   sel.replaceChildren(
     h('option', { value: '' }, 'No environment'),
     ...data.environments.map((e) => h('option', { value: e.id }, e.name)),
+    h('option', { disabled: true }, '──────────'),
+    h('option', { value: '__manage' }, 'Manage environments…'),
   );
   sel.value = activeEnvId || '';
 }
@@ -191,14 +238,23 @@ function renderSidebar() {
     if (!data.history.length) { body.append(emptyState('No requests sent yet', 'Every request you send is kept here, so you can reopen it later.')); return; }
     const shown = data.history.filter((x) => !q() || hit(x.request.name) || hit(x.request.url));
     if (!shown.length) { body.append(emptyState(`No history matches “${filter.trim()}”`, 'Try part of a URL or a request name.')); return; }
+    body.append(h('div', { class: 'row' }, h('span', { class: 'muted' }, `${data.history.length} entries`), h('span', { class: 'spacer' }),
+      btn('Clear history', () => {
+        const old = data.history; data.history = []; saveHistory(); renderSidebar();
+        toast(`Cleared ${old.length} history entries.`, { action: ['Undo', () => { data.history = old; saveHistory(); renderSidebar(); }] });
+      }, 'small ghost')));
     for (const hist of shown.reverse()) {
+      const hmenu = (e) => openMenu(e, [['Delete entry', () => {
+        const idx = data.history.indexOf(hist); data.history.splice(idx, 1); saveHistory(); renderSidebar();
+        toast('Deleted history entry.', { action: ['Undo', () => { data.history.splice(idx, 0, hist); saveHistory(); renderSidebar(); }] });
+      }, { danger: true }]]);
       const t = new Date(hist.timestamp);
       const hhmm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
       body.append(h('div', { class: 'hist', role: 'button', tabindex: 0, title: `${hist.request.method.toUpperCase()} ${hist.request.url}`,
-        onclick: () => openFromHistory(hist), onkeydown: activate },
+        onclick: () => openFromHistory(hist), onkeydown: activate, oncontextmenu: hmenu },
         h('span', { class: 'muted' }, hhmm), methodTag(hist.request.method),
         h('span', { class: hist.status ? `s${Math.floor(hist.status / 100)}` : 's0' }, hist.status ?? 'ERR'),
-        h('span', {}, hist.request.url || '(no URL)')));
+        h('span', {}, hist.request.url || '(no URL)'), btn('⋯', hmenu, 'small more').withAttr('aria-label', 'History entry actions')));
     }
     return;
   }
@@ -273,6 +329,7 @@ function containerNode(c, parentArr, isFolder = false) {
       ondragover: (e) => { if (dragging) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
       ondragleave: (e) => e.currentTarget.classList.remove('dropping'), ondrop: dropOnContainer },
       nameNode(c), btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
+    !q() && !c.folders.length && !c.requests.length && h('div', { class: 'empty-hint' }, 'Empty — right-click to add a request, or paste a curl into the URL field'),
     ...view.folders.map((f) => containerNode(f, c.folders, true)),
     ...view.requests.map((r) => {
       const many = selected.has(r) && selected.size > 1;
@@ -452,11 +509,14 @@ function renderRequestHeader() {
   $('#url').value = current.url;
   $('#send').classList.toggle('hidden', isPending());
   $('#cancel').classList.toggle('hidden', !isPending());
-  const m = $('#missing');
-  m.classList.toggle('hidden', missing.length === 0);
-  m.replaceChildren(missing.length ? h('span', {}, `⚠ ${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} not defined in the active environment. `,
-    h('strong', {}, 'Send again to send with the placeholders as-is.')) : '');
+  sizeName(); renderUrlMirror(); renderMissing();
   renderTabCounts();
+}
+
+function sizeName() {
+  const inp = $('#req-name'), m = $('#req-name-measure');
+  m.textContent = inp.value || inp.placeholder || '';
+  inp.style.width = `${m.offsetWidth + 12}px`;
 }
 
 function renderTabCounts() {
@@ -465,8 +525,8 @@ function renderTabCounts() {
     body: current.body_type === 'None' ? 0 : current.body_type === 'Form' ? count(current.form) : (current.body.trim() ? 1 : 0),
     auth: current.auth === 'None' ? 0 : 1 };
   document.querySelectorAll('[data-req]').forEach((b) => {
-    const key = b.dataset.req;
-    put(b, key[0].toUpperCase() + key.slice(1), n[key] ? h('span', { class: 'n' }, n[key]) : null);
+    const key = b.dataset.req, countable = key === 'params' || key === 'headers' || (key === 'body' && current.body_type === 'Form');
+    put(b, key[0].toUpperCase() + key.slice(1), n[key] ? h('span', { class: countable ? 'n' : 'n dot' }, countable ? n[key] : '•') : null);
   });
 }
 
@@ -528,9 +588,9 @@ function authEditor() {
 async function send() {
   if (isPending()) return;
   if (!current.url.trim()) { $('#url').focus(); return; }
-  const m = await invoke('missing_vars', { request: current, env: activeEnv() });
-  // 有未定义变量：第一次点击只提示，第二次（列表未变）强制发送
-  if (m.length && JSON.stringify(m) !== JSON.stringify(missing)) { missing = m; renderRequestHeader(); return; }
+  const m = unresolvedVars();
+  // 有未定义变量：第一次点击只提示（Send 旁的槽位变成"再点一次即发送"），第二次强制发送
+  if (m.length && JSON.stringify(m) !== JSON.stringify(missing)) { missing = m; renderMissing(); return; }
   missing = [];
   const id = ++jobSeq, rid = current.id, req = structuredClone(current);
   pendings.set(rid, id); responses.delete(rid);
@@ -545,10 +605,12 @@ async function send() {
   pendings.delete(rid); setResponse(rid, result);
   data.history.push({ timestamp: new Date().toISOString(), request: req, status, duration_ms });
   if (data.history.length > HISTORY_LIMIT) data.history.splice(0, data.history.length - HISTORY_LIMIT);
-  invoke('save_history', { history: data.history }).catch((e) => toast(`Couldn't save history. ${e}`, { error: true }));
+  saveHistory();
   if (current.id === rid) { renderRequestHeader(); renderResponse(); }
   renderSidebar();
 }
+
+const saveHistory = () => invoke('save_history', { history: data.history }).catch((e) => toast(`Couldn't save history. ${e}`, { error: true }));
 
 // ---------- 响应面板 ----------
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -571,7 +633,14 @@ function renderResponse() {
   tabs.classList.toggle('hidden', !response?.ok);
   if (!response) {
     if (pending) meta.append(h('span', { class: 'spinner' }), h('span', { class: 'muted' }, 'Sending…'));
-    else body.append(emptyState('Response will show here', `Fill in a URL and press Send, or ${MOD}↩ from anywhere in the editor.`));
+    else {
+      const last = [...data.history].reverse().find((x) => x.request.id === current.id);
+      const when = last && new Date(last.timestamp);
+      body.append(emptyState('Response will show here', `Fill in a URL and press Send, or ${MOD}↩ from anywhere in the editor.`));
+      if (last) body.append(h('div', { class: 'empty' }, h('span', { class: 'muted' }, `Last sent ${when.toLocaleDateString()} ${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')} · `,
+          h('span', { class: last.status ? `s${Math.floor(last.status / 100)}` : 's0' }, last.status ? `${last.status} ${REASON[last.status] || ''}`.trim() : 'failed'),
+          last.duration_ms != null ? ` · ${last.duration_ms} ms` : '')));
+    }
     return;
   }
   if (response.cancelled) { meta.append(h('span', { class: 'muted' }, 'Cancelled — nothing was received.')); return; }
@@ -742,28 +811,38 @@ function jsonPath_(root, path) {
 // ---------- 环境管理对话框 ----------
 function renderEnvDialog() {
   const list = $('#env-list'), editor = $('#env-editor');
-  list.replaceChildren(...[
-    ...data.environments.map((e) => btn(e.name, () => { envSel = e; renderEnvDialog(); }, 'item' + (e === envSel ? ' active' : ''))),
-    btn('+ New environment', () => {
-      envSel = { id: crypto.randomUUID(), name: `Environment ${data.environments.length + 1}`, variables: [] };
-      data.environments.push(envSel); dirty(); renderEnvDialog(); renderTopbar();
-      setTimeout(() => $('#env-editor input')?.select(), 0);
-    }, 'small'),
-    envSel && btn('Delete', () => {
-      const env = envSel, idx = data.environments.indexOf(env);
-      data.environments.splice(idx, 1);
-      const wasActive = activeEnvId === env.id;
-      if (wasActive) activeEnvId = null;
-      envSel = null; dirty(); renderEnvDialog(); renderTopbar();
-      toast(`Deleted environment “${env.name}”.`, { action: ['Undo', () => { data.environments.splice(idx, 0, env); if (wasActive) activeEnvId = env.id; envSel = env; dirty(); renderEnvDialog(); renderTopbar(); }] });
-    }, 'small'),
-  ].filter(Boolean));
+  const newEnv = () => {
+    envSel = { id: crypto.randomUUID(), name: `Environment ${data.environments.length + 1}`, variables: [] };
+    data.environments.push(envSel); dirty(); renderEnvDialog(); renderTopbar();
+    setTimeout(() => $('#env-editor .head input')?.select(), 0);
+  };
+  list.replaceChildren(
+    ...data.environments.map((e) => h('button', { class: 'item' + (e === envSel ? ' active' : ''), onclick: () => { envSel = e; renderEnvDialog(); } },
+      h('span', { class: 'name' }, e.name),
+      e.id === activeEnvId ? h('span', { class: 'badge' }, 'Active') : h('span', { class: 'meta muted' }, `${e.variables.filter((v) => v.key).length}`))),
+    btn('+ New environment', newEnv, 'small ghost new'),
+  );
   editor.replaceChildren();
-  if (!envSel) { editor.append(emptyState('Pick an environment', 'Variables here replace {{name}} in URLs, headers, bodies and auth.')); return; }
+  if (!data.environments.length) { editor.append(emptyState('No environments yet', 'An environment is a named set of variables — dev, staging, production. Switch between them from the top bar.', ['Create environment', newEnv])); return; }
+  if (!envSel) { editor.append(emptyState('Pick an environment', 'Select one on the left to edit its variables.')); return; }
+  const env = envSel, isActive = env.id === activeEnvId;
+  const del = () => {
+    const idx = data.environments.indexOf(env);
+    data.environments.splice(idx, 1);
+    if (isActive) activeEnvId = null;
+    envSel = data.environments[Math.min(idx, data.environments.length - 1)] || null;
+    dirty(); renderEnvDialog(); renderTopbar(); renderRequestHeader();
+    toast(`Deleted environment “${env.name}”.`, { action: ['Undo', () => { data.environments.splice(idx, 0, env); if (isActive) activeEnvId = env.id; envSel = env; dirty(); renderEnvDialog(); renderTopbar(); renderRequestHeader(); }] });
+  };
   editor.append(
-    h('input', { value: envSel.name, 'aria-label': 'Environment name', oninput: (e) => { envSel.name = e.target.value; dirty(); renderTopbar(); $('#env-list .item.active').textContent = envSel.name; } }),
-    h('p', { class: 'muted' }, 'Variables — use them as {{name}} anywhere in a request.'),
-    kvTable(envSel.variables, 'Name', 'Value', renderEnvDialog),
+    h('div', { class: 'head' },
+      h('input', { value: env.name, 'aria-label': 'Environment name', oninput: (e) => { env.name = e.target.value; dirty(); renderTopbar(); $('#env-list .item.active .name').textContent = env.name; } }),
+      isActive ? h('span', { class: 'badge' }, 'Active') : btn('Set active', () => { activeEnvId = env.id; missing = []; renderTopbar(); renderRequestHeader(); renderEnvDialog(); }),
+      btn('Duplicate', () => { const d = structuredClone(env); d.id = crypto.randomUUID(); d.name += ' copy'; data.environments.splice(data.environments.indexOf(env) + 1, 0, d); envSel = d; dirty(); renderEnvDialog(); renderTopbar(); }),
+      btn('Delete', del, 'small ghost'),
+    ),
+    h('div', { class: 'vars-head' }, h('span'), h('span', {}, 'Name'), h('span', {}, 'Value'), h('span')),
+    h('div', { class: 'vars' }, kvTable(env.variables, 'e.g. base_url', 'e.g. https://api.example.com', renderEnvDialog)),
   );
 }
 
@@ -820,7 +899,8 @@ function bind() {
   $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies cleared for this session.'); };
   $('#method').replaceChildren(...METHODS.map((m) => h('option', { value: m }, m.toUpperCase())));
   $('#method').onchange = (e) => { current.method = e.target.value; dirty(); renderSidebar(); };
-  $('#url').oninput = (e) => { current.url = e.target.value; dirty(); };
+  $('#url').oninput = (e) => { current.url = e.target.value; dirty(); renderUrlMirror(); renderMissing(); };
+  $('#url').onscroll = () => { $('#url-mirror').scrollLeft = $('#url').scrollLeft; };
   $('#url').onkeydown = (e) => { if (e.key === 'Enter') send(); };
   $('#url').onpaste = (e) => {
     const t = e.clipboardData?.getData('text') || '';
@@ -831,14 +911,23 @@ function bind() {
     if (await importCurl($('#import-text').value, (m) => { $('#import-error').textContent = m; }, importInto)) { $('#import-text').value = ''; $('#import-dialog').close(); }
   };
   $('#import-text').onkeydown = (e) => { if ((MAC ? e.metaKey : e.ctrlKey) && e.key === 'Enter') $('#import-run').click(); };
-  $('#req-name').oninput = (e) => { current.name = e.target.value; dirty(); renderSidebar(); };
+  $('#req-name').oninput = (e) => { current.name = e.target.value; sizeName(); dirty(); renderSidebar(); };
   $('#req-name').onkeydown = (e) => { if (e.key === 'Enter') e.target.blur(); };
   $('#send').onclick = send;
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pendings.get(current.id) });
   $('#export-copy').onclick = (e) => copyText($('#export-text').textContent, e.currentTarget);
   $('#export-close').onclick = () => $('#export-dialog').close();
-  $('#env-select').onchange = (e) => { activeEnvId = e.target.value || null; missing = []; renderRequestHeader(); };
-  $('#env-manage').onclick = () => { renderEnvDialog(); $('#env-dialog').showModal(); };
+  $('#env-select').onchange = (e) => {
+    if (e.target.value === '__manage') { e.target.value = activeEnvId || ''; envSel = activeEnv(); renderEnvDialog(); $('#env-dialog').showModal(); return; }
+    activeEnvId = e.target.value || null; missing = []; renderRequestHeader();
+  };
+  // 原生菜单（macOS 菜单栏里可见快捷键）触发的动作
+  window.__TAURI__.event?.listen('menu', ({ payload }) => {
+    if (payload === 'send') send();
+    else if (payload === 'new') { createRequest(); $('#url').focus(); }
+    else if (payload === 'find') { const f = $('#find') || $('#search'); f.focus(); f.select(); }
+    else if (payload === 'filter') { $('#search').focus(); $('#search').select(); }
+  });
   $('#env-close').onclick = () => $('#env-dialog').close();
   document.querySelectorAll('[data-side]').forEach((b) => b.onclick = () => { sideTab = b.dataset.side; renderSidebar(); });
   $('#search').oninput = (e) => { filter = e.target.value; renderSidebar(); };
