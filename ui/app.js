@@ -444,8 +444,8 @@ function homeCollection() {
 }
 /** 当前请求所在的容器 requests 数组（用于"在旁边新建"），否则首个集合 */
 const homeArr = () => locateArr(current) || homeCollection().requests;
-function createRequest(kind = 'http') {
-  const r = newRequest(undefined, kind);
+function createRequest() {
+  const r = newRequest();
   homeArr().push(r); dirty(); selectRequest(r);
   return r;
 }
@@ -554,7 +554,7 @@ function sizeName() {
 function renderTabCounts() {
   const count = (rows) => rows.filter((r) => r.enabled && r.key).length;
   const n = { params: count(current.params), headers: count(current.headers),
-    body: current.body_type === 'None' ? 0 : isGql(current) ? (current.body.trim() ? 1 : 0) : current.body_type === 'Form' ? count(current.form) : (current.body.trim() ? 1 : 0),
+    body: current.body_type === 'None' ? 0 : current.body_type === 'Form' ? count(current.form) : (current.body.trim() ? 1 : 0),
     auth: current.auth === 'None' ? 0 : 1 };
   document.querySelectorAll('[data-req]').forEach((b) => {
     const key = b.dataset.req, countable = key === 'params' || key === 'headers' || (key === 'body' && current.body_type === 'Form');

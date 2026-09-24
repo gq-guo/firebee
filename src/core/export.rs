@@ -29,8 +29,9 @@ fn effective_headers(req: &Request) -> Vec<(String, String)> {
         }
         _ => {}
     }
-    if (req.body_type == BodyType::Json && !req.body.is_empty())
-        || req.body_type == BodyType::GraphQL
+    if ((req.body_type == BodyType::Json && !req.body.is_empty())
+        || req.body_type == BodyType::GraphQL)
+        && !req.has_header("content-type")
     {
         hs.push(("Content-Type".into(), "application/json".into()));
     }
@@ -51,14 +52,22 @@ fn curl_body(req: &Request) -> String {
     req.body.clone()
 }
 
-/// ponytail: 变量不是合法 JSON 时导出只带 query（发送时会明确报错）
+/// 变量不是合法 JSON 时原样拼进去：导出的命令会失败得很明显，而不是悄悄丢掉变量
 fn gql_body(req: &Request) -> String {
-    req.graphql_payload()
-        .unwrap_or_else(|_| serde_json::json!({ "query": req.body }).to_string())
+    req.graphql_payload().unwrap_or_else(|_| {
+        format!(
+            r#"{{"query":{},"variables":{}}}"#,
+            serde_json::Value::from(req.body.as_str()),
+            req.graphql_variables.trim()
+        )
+    })
 }
 
 pub fn to_curl(req: &Request, url: &str) -> String {
-    let mut parts = vec![format!("curl -X {}", req.method.as_str()), sh(url)];
+    let mut parts = vec![
+        format!("curl -X {}", req.effective_method().as_str()),
+        sh(url),
+    ];
     if let Auth::Basic { username, password } = &req.auth {
         parts.push(format!("-u {}", sh(&format!("{username}:{password}"))));
     }
@@ -90,7 +99,7 @@ pub fn to_python(req: &Request, url: &str) -> String {
     s.push_str("response = requests.request(\n");
     s.push_str(&format!(
         "    {},\n    {},\n",
-        py(req.method.as_str()),
+        py(req.effective_method().as_str()),
         py(url)
     ));
     let hs = effective_headers(req);
@@ -196,6 +205,13 @@ mod tests {
         let c = to_curl(&r, "https://api.dev/graphql");
         assert!(c.contains("Content-Type: application/json"), "{c}");
         assert!(c.contains(r#"-d '{"query":"{ me { id } }"}'"#), "{c}");
+        assert!(c.contains("curl -X POST"), "{c}");
+        // 用户已填 Content-Type 时不重复
+        r.headers = vec![KeyValue::new("content-type", "application/json")];
+        assert_eq!(to_curl(&r, "u").matches("ontent-").count(), 1);
+        // 变量非法 JSON：原样带上，不丢
+        r.graphql_variables = "{\"id\": {{id}}}".into();
+        assert!(to_curl(&r, "u").contains(r#""variables":{"id": {{id}}}"#));
     }
 
     #[test]

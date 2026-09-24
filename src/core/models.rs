@@ -119,6 +119,22 @@ impl Request {
         }
     }
 
+    /// GraphQL 一律 POST（存档里的 method 可能来自 Postman 导入的 GET，界面上又不可见）
+    pub fn effective_method(&self) -> HttpMethod {
+        if self.body_type == BodyType::GraphQL {
+            HttpMethod::Post
+        } else {
+            self.method
+        }
+    }
+
+    /// 用户是否已启用某个 header（大小写不敏感），用来避免重复加默认头
+    pub fn has_header(&self, name: &str) -> bool {
+        self.headers
+            .iter()
+            .any(|h| h.enabled && h.key.trim().eq_ignore_ascii_case(name))
+    }
+
     /// GraphQL 请求体：{"query": body, "variables": {...}}；变量为空则省略，非法 JSON 报错
     pub fn graphql_payload(&self) -> Result<String, String> {
         let mut doc = serde_json::json!({ "query": self.body });
@@ -260,6 +276,10 @@ mod tests {
         assert_eq!(v["variables"]["id"], 1);
         r.graphql_variables = "{nope".into();
         assert!(r.graphql_payload().is_err());
+        // method 存的是 GET 也按 POST 发
+        assert_eq!(r.effective_method(), HttpMethod::Post);
+        r.headers = vec![KeyValue::new(" content-TYPE", "application/json")];
+        assert!(r.has_header("Content-Type"));
     }
 
     #[test]
