@@ -91,6 +91,9 @@ pub struct Request {
     pub body: String,
     pub form: Vec<KeyValue>,
     pub auth: Auth,
+    /// 置顶到侧栏 Pinned 区；老的存档文件没有这个字段
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 impl Request {
@@ -106,6 +109,7 @@ impl Request {
             body: String::new(),
             form: vec![],
             auth: Auth::None,
+            pinned: false,
         }
     }
 }
@@ -214,6 +218,15 @@ mod tests {
                 token: "t123".into()
             }
         );
+    }
+
+    #[test]
+    fn request_without_pinned_field_loads() {
+        // 0.1.1 之前存下来的 collections.json 里没有 pinned
+        let old = r#"{"id":"00000000-0000-0000-0000-000000000001","name":"a","method":"Get",
+            "url":"","params":[],"headers":[],"body_type":"None","body":"","form":[],"auth":"None"}"#;
+        let r: Request = serde_json::from_str(old).unwrap();
+        assert!(!r.pinned);
     }
 
     #[test]

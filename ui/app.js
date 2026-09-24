@@ -45,7 +45,7 @@ const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘
 
 function newRequest(name = 'Untitled request') {
   return { id: crypto.randomUUID(), name, method: 'Get', url: '', params: [], headers: [],
-           body_type: 'None', body: '', form: [], auth: 'None' };
+           body_type: 'None', body: '', form: [], auth: 'None', pinned: false };
 }
 const newContainer = (name) => ({ id: crypto.randomUUID(), name, folders: [], requests: [] });
 const kv = () => ({ enabled: true, key: '', value: '' });
@@ -266,6 +266,8 @@ function renderSidebar() {
   const shown = data.collections.filter((c) => filterView(c).show);
   if (q() && !shown.length) { body.append(emptyState(`Nothing matches “${filter.trim()}”`, 'Names of collections, folders and requests are searched, and request URLs.')); return; }
   body.append(h('div', { class: 'row' }, btn('+ New collection', addCol, 'small'), btn('Import…', importFile, 'small ghost')));
+  const pins = pinnedNode();
+  if (pins) body.append(pins);
   shown.forEach((c) => body.append(containerNode(c, data.collections)));
   body.querySelector('input.rename')?.focus();
 }
@@ -331,27 +333,51 @@ function containerNode(c, parentArr, isFolder = false) {
       nameNode(c), btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
     !q() && !c.folders.length && !c.requests.length && h('div', { class: 'empty-hint' }, 'Empty — right-click to add a request, or paste a curl into the URL field'),
     ...view.folders.map((f) => containerNode(f, c.folders, true)),
-    ...view.requests.map((r) => {
-      const many = selected.has(r) && selected.size > 1;
-      const rmenu = (e) => openMenu(e, [
-        ...exportItems(r),
-        ['Duplicate', () => { const d = structuredClone(r); d.id = crypto.randomUUID(); d.name += ' copy'; c.requests.splice(c.requests.indexOf(r) + 1, 0, d); dirty(); selectRequest(d); }],
-        ['Rename', startRename(r)],
-        many ? [`Delete ${selected.size} selected`, deleteSelected, { danger: true, kbd: '⌫' }] : ['Delete', remove(c.requests, r, 'request'), { danger: true }],
-      ]);
-      return h('div', { class: 'req' + (r === current ? ' active' : '') + (selected.has(r) ? ' sel' : ''), role: 'button', tabindex: 0,
-        'aria-current': r === current || undefined, 'aria-selected': selected.has(r) || undefined, draggable: 'true',
-        onclick: (e) => { if (e.metaKey || e.ctrlKey) { selected.has(r) ? selected.delete(r) : selected.add(r); renderSidebar(); } else { selected.clear(); selectRequest(r); } },
-        onkeydown: activate, oncontextmenu: rmenu,
-        ondragstart: (e) => { dragging = { arr: c.requests, r }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', r.name); },
-        ondragend: () => { dragging = null; document.querySelectorAll('.dropping').forEach((x) => x.classList.remove('dropping')); },
-        ondragover: (e) => { if (dragging && dragging.r !== r) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
-        ondragleave: (e) => e.currentTarget.classList.remove('dropping'),
-        ondrop: (e) => { e.preventDefault(); e.stopPropagation(); moveDragged(c.requests, c.requests.indexOf(r)); } },
-        methodTag(r.method), nameNode(r), pendings.has(r.id) && h('span', { class: 'spinner', title: 'Sending…' }),
-        btn('⋯', rmenu, 'small more').withAttr('aria-label', 'Request actions'));
-    }),
+    ...view.requests.map((r) => requestRow(r, c.requests)),
   );
+}
+
+/** 一行请求。arr 是它所属的 requests 数组（Duplicate / Delete / 拖动都作用在上面）；
+ *  drag=false 用于 Pinned 区——那里的顺序跟着各自集合走，拖动没有意义。 */
+function requestRow(r, arr, drag = true) {
+  const many = selected.has(r) && selected.size > 1;
+  const rmenu = (e) => openMenu(e, [
+    [r.pinned ? 'Unpin' : 'Pin to top', () => { r.pinned = !r.pinned; dirty(); renderSidebar(); }],
+    ...exportItems(r),
+    ['Duplicate', () => { const d = structuredClone(r); d.id = crypto.randomUUID(); d.name += ' copy'; d.pinned = false; arr.splice(arr.indexOf(r) + 1, 0, d); dirty(); selectRequest(d); }],
+    ['Rename', startRename(r)],
+    many ? [`Delete ${selected.size} selected`, deleteSelected, { danger: true, kbd: '⌫' }] : ['Delete', remove(arr, r, 'request'), { danger: true }],
+  ]);
+  const drops = drag ? {
+    draggable: 'true',
+    ondragstart: (e) => { dragging = { arr, r }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', r.name); },
+    ondragend: () => { dragging = null; document.querySelectorAll('.dropping').forEach((x) => x.classList.remove('dropping')); },
+    ondragover: (e) => { if (dragging && dragging.r !== r) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
+    ondragleave: (e) => e.currentTarget.classList.remove('dropping'),
+    ondrop: (e) => { e.preventDefault(); e.stopPropagation(); moveDragged(arr, arr.indexOf(r)); },
+  } : {};
+  return h('div', { class: 'req' + (r === current ? ' active' : '') + (selected.has(r) ? ' sel' : ''), role: 'button', tabindex: 0,
+    'aria-current': r === current || undefined, 'aria-selected': selected.has(r) || undefined, ...drops,
+    onclick: (e) => { if (e.metaKey || e.ctrlKey) { selected.has(r) ? selected.delete(r) : selected.add(r); renderSidebar(); } else { selected.clear(); selectRequest(r); } },
+    onkeydown: activate, oncontextmenu: rmenu },
+    methodTag(r.method), nameNode(r), pendings.has(r.id) && h('span', { class: 'spinner', title: 'Sending…' }),
+    btn('⋯', rmenu, 'small more').withAttr('aria-label', 'Request actions'));
+}
+
+/** 集合树里的所有请求（深度优先） */
+function allRequests(nodes = data.collections, out = []) {
+  for (const n of nodes) { out.push(...n.requests); allRequests(n.folders, out); }
+  return out;
+}
+
+/** 侧栏顶部的 Pinned 区；没有置顶请求时不占位 */
+function pinnedNode() {
+  const pins = allRequests().filter((r) => r.pinned && (!q() || hit(r.name) || hit(r.url)));
+  if (!pins.length) return null;
+  return h('details', { class: 'pinned', open: q() ? true : !collapsed.has('pinned'),
+      ontoggle: (e) => { if (!q()) e.target.open ? collapsed.delete('pinned') : collapsed.add('pinned'); } },
+    h('summary', {}, h('span', { class: 'name' }, 'Pinned'), h('span', { class: 'muted' }, String(pins.length))),
+    ...pins.map((r) => requestRow(r, locateArr(r) || [], false)));
 }
 Element.prototype.withAttr = function (k, v) { if (v !== undefined) this.setAttribute(k, v); return this; };
 

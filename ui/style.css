@@ -172,6 +172,8 @@ summary.dropping { background: var(--color-selected); }
 .rename { flex: 1; min-width: 0; height: 24px; font-size: var(--text-sm); }
 .empty { padding: var(--space-lg) var(--space-sm); color: var(--color-muted); display: flex; flex-direction: column; gap: var(--space-xs); align-items: flex-start; max-width: 32ch; }
 .empty strong { color: var(--color-ink-2); font-weight: 600; }
+details.pinned { margin-bottom: var(--space-2xs); padding-bottom: var(--space-2xs); border-bottom: 1px solid var(--color-rule); }
+details.pinned > summary .name { flex: none; font-size: var(--text-xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--color-muted); }
 .empty-hint { margin-left: 24px; padding: 2px var(--space-2xs); color: var(--color-muted); font-size: var(--text-xs); }
 .hist .more { margin-left: auto; }
 .dialog-foot { margin: var(--space-md) 0 0; padding-top: var(--space-sm); border-top: 1px solid var(--color-rule); }
