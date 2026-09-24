@@ -59,6 +59,8 @@ pub enum BodyType {
     Json,
     Text,
     Form,
+    /// body 是 GraphQL query，变量在 graphql_variables；发送时组装成 JSON
+    GraphQL,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +96,9 @@ pub struct Request {
     /// 置顶到侧栏 Pinned 区；老的存档文件没有这个字段
     #[serde(default)]
     pub pinned: bool,
+    /// GraphQL 变量（JSON 文本），仅 body_type == GraphQL 时使用
+    #[serde(default)]
+    pub graphql_variables: String,
 }
 
 impl Request {
@@ -110,7 +115,19 @@ impl Request {
             form: vec![],
             auth: Auth::None,
             pinned: false,
+            graphql_variables: String::new(),
         }
+    }
+
+    /// GraphQL 请求体：{"query": body, "variables": {...}}；变量为空则省略，非法 JSON 报错
+    pub fn graphql_payload(&self) -> Result<String, String> {
+        let mut doc = serde_json::json!({ "query": self.body });
+        if !self.graphql_variables.trim().is_empty() {
+            let vars: serde_json::Value = serde_json::from_str(&self.graphql_variables)
+                .map_err(|e| format!("GraphQL variables aren't valid JSON: {e}"))?;
+            doc["variables"] = vars;
+        }
+        Ok(doc.to_string())
     }
 }
 
@@ -227,6 +244,22 @@ mod tests {
             "url":"","params":[],"headers":[],"body_type":"None","body":"","form":[],"auth":"None"}"#;
         let r: Request = serde_json::from_str(old).unwrap();
         assert!(!r.pinned);
+    }
+
+    #[test]
+    fn graphql_payload_wraps_query_and_variables() {
+        let mut r = Request::new("q");
+        r.body_type = BodyType::GraphQL;
+        r.body = "query { me { id } }".into();
+        assert_eq!(
+            r.graphql_payload().unwrap(),
+            r#"{"query":"query { me { id } }"}"#
+        );
+        r.graphql_variables = r#"{"id": 1}"#.into();
+        let v: serde_json::Value = serde_json::from_str(&r.graphql_payload().unwrap()).unwrap();
+        assert_eq!(v["variables"]["id"], 1);
+        r.graphql_variables = "{nope".into();
+        assert!(r.graphql_payload().is_err());
     }
 
     #[test]

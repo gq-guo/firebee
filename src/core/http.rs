@@ -15,6 +15,8 @@ pub enum HttpError {
     Cancelled,
     #[error("Invalid URL: {0}")]
     InvalidUrl(String),
+    #[error("{0}")]
+    InvalidBody(String),
     #[error("Network error: {0}")]
     Network(String),
 }
@@ -106,6 +108,11 @@ pub async fn execute(
                 .map(|f| (f.key.clone(), f.value.clone()))
                 .collect();
             builder = builder.form(&form);
+        }
+        BodyType::GraphQL => {
+            builder = builder
+                .header("Content-Type", "application/json")
+                .body(req.graphql_payload().map_err(HttpError::InvalidBody)?);
         }
         BodyType::None => {}
     }
@@ -223,6 +230,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status, 201);
+    }
+
+    #[tokio::test]
+    async fn graphql_posts_json_payload() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("content-type", "application/json"))
+            .and(body_string(
+                r#"{"query":"{ me { id } }","variables":{"a":1}}"#,
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let mut req = Request::new("t");
+        req.method = crate::core::models::HttpMethod::Post;
+        req.url = format!("{}/graphql", server.uri());
+        req.body_type = BodyType::GraphQL;
+        req.body = "{ me { id } }".into();
+        req.graphql_variables = r#"{"a": 1}"#.into();
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 200);
     }
 
     #[tokio::test]

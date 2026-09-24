@@ -169,6 +169,8 @@ summary.dropping { background: var(--color-selected); }
 .method { font: 600 var(--text-xs) var(--font-mono); min-width: 44px; display: inline-block; letter-spacing: 0.02em; }
 .m-get { color: var(--color-ok); } .m-post { color: var(--color-warn); } .m-put { color: var(--color-redirect); }
 .m-patch { color: var(--color-purple); } .m-delete { color: var(--color-err); } .m-head, .m-options { color: var(--color-muted); }
+.m-gql { color: var(--color-accent); }
+.fill textarea.gql-vars { flex: 0 0 30%; }
 .rename { flex: 1; min-width: 0; height: 24px; font-size: var(--text-sm); }
 .empty { padding: var(--space-lg) var(--space-sm); color: var(--color-muted); display: flex; flex-direction: column; gap: var(--space-xs); align-items: flex-start; max-width: 32ch; }
 .empty strong { color: var(--color-ink-2); font-weight: 600; }

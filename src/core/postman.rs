@@ -99,6 +99,11 @@ fn request(item: &Value, inherited: &Auth) -> Request {
                         .retain(|h| !h.key.eq_ignore_ascii_case("content-type"));
                 }
             }
+            "graphql" => {
+                req.body_type = BodyType::GraphQL;
+                req.body = s(&body["graphql"]["query"]);
+                req.graphql_variables = s(&body["graphql"]["variables"]);
+            }
             "urlencoded" => {
                 req.body_type = BodyType::Form;
                 req.form = kvs(body.get("urlencoded"));
