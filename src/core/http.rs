@@ -15,6 +15,8 @@ pub enum HttpError {
     Cancelled,
     #[error("Invalid URL: {0}")]
     InvalidUrl(String),
+    #[error("{0}")]
+    InvalidBody(String),
     #[error("Network error: {0}")]
     Network(String),
 }
@@ -62,8 +64,9 @@ pub async fn execute(
     let client = builder
         .build()
         .map_err(|e| HttpError::Network(e.to_string()))?;
-    let method = reqwest::Method::from_bytes(req.method.as_str().as_bytes())
-        .map_err(|_| HttpError::InvalidUrl(req.method.as_str().to_string()))?;
+    let m = req.effective_method().as_str();
+    let method =
+        reqwest::Method::from_bytes(m.as_bytes()).map_err(|_| HttpError::InvalidUrl(m.into()))?;
 
     let mut builder = client.request(method, url);
     for h in req
@@ -89,9 +92,7 @@ pub async fn execute(
     }
     match &req.body_type {
         BodyType::Json => {
-            builder = builder
-                .header("Content-Type", "application/json")
-                .body(req.body.clone());
+            builder = builder.body(req.body.clone());
         }
         BodyType::Text => {
             if !req.body.is_empty() {
@@ -107,7 +108,16 @@ pub async fn execute(
                 .collect();
             builder = builder.form(&form);
         }
+        BodyType::GraphQL => {
+            builder = builder.body(req.graphql_payload().map_err(HttpError::InvalidBody)?);
+        }
         BodyType::None => {}
+    }
+    // reqwest 的 header() 是追加：用户自己填了 Content-Type 就不再加默认的
+    if matches!(req.body_type, BodyType::Json | BodyType::GraphQL)
+        && !req.has_header("content-type")
+    {
+        builder = builder.header("Content-Type", "application/json");
     }
 
     let start = Instant::now();
@@ -223,6 +233,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status, 201);
+    }
+
+    #[tokio::test]
+    async fn graphql_posts_json_payload() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("content-type", "application/json"))
+            .and(body_string(
+                r#"{"query":"{ me { id } }","variables":{"a":1}}"#,
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let mut req = Request::new("t");
+        req.url = format!("{}/graphql", server.uri());
+        req.body_type = BodyType::GraphQL;
+        req.method = crate::core::models::HttpMethod::Get; // 仍按 POST 发
+        req.headers = vec![KeyValue::new("Content-Type", "application/json")];
+        req.body = "{ me { id } }".into();
+        req.graphql_variables = r#"{"a": 1}"#.into();
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 200);
     }
 
     #[tokio::test]

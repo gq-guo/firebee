@@ -29,7 +29,10 @@ fn effective_headers(req: &Request) -> Vec<(String, String)> {
         }
         _ => {}
     }
-    if req.body_type == BodyType::Json && !req.body.is_empty() {
+    if ((req.body_type == BodyType::Json && !req.body.is_empty())
+        || req.body_type == BodyType::GraphQL)
+        && !req.has_header("content-type")
+    {
         hs.push(("Content-Type".into(), "application/json".into()));
     }
     hs
@@ -38,6 +41,9 @@ fn effective_headers(req: &Request) -> Vec<(String, String)> {
 /// curl 的 -d 用单行 JSON：几百行的美化 JSON 粘进终端会撑爆行编辑器，回车也发不出去。
 /// 不是合法 JSON 时原样保留。
 fn curl_body(req: &Request) -> String {
+    if req.body_type == BodyType::GraphQL {
+        return gql_body(req);
+    }
     if req.body_type == BodyType::Json {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&req.body) {
             return v.to_string();
@@ -46,8 +52,22 @@ fn curl_body(req: &Request) -> String {
     req.body.clone()
 }
 
+/// 变量不是合法 JSON 时原样拼进去：导出的命令会失败得很明显，而不是悄悄丢掉变量
+fn gql_body(req: &Request) -> String {
+    req.graphql_payload().unwrap_or_else(|_| {
+        format!(
+            r#"{{"query":{},"variables":{}}}"#,
+            serde_json::Value::from(req.body.as_str()),
+            req.graphql_variables.trim()
+        )
+    })
+}
+
 pub fn to_curl(req: &Request, url: &str) -> String {
-    let mut parts = vec![format!("curl -X {}", req.method.as_str()), sh(url)];
+    let mut parts = vec![
+        format!("curl -X {}", req.effective_method().as_str()),
+        sh(url),
+    ];
     if let Auth::Basic { username, password } = &req.auth {
         parts.push(format!("-u {}", sh(&format!("{username}:{password}"))));
     }
@@ -60,6 +80,7 @@ pub fn to_curl(req: &Request, url: &str) -> String {
                 parts.push(format!("-d {}", sh(&curl_body(req))));
             }
         }
+        BodyType::GraphQL => parts.push(format!("-d {}", sh(&curl_body(req)))),
         BodyType::Form => {
             for f in req.form.iter().filter(|f| f.enabled && !f.key.is_empty()) {
                 parts.push(format!(
@@ -78,7 +99,7 @@ pub fn to_python(req: &Request, url: &str) -> String {
     s.push_str("response = requests.request(\n");
     s.push_str(&format!(
         "    {},\n    {},\n",
-        py(req.method.as_str()),
+        py(req.effective_method().as_str()),
         py(url)
     ));
     let hs = effective_headers(req);
@@ -98,6 +119,7 @@ pub fn to_python(req: &Request, url: &str) -> String {
                 s.push_str(&format!("    data={},\n", py(&req.body)));
             }
         }
+        BodyType::GraphQL => s.push_str(&format!("    data={},\n", py(&gql_body(req)))),
         BodyType::Form => {
             s.push_str("    data={\n");
             for f in req.form.iter().filter(|f| f.enabled && !f.key.is_empty()) {
@@ -172,6 +194,24 @@ mod tests {
         r.form = vec![KeyValue::new("name", "张三")];
         let c = to_curl(&r, "https://api.dev/f");
         assert!(c.contains("--data-urlencode 'name=张三'"), "{c}");
+    }
+
+    #[test]
+    fn curl_graphql_sends_json_payload() {
+        let mut r = Request::new("t");
+        r.method = HttpMethod::Post;
+        r.body_type = BodyType::GraphQL;
+        r.body = "{ me { id } }".into();
+        let c = to_curl(&r, "https://api.dev/graphql");
+        assert!(c.contains("Content-Type: application/json"), "{c}");
+        assert!(c.contains(r#"-d '{"query":"{ me { id } }"}'"#), "{c}");
+        assert!(c.contains("curl -X POST"), "{c}");
+        // 用户已填 Content-Type 时不重复
+        r.headers = vec![KeyValue::new("content-type", "application/json")];
+        assert_eq!(to_curl(&r, "u").matches("ontent-").count(), 1);
+        // 变量非法 JSON：原样带上，不丢
+        r.graphql_variables = "{\"id\": {{id}}}".into();
+        assert!(to_curl(&r, "u").contains(r#""variables":{"id": {{id}}}"#));
     }
 
     #[test]

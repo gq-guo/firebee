@@ -83,6 +83,7 @@ pub fn substitute_request(req: &Request, vars: &HashMap<String, String>) -> (Req
         kv.value = apply(&kv.value, vars, &mut missing);
     }
     out.body = apply(&out.body, vars, &mut missing);
+    out.graphql_variables = apply(&out.graphql_variables, vars, &mut missing);
     match &mut out.auth {
         Auth::Bearer { token } => *token = apply(token, vars, &mut missing),
         Auth::Basic { username, password } => {

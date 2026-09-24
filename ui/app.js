@@ -43,10 +43,13 @@ const selected = new Set();    // 侧栏多选（⌘点击）的请求
 let dragging = null;           // { arr, r } 正在拖动的请求
 const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘时保持）
 
-function newRequest(name = 'Untitled request') {
-  return { id: crypto.randomUUID(), name, method: 'Get', url: '', params: [], headers: [],
-           body_type: 'None', body: '', form: [], auth: 'None', pinned: false };
+/** kind: 'http' | 'graphql'。GraphQL 请求固定 POST，body 存 query，变量在 graphql_variables */
+function newRequest(name = 'Untitled request', kind = 'http') {
+  const gql = kind === 'graphql';
+  return { id: crypto.randomUUID(), name, method: gql ? 'Post' : 'Get', url: '', params: [], headers: [],
+           body_type: gql ? 'GraphQL' : 'None', body: '', form: [], auth: 'None', pinned: false, graphql_variables: '' };
 }
+const isGql = (r) => r.body_type === 'GraphQL';
 const newContainer = (name) => ({ id: crypto.randomUUID(), name, folders: [], requests: [] });
 const kv = () => ({ enabled: true, key: '', value: '' });
 const activeEnv = () => data.environments.find((e) => e.id === activeEnvId) || null;
@@ -80,6 +83,7 @@ function h(tag, attrs = {}, ...children) {
 const put = (el, ...kids) => el.replaceChildren(...kids.filter((k) => k !== null && k !== undefined && k !== false));
 const btn = (label, onclick, cls = 'small') => h('button', { class: cls, onclick }, label);
 const methodTag = (m) => h('span', { class: `method m-${m.toLowerCase()}` }, m.toUpperCase());
+const reqTag = (r) => (isGql(r) ? h('span', { class: 'method m-gql' }, 'GQL') : methodTag(r.method));
 
 /** 复制：按钮文字换成 Copied ✓ 两秒半，不弹 toast */
 function copyText(text, button) {
@@ -177,7 +181,7 @@ const isResolved = (name, vars) => vars.has(name) || DYNAMIC_VARS.some(([k]) => 
 function unresolvedVars(req = current) {
   const vars = varMap(), out = [];
   const scan = (str) => { for (const m of (str || '').matchAll(VAR_RE)) { const n = m[1]; if (!isResolved(n, vars) && !out.includes(n)) out.push(n); } };
-  scan(req.url); scan(req.body);
+  scan(req.url); scan(req.body); scan(req.graphql_variables);
   for (const kvr of [...req.params, ...req.headers, ...req.form]) { scan(kvr.key); scan(kvr.value); }
   const a = req.auth; if (a !== 'None') Object.values(Object.values(a)[0]).forEach((v) => typeof v === 'string' && scan(v));
   return out;
@@ -252,7 +256,7 @@ function renderSidebar() {
       const hhmm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
       body.append(h('div', { class: 'hist', role: 'button', tabindex: 0, title: `${hist.request.method.toUpperCase()} ${hist.request.url}`,
         onclick: () => openFromHistory(hist), onkeydown: activate, oncontextmenu: hmenu },
-        h('span', { class: 'muted' }, hhmm), methodTag(hist.request.method),
+        h('span', { class: 'muted' }, hhmm), reqTag(hist.request),
         h('span', { class: hist.status ? `s${Math.floor(hist.status / 100)}` : 's0' }, hist.status ?? 'ERR'),
         h('span', {}, hist.request.url || '(no URL)'), btn('⋯', hmenu, 'small more').withAttr('aria-label', 'History entry actions')));
     }
@@ -316,7 +320,8 @@ const remove = (arr, obj, what) => () => {
 /** 集合或文件夹节点（结构相同：name / folders / requests） */
 function containerNode(c, parentArr, isFolder = false) {
   const menu = (e) => openMenu(e, [
-    ['New request', () => { const r = newRequest(); c.requests.push(r); collapsed.delete(c.id); dirty(); selectRequest(r); }],
+    ...[['http', 'New HTTP request'], ['graphql', 'New GraphQL request']].map(([kind, label]) =>
+      [label, () => { const r = newRequest(undefined, kind); c.requests.push(r); collapsed.delete(c.id); dirty(); selectRequest(r); }]),
     ['New folder', () => { c.folders.push(newContainer('New folder')); collapsed.delete(c.id); dirty(); renderSidebar(); }],
     ['Import from curl…', () => openImport(c)],
     !isFolder && ['Export collection…', () => exportCollection(c)],
@@ -360,7 +365,7 @@ function requestRow(r, arr, drag = true) {
     'aria-current': r === current || undefined, 'aria-selected': selected.has(r) || undefined, ...drops,
     onclick: (e) => { if (e.metaKey || e.ctrlKey) { selected.has(r) ? selected.delete(r) : selected.add(r); renderSidebar(); } else { selected.clear(); selectRequest(r); } },
     onkeydown: activate, oncontextmenu: rmenu },
-    methodTag(r.method), nameNode(r), pendings.has(r.id) && h('span', { class: 'spinner', title: 'Sending…' }),
+    reqTag(r), nameNode(r), pendings.has(r.id) && h('span', { class: 'spinner', title: 'Sending…' }),
     btn('⋯', rmenu, 'small more').withAttr('aria-label', 'Request actions'));
 }
 
@@ -532,6 +537,7 @@ function renderRequestHeader() {
   const where = locate(current);
   $('#req-where').textContent = where ? `in ${where.join(' / ')}` : '';
   $('#method').value = current.method;
+  $('#method').classList.toggle('hidden', isGql(current)); // GraphQL 固定 POST
   $('#url').value = current.url;
   $('#send').classList.toggle('hidden', isPending());
   $('#cancel').classList.toggle('hidden', !isPending());
@@ -552,7 +558,8 @@ function renderTabCounts() {
     auth: current.auth === 'None' ? 0 : 1 };
   document.querySelectorAll('[data-req]').forEach((b) => {
     const key = b.dataset.req, countable = key === 'params' || key === 'headers' || (key === 'body' && current.body_type === 'Form');
-    put(b, key[0].toUpperCase() + key.slice(1), n[key] ? h('span', { class: countable ? 'n' : 'n dot' }, countable ? n[key] : '•') : null);
+    const label = key === 'body' && isGql(current) ? 'Query' : key[0].toUpperCase() + key.slice(1);
+    put(b, label, n[key] ? h('span', { class: countable ? 'n' : 'n dot' }, countable ? n[key] : '•') : null);
   });
 }
 
@@ -572,7 +579,23 @@ function radios(name, options, value, onchange) {
     h('label', {}, h('input', { type: 'radio', name, value: v, checked: v === value, onchange: () => onchange(v) }), label)));
 }
 
+/** GraphQL：上面 query，下面 variables（JSON，可格式化） */
+function graphqlEditor() {
+  const helper = h('div', { class: 'helper' });
+  const query = h('textarea', { spellcheck: 'false', 'aria-label': 'GraphQL query', placeholder: 'query {\n  viewer { id }\n}',
+    oninput: (e) => { current.body = e.target.value; dirty(); renderTabCounts(); } }, current.body);
+  const vars = h('textarea', { class: 'gql-vars', spellcheck: 'false', 'aria-label': 'GraphQL variables', placeholder: '{ "id": 1 }',
+    oninput: (e) => { current.graphql_variables = e.target.value; vars.removeAttribute('aria-invalid'); helper.className = 'helper'; helper.textContent = ''; dirty(); } }, current.graphql_variables || '');
+  return h('div', { class: 'fill' }, h('div', { class: 'row' }, h('strong', {}, 'Query')), query,
+    h('div', { class: 'row' }, h('strong', {}, 'Variables'), h('span', { class: 'muted' }, 'JSON'), h('span', { class: 'spacer' }), btn('Format JSON', () => {
+      if (!vars.value.trim()) return;
+      try { current.graphql_variables = vars.value = JSON.stringify(JSON.parse(vars.value), null, 2); dirty(); helper.className = 'helper'; helper.textContent = ''; vars.removeAttribute('aria-invalid'); }
+      catch (err) { vars.setAttribute('aria-invalid', 'true'); helper.className = 'helper error'; helper.textContent = `Not valid JSON — ${err.message}. Fix it, then format again.`; }
+    })), vars, helper);
+}
+
 function bodyEditor() {
+  if (isGql(current)) return graphqlEditor();
   const wrap = h('div', { class: 'fill' }, radios('body_type', [['None', 'None'], ['Json', 'JSON'], ['Text', 'Text'], ['Form', 'Form']],
     current.body_type, (v) => { current.body_type = v; dirty(); renderRequest(); }));
   if (current.body_type === 'Json' || current.body_type === 'Text') {
