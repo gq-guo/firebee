@@ -8,7 +8,7 @@ const MOD = MAC ? '⌘' : 'Ctrl+';
 
 const METHODS = ['Get', 'Post', 'Put', 'Delete', 'Patch', 'Head', 'Options'];
 const HISTORY_LIMIT = 500;
-const DYNAMIC_VARS = [['$uuid', 'random UUID v4'], ['$timestamp', 'unix seconds'], ['$isoTimestamp', 'ISO 8601 UTC'], ['$randomInt', '0–1000']];
+let DYNAMIC_VARS = []; // 启动时从后端拉（core/vars.rs 是唯一来源）
 const TRUNCATE_AT = 300_000; // 超过就先显示前 300KB，点 Show all 再全量
 const REASON = { 200: 'OK', 201: 'Created', 204: 'No Content', 301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified',
   400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed', 408: 'Timeout',
@@ -176,7 +176,9 @@ function varMap() {
   const env = activeEnv();
   return new Set(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => v.key) : []);
 }
-const isResolved = (name, vars) => vars.has(name) || DYNAMIC_VARS.some(([k]) => k === name);
+/** `$randomInt(1,100)` → `$randomInt`，带参数的动态变量按基名判断 */
+const baseVarName = (name) => name.replace(/\(.*\)$/, '').trimEnd();
+const isResolved = (name, vars) => vars.has(name) || DYNAMIC_VARS.some(([k]) => k === baseVarName(name));
 /** 当前请求里所有未解析的变量名（去重、按出现顺序） */
 function unresolvedVars(req = current) {
   const vars = varMap(), out = [];
@@ -1003,7 +1005,7 @@ function bind() {
 
 async function main() {
   bind();
-  data = await invoke('load_data');
+  [data, DYNAMIC_VARS] = await Promise.all([invoke('load_data'), invoke('dynamic_vars')]);
   current = firstRequest() || (homeCollection().requests.push(current), dirty(), current);
   renderTopbar(); renderSidebar(); renderRequest(); renderResponse();
   $('#url').focus();

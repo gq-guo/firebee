@@ -49,6 +49,12 @@ fn vars(env: &Option<Environment>) -> HashMap<String, String> {
     env.as_ref().map(|e| e.var_map()).unwrap_or_default()
 }
 
+/// 内置动态变量清单（前端补全用，和 vars.rs 同一份来源，避免两头维护）
+#[tauri::command]
+pub fn dynamic_vars() -> &'static [(&'static str, &'static str)] {
+    crate::core::vars::DYNAMIC_VARS
+}
+
 #[tauri::command]
 pub fn load_data(storage: State<Storage>) -> AppData {
     AppData {
