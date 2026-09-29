@@ -13,6 +13,7 @@
 - 可取消、超时可配；多个请求可同时在飞，响应按请求保留（切换不丢，内存中最多 50 条）
 - Capture：2xx 响应后按 JSONPath 把值写进当前环境变量（`token` ← `$.data.token`），登录拿 token 不用手动复制
 - Cookie 在会话内自动保持，登录后可连着调会话接口；Environment › Manage… 里可清除
+- 重定向只跟同一 host：换 host 时停下来把 3xx 和 Location 交给你（响应区可一键填进 URL）。reqwest 换 host 时只剥 Authorization / Cookie，`X-API-Key` 这类自定义头会原样发过去，被控制的接口一个 302 就能取走密钥
 
 **响应**
 - 状态码与原因短语、耗时、大小、响应头；JSON 语法高亮
@@ -39,7 +40,8 @@
 
 **界面**
 - 三栏布局，分隔条可拖动，双击恢复；快捷键在菜单栏 Request 菜单可见：⌘↩ 发送、⌘N 新请求、⌘F 查找、⇧⌘F 过滤集合
-- 没有手动保存：每个请求都在集合里，任何改动防抖写入本地 JSON（原子写入，损坏自动备份）
+- 没有手动保存：每个请求都在集合里，任何改动防抖写入本地 JSON（写临时文件 → fsync → rename → fsync 目录，文件权限 0600，解析失败时备份为带时间戳的 .bak 且不覆盖旧备份）
+- 选中的环境记在本机，重启后还在
 
 ## 运行
 
@@ -51,7 +53,7 @@ cargo run --release    # 直接运行（前端资源已编译进二进制）
 ## 测试
 
 ```bash
-cargo test          # 49 个单元/集成测试（core 层全覆盖，http 用 wiremock）
+cargo test          # 55 个单元/集成测试（core 层全覆盖，http 用 wiremock）
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```

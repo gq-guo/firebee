@@ -59,7 +59,25 @@ pub async fn execute(
     let url = build_url(req)?;
     // referer(false)：reqwest 默认在重定向时带上 Referer，且只剥掉用户名/密码/fragment，
     // query 原样保留 —— ApiKey in_query 的密钥会被 302 的目标站点收到。
-    let mut builder = reqwest::Client::builder().timeout(timeout).referer(false);
+    //
+    // 重定向只跟同一 host（端口和 http→https 不算换家，换 host 才算）。
+    // reqwest 换 host 时只剥 Authorization / Cookie，
+    // X-API-Key 这类自定义鉴权头会原样发给新 host；一个被控制的接口用 302
+    // 就能把密钥取走。跨 host 时停下来，把 3xx 和 Location 交给用户自己看。
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .referer(false)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                attempt.error("too many redirects")
+            } else if attempt.previous().last().and_then(|u| u.host_str())
+                == attempt.url().host_str()
+            {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }));
     if let Some(jar) = jar {
         builder = builder.cookie_provider(jar);
     }
@@ -372,6 +390,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status, 200);
+    }
+
+    #[tokio::test]
+    async fn same_host_redirect_is_followed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/old"))
+            .respond_with(ResponseTemplate::new(301).insert_header("location", "/new"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/new"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("arrived"))
+            .mount(&server)
+            .await;
+        let mut r = Request::new("r");
+        r.url = format!("{}/old", server.uri());
+        let resp = execute(&r, Duration::from_secs(5), no_cancel(), None)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(String::from_utf8(resp.body).unwrap(), "arrived");
+    }
+
+    #[tokio::test]
+    async fn cross_host_redirect_stops() {
+        // 被控制的接口用 302 指向别的 host：X-API-Key 这类自定义头不能跟过去。
+        // 目标用不可解析的域名 —— 真跟过去就会是 DNS 错误，而不是拿到 302。
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", "http://evil.invalid/steal"),
+            )
+            .mount(&api)
+            .await;
+        let mut r = Request::new("r");
+        r.url = api.uri();
+        r.headers = vec![KeyValue::new("X-API-Key", "super-secret")];
+        let resp = execute(&r, Duration::from_secs(5), no_cancel(), None)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 302, "跨 host 的重定向不应该被跟随");
+        assert!(resp
+            .headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("location") && v.contains("evil.invalid")));
     }
 
     #[test]

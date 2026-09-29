@@ -17,7 +17,10 @@
         "minHeight": 600,
         "dragDropEnabled": false
       }
-    ]
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    }
   },
   "bundle": {
     "active": true,

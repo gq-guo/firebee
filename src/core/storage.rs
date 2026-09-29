@@ -6,6 +6,19 @@ use crate::core::models::{Collection, Environment, HistoryEntry};
 
 pub const HISTORY_LIMIT: usize = 500;
 
+/// 数据文件里有 token、密码、API key，以及最近 100 条响应体——默认的 0644
+/// 意味着同机器上任何别的用户都能读。~/Library/Application Support 在 macOS 上
+/// 也不受 TCC 保护，未签名的第三方 app 读它不会弹任何提示。
+#[cfg(unix)]
+fn restrict(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+#[cfg(not(unix))]
+fn restrict(_path: &std::path::Path, _mode: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
 pub struct Storage {
     dir: PathBuf,
 }
@@ -74,6 +87,7 @@ impl Storage {
         pretty: bool,
     ) -> std::io::Result<()> {
         fs::create_dir_all(&self.dir)?;
+        restrict(&self.dir, 0o700)?;
         let data = if pretty {
             serde_json::to_vec_pretty(value)
         } else {
@@ -84,6 +98,7 @@ impl Storage {
         // 失败时别把 tmp 留在数据目录里
         let write = || -> std::io::Result<()> {
             let mut f = File::create(&tmp)?;
+            restrict(&tmp, 0o600)?;
             f.write_all(&data)?;
             f.sync_all()?;
             drop(f);
@@ -198,6 +213,19 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
         assert_eq!(s.load_collections()[0].name, "b");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let s = Storage::new(tmp.path().join("data"));
+        s.save_collections(&[Collection::new("a")]).unwrap();
+        let mode =
+            |p: std::path::PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(tmp.path().join("data/collections.json")), 0o600);
+        assert_eq!(mode(tmp.path().join("data")), 0o700);
     }
 
     #[test]

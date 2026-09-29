@@ -19,7 +19,7 @@ const REASON = { 200: 'OK', 201: 'Created', 204: 'No Content', 301: 'Moved Perma
 
 // ---------- 状态 ----------
 let data = { collections: [], environments: [], history: [] };
-let activeEnvId = null;
+let activeEnvId = (() => { try { return localStorage.getItem('firebee.env'); } catch { return null; } })();
 let current = newRequest();
 // 响应按请求 id 保留在内存里（切换请求不丢），最多 50 条；进行中的请求按 id 记 job_id，互不阻塞
 const responses = new Map(); // request.id → { ok: dto } | { error: string } | { cancelled: true }
@@ -881,6 +881,14 @@ function renderResponse() {
       r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null,
     h('span', { class: 'spacer' }), r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct)),
   );
+  // 3xx 到这里说明没被跟随（同 host 的已经跟完了）——告诉用户去哪儿，别让他以为坏了
+  if (r.status >= 300 && r.status < 400) {
+    const loc = r.headers.find(([k]) => k.toLowerCase() === 'location')?.[1];
+    if (loc) body.append(h('div', { class: 'helper' },
+      h('span', {}, 'Redirect to a different host was not followed — credentials stay here. Target: '),
+      h('code', {}, loc), ' ',
+      btn('Use this URL', () => { current.url = loc; $('#url').value = loc; dirty(); renderRequest(); renderUrlMirror(); })));
+  }
   const previewTab = document.querySelector('[data-resp=preview]');
   previewTab.classList.toggle('hidden', !isHtml);
   if (respTab === 'preview' && !isHtml) respTab = 'body';
@@ -1169,7 +1177,9 @@ function bind() {
   $('#export-close').onclick = () => $('#export-dialog').close();
   $('#env-select').onchange = (e) => {
     if (e.target.value === '__manage') { e.target.value = activeEnvId || ''; envSel = activeEnv(); renderEnvDialog(); $('#env-dialog').showModal(); return; }
-    activeEnvId = e.target.value || null; missing = []; renderRequestHeader(); renderRequest();
+    activeEnvId = e.target.value || null;
+      try { activeEnvId ? localStorage.setItem('firebee.env', activeEnvId) : localStorage.removeItem('firebee.env'); } catch { /* private mode */ }
+      missing = []; renderRequestHeader(); renderRequest();
   };
   // 原生菜单（macOS 菜单栏里可见快捷键）触发的动作
   window.__TAURI__.event?.listen('menu', ({ payload }) => {
