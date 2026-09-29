@@ -188,9 +188,13 @@ function unresolvedVars(req = current) {
   const scan = (str) => { for (const m of (str || '').matchAll(VAR_RE)) { const n = m[1]; if (!isResolved(n, vars) && !out.includes(n)) out.push(n); } };
   scan(req.url); scan(req.body); scan(req.graphql_variables);
   for (const kvr of [...req.params, ...req.headers, ...req.form]) { scan(kvr.key); scan(kvr.value); }
-  for (const kvr of inheritedHeaders(req)) { scan(kvr.key); scan(kvr.value); }
-  const a = req.auth !== 'None' ? req.auth : inheritedAuth(req);
-  if (a && a !== 'None') Object.values(Object.values(a)[0]).forEach((v) => typeof v === 'string' && scan(v));
+  const off = req.auth === 'Off';
+  for (const kvr of inheritedHeaders(req)) {
+    if (off && kvr.key.trim().toLowerCase() === 'authorization') continue;
+    scan(kvr.key); scan(kvr.value);
+  }
+  const a = off ? null : req.auth !== 'None' ? req.auth : inheritedAuth(req);
+  if (a && typeof a !== 'string') Object.values(Object.values(a)[0]).forEach((v) => typeof v === 'string' && scan(v));
   return out;
 }
 /** URL 镜像：把 {{var}} 按可解析与否着色，其余原样 */
@@ -455,7 +459,7 @@ function openSettings(c, isFolder) {
       h('div', { class: 'row' }, h('strong', {}, 'Headers')),
       kvTable(c.headers, 'Header', 'Value', draw, { keyList: 'hdr-names', valList: 'ct-values' }),
       h('div', { class: 'row settings-auth' }, h('strong', {}, 'Auth')),
-      authEditor(c, draw));
+      authEditor(c, draw, true));
   };
   draw();
   if (!dlg.open) dlg.showModal();
@@ -485,7 +489,7 @@ function inheritedHeaders(r) {
 }
 /** 链上生效的 auth（最内层非 None）；请求自己设了就返回 null */
 function inheritedAuth(r) {
-  if (r.auth !== 'None') return null;
+  if (r.auth !== 'None' && r.auth !== 'Off') return null; // 自己设了具体认证
   return [...(chainFor(r) || [])].reverse().find((l) => l.auth !== 'None')?.auth || null;
 }
 
@@ -564,9 +568,25 @@ async function importFile() {
   if (!path) return;
   try {
     const r = await invoke('import_file', { path });
-    if (r.collection) { data.collections.push(r.collection); dirty(); renderSidebar(); toast(`Imported collection “${r.collection.name}”.`); }
+    if (r.collection) {
+      const n = disarmCaptures(r.collection);
+      data.collections.push(r.collection); dirty(); renderSidebar();
+      toast(`Imported collection “${r.collection.name}”.`
+        + (n ? ` ${n} capture ${n === 1 ? 'rule was' : 'rules were'} turned off — they rewrite environment variables, so review them in a request's Capture tab before enabling.` : ''));
+    }
     if (r.environment) { data.environments.push(r.environment); dirty(); renderTopbar(); toast(`Imported environment “${r.environment.name}” — pick it in the Environment menu.`); }
   } catch (e) { toast(String(e), { error: true }); }
+}
+
+/** 导入进来的 capture 规则一律先关掉，返回关掉的条数。
+ *  capture 会改写当前环境的变量：一个别人给的集合里带一条 `base_url ← $.base_url`，
+ *  你点一次 Send 就把自己的 base_url 换成了对方的域名，之后自己的请求会把真 token 发过去。
+ *  数据保留（自己导出的集合再导回来不丢东西），但必须先看一眼再开。 */
+function disarmCaptures(node) {
+  let n = 0;
+  for (const r of node.requests || []) for (const c of r.captures || []) if (c.enabled) { c.enabled = false; n++; }
+  for (const f of node.folders || []) n += disarmCaptures(f);
+  return n;
 }
 
 /** 可拖动分栏：写 CSS 变量，宽度记在 localStorage（仅本机偏好）；双击恢复默认 */
@@ -624,7 +644,7 @@ function renderRequest() {
   body.replaceChildren();
   if (reqTab === 'params') body.append(kvTable(current.params, 'Key', 'Value', renderRequest));
   else if (reqTab === 'headers') {
-    const inh = inheritedHeaders(current);
+    const inh = inheritedHeaders(current).filter((hd) => !(current.auth === 'Off' && hd.key.trim().toLowerCase() === 'authorization'));
     if (inh.length) {
       const mark = () => h('td', { class: 'ctl muted', title: 'Inherited from the collection or folder — add the same header below to override it' }, '↑');
       body.append(h('table', { class: 'kv inherited' }, ...inh.map((hd) =>
@@ -636,7 +656,8 @@ function renderRequest() {
   else if (reqTab === 'capture') body.append(captureEditor());
   else {
     const ia = inheritedAuth(current);
-    if (ia) body.append(h('div', { class: 'helper' }, `Inheriting ${authKind(ia)} auth from the collection or folder. Pick anything but None to override it here.`));
+    if (ia && current.auth === 'Off') body.append(h('div', { class: 'helper' }, `${authKind(ia)} auth from the collection or folder is turned off for this request — no credentials are sent, and an inherited Authorization header is dropped too.`));
+    else if (ia) body.append(h('div', { class: 'helper' }, `Inheriting ${authKind(ia)} auth from the collection or folder. Pick another option to override it, or “No auth” to send nothing.`));
     body.append(authEditor());
   }
 }
@@ -725,11 +746,17 @@ function runCaptures(req, dto, env) {
     + (more.length ? ` ${more.join(', ')}.` : '') };
 }
 
-const authKind = (a) => (a === 'None' ? 'None' : Object.keys(a)[0]);
-function authEditor(obj = current, rerender = renderRequest) {
+const authKind = (a) => (typeof a === 'string' ? a : Object.keys(a)[0]); // 'None' / 'Off' 是无负载变体
+/** container=true 时是集合 / 文件夹的编辑器：那里没有"继承"，也就没有 Off */
+function authEditor(obj = current, rerender = renderRequest, container = false) {
   const kind = authKind(obj.auth);
-  const wrap = h('div', {}, radios(`auth-${obj.id}`, [['None', 'None'], ['Bearer', 'Bearer token'], ['Basic', 'Basic auth'], ['ApiKey', 'API key']], kind, (v) => {
-    obj.auth = { None: 'None', Bearer: { Bearer: { token: '' } }, Basic: { Basic: { username: '', password: '' } },
+  const inh = container ? null : inheritedAuth(obj);
+  // 有东西可继承时，None 的语义就是"跟随上层"，标签跟着变；并多给一个明确不带凭据的选项
+  const opts = [['None', inh ? 'Inherit' : 'None'],
+    ...(inh ? [['Off', 'No auth']] : []),
+    ['Bearer', 'Bearer token'], ['Basic', 'Basic auth'], ['ApiKey', 'API key']];
+  const wrap = h('div', {}, radios(`auth-${obj.id}`, opts, kind, (v) => {
+    obj.auth = { None: 'None', Off: 'Off', Bearer: { Bearer: { token: '' } }, Basic: { Basic: { username: '', password: '' } },
                  ApiKey: { ApiKey: { key: '', value: '', in_query: false } } }[v];
     dirty(); rerender();
   }));

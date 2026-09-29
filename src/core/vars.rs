@@ -309,7 +309,7 @@ pub fn substitute_request(req: &Request, vars: &HashMap<String, String>) -> (Req
             *key = apply(key, vars, &mut missing);
             *value = apply(value, vars, &mut missing);
         }
-        Auth::None => {}
+        Auth::None | Auth::Off => {}
     }
     (out, missing)
 }

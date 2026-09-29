@@ -32,7 +32,8 @@
 - 请求可 Pin，置顶到侧栏 Pinned 区，常用接口不用再翻文件夹
 - 侧栏搜索：按集合 / 文件夹 / 请求名和 URL 过滤（⌘F 聚焦）
 - 历史最近 500 条，点击回填；最近 100 条连响应体一起留着（单条上限 64KB），点回去直接看当时的返回，不用重发
-- 集合 / 文件夹可配公共 header 与 auth（右键 → Shared headers & auth…），下属请求自动带上；请求自己同名的覆盖它
+- 集合 / 文件夹可配公共 header 与 auth（右键 → Shared headers & auth…），下属请求自动带上；请求自己同名的覆盖它，选 **No auth** 则一条凭据都不带（含继承来的 Authorization 头）
+- 导入集合时，里面带的 capture 规则一律先关掉——它们会改写你的环境变量，看过再开
 - 导入：把 curl 粘贴到 URL 框即覆盖到当前请求（保留名字）；集合菜单可导入为新请求；文件导入 Firebee 导出 / Postman Collection v2.x / Postman Environment
 - 导出：curl（JSON 压成一行，方便粘贴终端）、Python (requests)；集合导出为 Firebee JSON
 
@@ -50,22 +51,25 @@ cargo run --release    # 直接运行（前端资源已编译进二进制）
 ## 测试
 
 ```bash
-cargo test          # 46 个单元/集成测试（core 层全覆盖，http 用 wiremock）
+cargo test          # 49 个单元/集成测试（core 层全覆盖，http 用 wiremock）
 cargo clippy --all-targets -- -D warnings
+cargo fmt --all -- --check
 ```
 
 ## 发布
 
-版本号只维护在 `VERSION`，`Cargo.toml` 与 `tauri.conf.json` 的 `version` 必须与之一致（`scripts/check-version.sh` 会校验，CI 也会跑）。
+版本号只维护在 `VERSION`，另外三处必须与之一致：`Cargo.toml` 的 `[package] version`、`tauri.conf.json` 的 `version`、`Cargo.lock` 里 `firebee` 包的 `version`。`scripts/check-version.sh` 会校验这四处（用真正的 JSON/TOML 解析，不是 grep），Release 工作流第一步就跑它。
 
 ```bash
-# 1. 升版本：改 VERSION、Cargo.toml、tauri.conf.json 三处为同一个号，例如 0.1.1
-scripts/check-version.sh            # 本地校验
-# 2. 提交后打 tag 推送，Release 工作流自动打包
-git tag v0.1.1 && git push origin v0.1.1
+# 1. 升版本：改 VERSION、Cargo.toml、tauri.conf.json，再同步 lock
+vim VERSION Cargo.toml tauri.conf.json
+cargo update -p firebee             # 同步 Cargo.lock
+scripts/check-version.sh            # 本地校验四处一致
+# 2. 提交合并到 master 后打 tag 推送，Release 工作流自动打包
+git tag v0.1.3 && git push origin v0.1.3
 ```
 
-Release 工作流（`.github/workflows/release.yml`）先校验 tag 与 `VERSION` 一致，再在 macOS runner 上构建 universal（Intel + Apple Silicon）的 `.dmg` / `.app.zip`，附 `SHA256SUMS.txt` 发布到 GitHub Release。tag 与版本号不一致时直接失败，不会产出包。
+Release 工作流（`.github/workflows/release.yml`）的 `gate` 作业先校验版本号，再跑 `fmt` / `clippy` / `test`——tag 推送不触发 `ci.yml`（它只在 push master 和 PR 上跑），所以门禁必须在这里重跑一遍，否则测试挂了照样能发版。通过后才在 macOS runner 上构建 universal（Intel + Apple Silicon）的 `.dmg` / `.app.zip`，附 `SHA256SUMS.txt` 发布到 GitHub Release。tag 与版本号不一致时直接失败，不会产出包。
 
 本地打包：`cargo tauri build --target universal-apple-darwin` 得到 `.app`，再 `scripts/make-dmg.sh target/universal-apple-darwin/release/bundle/macos/Firebee.app Firebee.dmg` 生成 DMG（APFS，避开 macOS 26 上 HFS+ 的 hdiutil 问题）。包未经 Apple 公证，首次打开需 `xattr -dr com.apple.quarantine /Applications/Firebee.app` 或右键 → 打开。
 

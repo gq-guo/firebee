@@ -4,20 +4,33 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+# 同一个 tag 被重推时不并行跑两份，避免互相覆盖已发布的产物
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  check-version:
-    runs-on: ubuntu-latest
+  # tag 推送不触发 CI（ci.yml 只在 push master / pull_request 上跑），
+  # 所以质量门禁必须在这里再跑一遍，否则测试挂了照样能发版
+  gate:
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Tag matches VERSION, Cargo.toml and tauri.conf.json
+      - name: Tag matches VERSION, Cargo.toml, tauri.conf.json and Cargo.lock
         run: scripts/check-version.sh "${GITHUB_REF_NAME}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
 
   build-macos:
-    needs: check-version
+    needs: gate
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -28,7 +41,7 @@ jobs:
         with:
           node-version: 20
       - name: Build universal .app
-        run: npx --yes @tauri-apps/cli@^2 build --target universal-apple-darwin
+        run: npx --yes @tauri-apps/cli@2.11.5 build --target universal-apple-darwin
       - name: Package .dmg and .app.zip
         run: |
           set -eu
@@ -48,12 +61,12 @@ jobs:
             ## Install (macOS, Intel & Apple Silicon)
 
             1. Download the `.dmg`, open it and drag **Firebee** to Applications.
-            2. The build is not notarized with an Apple Developer account, so on first launch macOS may say the app is damaged or from an unidentified developer. Clear the quarantine flag once:
+            2. The build is unsigned and not notarized, so on first launch macOS may say the app is damaged or from an unidentified developer. Clear the quarantine flag once:
 
                ```bash
                xattr -dr com.apple.quarantine /Applications/Firebee.app
                ```
 
-               or right-click the app → Open.
+               On macOS 15 and later the old Control-click → Open trick no longer works; if you skip the command above, allow the app in System Settings → Privacy & Security → Open Anyway.
 
             Data lives in `~/Library/Application Support/firebee/`. Checksums are in `SHA256SUMS.txt`.

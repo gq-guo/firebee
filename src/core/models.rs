@@ -65,8 +65,12 @@ pub enum BodyType {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Auth {
+    /// 请求上 = 跟随集合 / 文件夹（没有可继承的就是不带认证）；容器上 = 不提供认证
     #[default]
     None,
+    /// 只能出现在请求上：明确不带任何凭据，连继承来的 Authorization 头一起丢掉。
+    /// 集合配了 prod token，里面又要放一个打第三方接口的请求时用这个。
+    Off,
     Bearer {
         token: String,
     },
@@ -236,6 +240,13 @@ pub fn merge_inherited(req: &Request, chain: &[Inherited]) -> Request {
                 .any(|h| h.key.trim().eq_ignore_ascii_case(kept.key.trim()))
         });
         headers.extend(enabled.into_iter().cloned());
+    }
+    if out.auth == Auth::Off {
+        // 明确不带凭据：不继承 auth，连继承来的 Authorization 头也一起丢
+        out.auth = Auth::None;
+        headers.retain(|h| !h.key.trim().eq_ignore_ascii_case("authorization"));
+        out.headers = headers;
+        return out;
     }
     if out.auth == Auth::None {
         if let Some(a) = chain
@@ -423,6 +434,27 @@ mod tests {
         let m = merge_inherited(&r, &chain);
         assert_eq!(m.headers.len(), 2);
         assert!(!m.headers.iter().any(|h| h.key == "X-Off"));
+    }
+
+    #[test]
+    fn auth_off_sends_no_credentials_at_all() {
+        // 集合有 prod token 和公共 Authorization 头；这个请求要打第三方接口，什么都不能带
+        let mut r = Request::new("third-party");
+        r.auth = Auth::Off;
+        let chain = [inh(
+            &[("Authorization", "Bearer col"), ("X-Trace", "keep-me")],
+            Auth::Bearer {
+                token: "prod".into(),
+            },
+        )];
+        let m = merge_inherited(&r, &chain);
+        assert_eq!(m.auth, Auth::None);
+        assert!(!m
+            .headers
+            .iter()
+            .any(|h| h.key.eq_ignore_ascii_case("authorization")));
+        // 非凭据的公共头照常继承
+        assert!(m.headers.iter().any(|h| h.key == "X-Trace"));
     }
 
     #[test]
