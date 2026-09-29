@@ -45,7 +45,10 @@ body {
   display: grid; grid-template-columns: var(--side-w, 264px) 6px minmax(0, 1fr); grid-template-rows: 40px 1fr;
   grid-template-areas: "top top top" "side split main";
 }
-#topbar { grid-area: top; display: flex; align-items: center; gap: var(--space-xs); padding: 0 var(--space-sm); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-2); }
+#topbar { grid-area: top; display: flex; align-items: center; gap: var(--space-md); padding: 0 var(--space-sm); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-2); }
+/* 右侧的发送选项：同高同字号同色，读起来是一组而不是两个飘着的控件 */
+#topbar > label { height: var(--control-h); gap: var(--space-2xs); font-size: var(--text-xs); color: var(--color-muted); white-space: nowrap; }
+#topbar > label:has(#timeout) { gap: var(--space-xs); }
 #sidebar { grid-area: side; background: var(--color-paper-2); display: flex; flex-direction: column; min-height: 0; }
 #side-body { overflow: auto; padding: var(--space-xs); flex: 1; }
 #search { margin: var(--space-xs) var(--space-xs) 0; height: 28px; font-size: var(--text-sm); }
@@ -270,8 +273,9 @@ mark.cur { background: var(--color-warn); color: var(--color-accent-ink); }
 label.field { display: flex; flex-direction: column; align-items: stretch; gap: 3px; flex: 1; min-width: 0;
   font-size: var(--text-xs); color: var(--color-muted); }
 label.field input { width: 100%; color: var(--color-ink); }
-label.check { margin-top: var(--space-xs); align-items: center; }
+#req-body label.check, #settings-body label.check { margin-top: var(--space-xs); }
 label.check input { flex: none; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--color-accent); }
 .kv.inherited td { color: var(--color-muted); padding: 3px var(--space-2xs); font-size: var(--text-xs); }
 .kv.inherited td.val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
 .from-history { color: var(--color-warn); }
