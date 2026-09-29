@@ -1145,8 +1145,11 @@ function bind() {
 
 async function main() {
   bind();
-  data = await invoke('load_data');
-  invoke('dynamic_vars').then((v) => { DYNAMIC_VARS = v; }).catch((e) => toast(`Built-in variables unavailable. ${e}`, { error: true }));
+  // 内置变量清单必须在首屏渲染前就位，否则 {{$timestamp}} 会被当成未定义变量报出来
+  [data, DYNAMIC_VARS] = await Promise.all([
+    invoke('load_data'),
+    invoke('dynamic_vars').catch((e) => { toast(`Built-in variables unavailable. ${e}`, { error: true }); return []; }),
+  ]);
   current = firstRequest() || (homeCollection().requests.push(current), dirty(), current);
   renderTopbar(); renderSidebar(); renderRequest(); renderResponse();
   $('#url').focus();
