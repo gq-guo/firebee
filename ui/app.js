@@ -11,7 +11,8 @@ const HISTORY_LIMIT = 500;
 let DYNAMIC_VARS = []; // 启动时从后端拉（core/vars.rs 是唯一来源）
 const TRUNCATE_AT = 300_000;
 const HISTORY_BODY_MAX = 64_000;   // 单条历史最多留 64KB 响应体
-const HISTORY_BODIES = 100;        // 只有最近 100 条留响应体，避免 history.json 无限长 // 超过就先显示前 300KB，点 Show all 再全量
+const HISTORY_BODIES = 100;
+const SECRET_RESP_HEADERS = new Set(['set-cookie', 'set-cookie2']); // 不写进 history.json        // 只有最近 100 条留响应体，避免 history.json 无限长 // 超过就先显示前 300KB，点 Show all 再全量
 const REASON = { 200: 'OK', 201: 'Created', 204: 'No Content', 301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified',
   400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed', 408: 'Timeout',
   409: 'Conflict', 422: 'Unprocessable', 429: 'Too Many Requests', 500: 'Server Error', 502: 'Bad Gateway', 503: 'Unavailable', 504: 'Gateway Timeout' };
@@ -693,15 +694,15 @@ function captureEditor() {
 }
 
 /** 跑一个请求的 captures；没有可跑的规则返回 null */
-function runCaptures(req, dto) {
+function runCaptures(req, dto, env) {
   const rules = (req.captures || []).filter((c) => c.enabled && c.key.trim() && c.value.trim());
   if (!rules.length) return null;
-  const env = activeEnv();
   if (!env) return { error: 'Captured nothing — no environment is active.' };
+  if (!data.environments.includes(env)) return { error: `Captured nothing — the target environment was deleted while the request was in flight.` };
   let json;
   try { json = JSON.parse(dto.body); }
   catch { return { error: "Captured nothing — the response body isn't JSON." }; }
-  const done = [], failed = [];
+  const done = [], failed = [], more = [];
   for (const c of rules) {
     const name = c.key.trim();
     let hits;
@@ -709,14 +710,19 @@ function runCaptures(req, dto) {
     catch (e) { failed.push(`${name} (${e.message})`); continue; }
     if (!hits.length) { failed.push(`${name} (no match)`); continue; }
     const v = hits[0];
-    const text = typeof v === 'string' ? v : v === undefined ? '' : JSON.stringify(v);
+    // null 是命中了但没有值——写成字符串 "null" 会把上一次的好值冲掉
+    // （{"token":null,"error":"mfa_required"} 这种 200 响应很常见）
+    if (v === null || v === undefined) { failed.push(`${name} (matched null)`); continue; }
+    const text = typeof v === 'string' ? v : JSON.stringify(v);
+    if (hits.length > 1) more.push(`${name} matched ${hits.length}, took the first`);
     const row = env.variables.find((x) => x.key === name);
     if (row) { row.value = text; row.enabled = true; } else env.variables.push({ enabled: true, key: name, value: text });
     done.push(name);
   }
   if (done.length) dirty();
   if (!done.length) return { error: `Captured nothing — ${failed.join(', ')}.` };
-  return { ok: `Captured ${done.join(', ')} into “${env.name}”.` + (failed.length ? ` Missed ${failed.join(', ')}.` : '') };
+  return { ok: `Captured ${done.join(', ')} into “${env.name}”.` + (failed.length ? ` Missed ${failed.join(', ')}.` : '')
+    + (more.length ? ` ${more.join(', ')}.` : '') };
 }
 
 const authKind = (a) => (a === 'None' ? 'None' : Object.keys(a)[0]);
@@ -746,6 +752,7 @@ async function send() {
   if (m.length && JSON.stringify(m) !== JSON.stringify(missing)) { missing = m; renderMissing(); return; }
   missing = [];
   const id = ++jobSeq, rid = current.id, req = structuredClone(current), chain = chainFor(current) || [];
+  const capEnv = activeEnv(); // 目标环境按发送时算：飞行中切环境不能把 dev 的 token 写进 prod
   pendings.set(rid, id); responses.delete(rid);
   renderRequestHeader(); renderResponse(); renderSidebar();
   let status = null, duration_ms = null, result;
@@ -757,7 +764,7 @@ async function send() {
   }
   pendings.delete(rid); setResponse(rid, result);
   if (result.ok && result.ok.status < 300) {
-    const cap = runCaptures(req, result.ok);
+    const cap = runCaptures(req, result.ok, capEnv);
     if (cap) toast(cap.ok || cap.error, { error: !cap.ok });
     if (cap?.ok) renderRequest();
   }
@@ -770,13 +777,21 @@ async function send() {
   renderSidebar();
 }
 
-/** 存进历史的响应；二进制（图片等）不留 body，超长截断 */
+/** 按字节预算截断，且不切开码位——半个代理对 serde_json 会拒收，整个 save_history 都会失败 */
+function clipBytes(text, maxBytes) {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= maxBytes) return [text, false];
+  let out = new TextDecoder().decode(bytes.slice(0, maxBytes));
+  if (out.endsWith('\uFFFD')) out = out.slice(0, -1); // 末尾那个被切开的字符
+  return [out, true];
+}
+
+/** 存进历史的响应；二进制（图片等）不留 body，超长按字节截断，凭据类响应头不落盘 */
 function storedResponse(dto) {
   if (!dto) return null;
-  const text = dto.body_base64 ? '' : dto.body || '';
-  const truncated = text.length > HISTORY_BODY_MAX;
-  return { status: dto.status, headers: dto.headers, body: truncated ? text.slice(0, HISTORY_BODY_MAX) : text,
-    duration_ms: dto.duration_ms, size_bytes: dto.size_bytes, truncated };
+  const [body, truncated] = clipBytes(dto.body_base64 ? '' : dto.body || '', HISTORY_BODY_MAX);
+  return { status: dto.status, headers: dto.headers.filter(([k]) => !SECRET_RESP_HEADERS.has(k.toLowerCase())),
+    body, duration_ms: dto.duration_ms, size_bytes: dto.size_bytes, truncated };
 }
 
 const saveHistory = () => invoke('save_history', { history: data.history }).catch((e) => toast(`Couldn't save history. ${e}`, { error: true }));
@@ -972,7 +987,7 @@ function jsonPath_(root, path) {
   const get = (v, k) => {
     if (k === '*') return children(v);
     if (Array.isArray(v)) { const n = Number(k); if (!Number.isInteger(n)) return []; const i = n < 0 ? v.length + n : n; return i in v ? [v[i]] : []; }
-    return isObj(v) && k in v ? [v[k]] : [];
+    return isObj(v) && Object.hasOwn(v, k) ? [v[k]] : []; // hasOwn：别让 $.constructor 之类走原型链命中
   };
   const descend = (v, acc = []) => { acc.push(v); children(v).forEach((c) => descend(c, acc)); return acc; };
   let cur = [root];
@@ -1093,7 +1108,9 @@ function bind() {
   $('#method').onchange = (e) => { current.method = e.target.value; dirty(); renderSidebar(); };
   $('#url').oninput = (e) => { current.url = e.target.value; dirty(); renderUrlMirror(); renderMissing(); };
   $('#url').onscroll = () => { $('#url-mirror').scrollLeft = $('#url').scrollLeft; };
-  $('#url').onkeydown = (e) => { if (e.key === 'Enter') send(); };
+  // ⌘↩ 交给全局快捷键处理；这里只管裸 Enter，否则一次按键触发两次 send，
+  // 第二次会跳过"未解析变量先提示"这一步直接发出去
+  $('#url').onkeydown = (e) => { if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) send(); };
   $('#url').onpaste = (e) => {
     const t = e.clipboardData?.getData('text') || '';
     if (/^\s*curl(\.exe)?\s/.test(t)) { e.preventDefault(); importCurl(t, (m) => toast(m, { error: true })); }
@@ -1102,7 +1119,7 @@ function bind() {
   $('#import-run').onclick = async () => {
     if (await importCurl($('#import-text').value, (m) => { $('#import-error').textContent = m; }, importInto)) { $('#import-text').value = ''; $('#import-dialog').close(); }
   };
-  $('#import-text').onkeydown = (e) => { if ((MAC ? e.metaKey : e.ctrlKey) && e.key === 'Enter') $('#import-run').click(); };
+  $('#import-text').onkeydown = (e) => { if ((MAC ? e.metaKey : e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); $('#import-run').click(); } };
   $('#req-name').oninput = (e) => { current.name = e.target.value; sizeName(); dirty(); renderSidebar(); };
   $('#req-name').onkeydown = (e) => { if (e.key === 'Enter') e.target.blur(); };
   $('#send').onclick = send;
@@ -1111,7 +1128,7 @@ function bind() {
   $('#export-close').onclick = () => $('#export-dialog').close();
   $('#env-select').onchange = (e) => {
     if (e.target.value === '__manage') { e.target.value = activeEnvId || ''; envSel = activeEnv(); renderEnvDialog(); $('#env-dialog').showModal(); return; }
-    activeEnvId = e.target.value || null; missing = []; renderRequestHeader();
+    activeEnvId = e.target.value || null; missing = []; renderRequestHeader(); renderRequest();
   };
   // 原生菜单（macOS 菜单栏里可见快捷键）触发的动作
   window.__TAURI__.event?.listen('menu', ({ payload }) => {
@@ -1135,7 +1152,10 @@ function bind() {
     else if (e.key === 'f') { e.preventDefault(); const f = $('#find') || $('#search'); f.focus(); f.select(); }
   });
   document.addEventListener('keydown', (e) => {
-    if ((e.key === 'Backspace' || e.key === 'Delete') && selected.size > 1 && document.activeElement?.closest('#sidebar')) { e.preventDefault(); deleteSelected(); }
+    const el = document.activeElement;
+    // 输入框里的退格是编辑文本，不是删请求（#search、重命名输入框都在 #sidebar 内）
+    const typing = el?.matches('input, textarea, [contenteditable]');
+    if ((e.key === 'Backspace' || e.key === 'Delete') && selected.size > 1 && !typing && el?.closest('#sidebar')) { e.preventDefault(); deleteSelected(); }
     else if (e.key === 'Escape' && selected.size) { selected.clear(); renderSidebar(); }
   });
   splitter($('#split-side'), '--side-w', (ev) => ev.clientX, 180, () => window.innerWidth * 0.5, 'firebee.sideW');

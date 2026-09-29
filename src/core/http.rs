@@ -57,7 +57,9 @@ pub async fn execute(
     jar: Option<Arc<reqwest::cookie::Jar>>,
 ) -> Result<ResponseMeta, HttpError> {
     let url = build_url(req)?;
-    let mut builder = reqwest::Client::builder().timeout(timeout);
+    // referer(false)：reqwest 默认在重定向时带上 Referer，且只剥掉用户名/密码/fragment，
+    // query 原样保留 —— ApiKey in_query 的密钥会被 302 的目标站点收到。
+    let mut builder = reqwest::Client::builder().timeout(timeout).referer(false);
     if let Some(jar) = jar {
         builder = builder.cookie_provider(jar);
     }

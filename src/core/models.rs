@@ -228,16 +228,15 @@ pub fn merge_inherited(req: &Request, chain: &[Inherited]) -> Request {
     {
         let enabled: Vec<&KeyValue> = src
             .iter()
-            .filter(|h| h.enabled && !h.key.is_empty())
+            .filter(|h| h.enabled && !h.key.trim().is_empty())
             .collect();
         headers.retain(|kept| {
             !enabled
                 .iter()
-                .any(|h| h.key.eq_ignore_ascii_case(&kept.key))
+                .any(|h| h.key.trim().eq_ignore_ascii_case(kept.key.trim()))
         });
         headers.extend(enabled.into_iter().cloned());
     }
-    out.headers = headers;
     if out.auth == Auth::None {
         if let Some(a) = chain
             .iter()
@@ -248,6 +247,18 @@ pub fn merge_inherited(req: &Request, chain: &[Inherited]) -> Request {
             out.auth = a.clone();
         }
     }
+    // auth 生效时丢掉继承来的 Authorization：reqwest 的 header() 是追加，
+    // 集合配了 Authorization 头、文件夹又配了 Bearer，会发出两个 Authorization。
+    // 请求自己写的那一行保留 —— 那是明确的手写覆盖。
+    if out.auth != Auth::None
+        && !req
+            .headers
+            .iter()
+            .any(|h| h.enabled && h.key.trim().eq_ignore_ascii_case("authorization"))
+    {
+        headers.retain(|h| !h.key.trim().eq_ignore_ascii_case("authorization"));
+    }
+    out.headers = headers;
     out
 }
 
@@ -412,6 +423,53 @@ mod tests {
         let m = merge_inherited(&r, &chain);
         assert_eq!(m.headers.len(), 2);
         assert!(!m.headers.iter().any(|h| h.key == "X-Off"));
+    }
+
+    #[test]
+    fn inherited_header_names_match_case_and_space_insensitively() {
+        let mut r = Request::new("r");
+        r.headers = vec![KeyValue::new("content-type", "text/plain")];
+        let chain = [inh(&[(" Content-Type ", "application/json")], Auth::None)];
+        let m = merge_inherited(&r, &chain);
+        assert_eq!(
+            m.headers.len(),
+            1,
+            "大小写/空白不同也应算同名: {:?}",
+            m.headers
+        );
+        assert_eq!(m.headers[0].value, "text/plain");
+    }
+
+    #[test]
+    fn effective_auth_drops_inherited_authorization_header() {
+        // 集合配了 Authorization 头、文件夹又配了 Bearer —— 不能发出两个 Authorization
+        let r = Request::new("r");
+        let chain = [
+            inh(&[("Authorization", "Bearer col-header")], Auth::None),
+            inh(
+                &[],
+                Auth::Bearer {
+                    token: "folder".into(),
+                },
+            ),
+        ];
+        let m = merge_inherited(&r, &chain);
+        assert!(!m
+            .headers
+            .iter()
+            .any(|h| h.key.eq_ignore_ascii_case("authorization")));
+        // 请求自己手写的那一行保留（明确覆盖）
+        let mut own = Request::new("r");
+        own.headers = vec![KeyValue::new("Authorization", "Bearer mine")];
+        let m2 = merge_inherited(&own, &chain);
+        assert_eq!(
+            m2.headers
+                .iter()
+                .filter(|h| h.key.eq_ignore_ascii_case("authorization"))
+                .count(),
+            1
+        );
+        assert_eq!(m2.headers[0].value, "Bearer mine");
     }
 
     #[test]
