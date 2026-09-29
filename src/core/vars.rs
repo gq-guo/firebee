@@ -82,16 +82,38 @@ const LAST: &[&str] = &[
 ];
 const DOMAINS: &[&str] = &["example.com", "example.org", "test.dev", "mail.example.net"];
 const COMPANY_A: &[&str] = &[
-    "Northwind", "Acme", "Globex", "Initech", "Umbrella", "Stark", "Wayne", "Soylent",
+    "Northwind",
+    "Acme",
+    "Globex",
+    "Initech",
+    "Umbrella",
+    "Stark",
+    "Wayne",
+    "Soylent",
 ];
-const COMPANY_B: &[&str] = &["Labs", "Group", "Industries", "Systems", "Holdings", "Works"];
+const COMPANY_B: &[&str] = &[
+    "Labs",
+    "Group",
+    "Industries",
+    "Systems",
+    "Holdings",
+    "Works",
+];
 const STREETS: &[&str] = &[
     "Oak", "Maple", "Cedar", "Pine", "Elm", "Birch", "Willow", "Sunset", "Lake", "Hill",
 ];
 const STREET_SUFFIX: &[&str] = &["Street", "Avenue", "Road", "Lane", "Boulevard"];
 const CITIES: &[&str] = &[
-    "Springfield", "Riverside", "Fairview", "Kingston", "Georgetown", "Ashland", "Clinton",
-    "Salem", "Madison", "Bristol",
+    "Springfield",
+    "Riverside",
+    "Fairview",
+    "Kingston",
+    "Georgetown",
+    "Ashland",
+    "Clinton",
+    "Salem",
+    "Madison",
+    "Bristol",
 ];
 const COUNTRY_CODES: &[&str] = &[
     "US", "CN", "JP", "DE", "FR", "GB", "SG", "AU", "CA", "BR", "IN", "NL",
@@ -100,9 +122,30 @@ const CURRENCY_CODES: &[&str] = &[
     "USD", "CNY", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD", "HKD", "KRW",
 ];
 const LOREM: &[&str] = &[
-    "lorem", "ipsum", "dolor", "sit", "amet", "consectetur", "adipiscing", "elit", "sed", "do",
-    "eiusmod", "tempor", "incididunt", "labore", "dolore", "magna", "aliqua", "enim", "minim",
-    "veniam", "quis", "nostrud", "ullamco", "laboris",
+    "lorem",
+    "ipsum",
+    "dolor",
+    "sit",
+    "amet",
+    "consectetur",
+    "adipiscing",
+    "elit",
+    "sed",
+    "do",
+    "eiusmod",
+    "tempor",
+    "incididunt",
+    "labore",
+    "dolore",
+    "magna",
+    "aliqua",
+    "enim",
+    "minim",
+    "veniam",
+    "quis",
+    "nostrud",
+    "ullamco",
+    "laboris",
 ];
 
 fn dynamic(name: &str) -> Option<String> {
@@ -118,7 +161,8 @@ fn dynamic(name: &str) -> Option<String> {
             .unwrap_or(default)
     };
     let now = chrono::Utc::now();
-    let iso = |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let iso =
+        |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
     Some(match base {
         "$uuid" | "$guid" | "$randomUUID" => uuid::Uuid::new_v4().to_string(),
@@ -127,7 +171,7 @@ fn dynamic(name: &str) -> Option<String> {
         "$isoTimestamp" => iso(now),
         "$randomInt" => between(arg(0, 0), arg(1, 1000)).to_string(),
         "$randomString" => chars(arg(0, 16)),
-        "$randomBoolean" => (rnd() % 2 == 0).to_string(),
+        "$randomBoolean" => rnd().is_multiple_of(2).to_string(),
         "$randomFirstName" => pick(FIRST),
         "$randomLastName" => pick(LAST),
         "$randomFullName" => format!("{} {}", pick(FIRST), pick(LAST)),
@@ -304,15 +348,27 @@ mod tests {
     fn parameterized_dynamic_vars() {
         let v = HashMap::new();
         for _ in 0..50 {
-            let n: i64 = substitute("{{$randomInt(5,7)}}", &v).output.parse().unwrap();
+            let n: i64 = substitute("{{$randomInt(5,7)}}", &v)
+                .output
+                .parse()
+                .unwrap();
             assert!((5..=7).contains(&n));
         }
         assert_eq!(substitute("{{$randomString(8)}}", &v).output.len(), 8);
         assert_eq!(substitute("{{ $randomInt(3, 3) }}", &v).output, "3");
         // 参数非法 / 缺失 → 回落到默认区间
-        assert!(substitute("{{$randomInt(x)}}", &v).output.parse::<i64>().unwrap() <= 1000);
+        assert!(
+            substitute("{{$randomInt(x)}}", &v)
+                .output
+                .parse::<i64>()
+                .unwrap()
+                <= 1000
+        );
         // 未知名字带括号仍算缺失
-        assert_eq!(substitute("{{$nope(1)}}", &v).missing, vec!["$nope(1)".to_string()]);
+        assert_eq!(
+            substitute("{{$nope(1)}}", &v).missing,
+            vec!["$nope(1)".to_string()]
+        );
     }
 
     #[test]
@@ -327,7 +383,10 @@ mod tests {
         assert!(p[0].contains('@') && p[0].contains('.'));
         let price: f64 = p[1].parse().unwrap();
         assert!((0.0..1000.0).contains(&price));
-        assert_eq!(p[2].split('.').filter(|o| o.parse::<u8>().is_ok()).count(), 4);
+        assert_eq!(
+            p[2].split('.').filter(|o| o.parse::<u8>().is_ok()).count(),
+            4
+        );
         assert!(p[3].ends_with('.') && p[3].starts_with(char::is_uppercase));
         assert!(chrono::DateTime::parse_from_rfc3339(p[4]).unwrap() < chrono::Utc::now());
         assert!(p[5] == "true" || p[5] == "false");
