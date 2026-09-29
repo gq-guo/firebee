@@ -277,12 +277,28 @@ pub struct ResponseMeta {
     pub size_bytes: usize,
 }
 
+/// 存进历史的响应：字段与前端 ResponseDto 同名，重开历史时直接喂给响应面板。
+/// body 超过上限会被前端截断（truncated=true），二进制响应不存 body。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+    pub duration_ms: u128,
+    pub size_bytes: usize,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub timestamp: chrono::DateTime<chrono::Local>,
     pub request: Request,
     pub status: Option<u16>,
     pub duration_ms: Option<u128>,
+    /// 老的 history.json 没有这个字段
+    #[serde(default)]
+    pub response: Option<StoredResponse>,
 }
 
 #[cfg(test)]
@@ -436,6 +452,16 @@ mod tests {
             merge_inherited(&r, &[Inherited::default()]).auth,
             Auth::None
         );
+    }
+
+    #[test]
+    fn history_entry_without_response_loads() {
+        // 0.1.2 之前存下来的 history.json 没有 response
+        let old = r#"{"timestamp":"2026-09-01T10:00:00+08:00","status":200,"duration_ms":12,
+            "request":{"id":"00000000-0000-0000-0000-000000000001","name":"a","method":"Get",
+            "url":"","params":[],"headers":[],"body_type":"None","body":"","form":[],"auth":"None"}}"#;
+        let e: HistoryEntry = serde_json::from_str(old).unwrap();
+        assert!(e.response.is_none());
     }
 
     #[test]

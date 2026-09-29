@@ -11,6 +11,7 @@
 - GraphQL：新建时选 New GraphQL request，Query + Variables（JSON）编辑，按 `{"query","variables"}` POST；Postman 的 GraphQL body 可导入
 - Params / Headers 表格末尾常驻空白行，直接输入即新增；Header 名与 Content-Type / Accept 值自动补全；JSON body 一键格式化并定位错误
 - 可取消、超时可配；多个请求可同时在飞，响应按请求保留（切换不丢，内存中最多 50 条）
+- Capture：2xx 响应后按 JSONPath 把值写进当前环境变量（`token` ← `$.data.token`），登录拿 token 不用手动复制
 - Cookie 在会话内自动保持，登录后可连着调会话接口；Environment › Manage… 里可清除
 
 **响应**
@@ -30,7 +31,8 @@
 - 拖拽排序与跨文件夹移动；⌘点击多选，批量删除
 - 请求可 Pin，置顶到侧栏 Pinned 区，常用接口不用再翻文件夹
 - 侧栏搜索：按集合 / 文件夹 / 请求名和 URL 过滤（⌘F 聚焦）
-- 历史最近 500 条，点击回填；可删单条或清空（可撤销）
+- 历史最近 500 条，点击回填；最近 100 条连响应体一起留着（单条上限 64KB），点回去直接看当时的返回，不用重发
+- 集合 / 文件夹可配公共 header 与 auth（右键 → Shared headers & auth…），下属请求自动带上；请求自己同名的覆盖它
 - 导入：把 curl 粘贴到 URL 框即覆盖到当前请求（保留名字）；集合菜单可导入为新请求；文件导入 Firebee 导出 / Postman Collection v2.x / Postman Environment
 - 导出：curl（JSON 压成一行，方便粘贴终端）、Python (requests)；集合导出为 Firebee JSON
 
@@ -48,7 +50,7 @@ cargo run --release    # 直接运行（前端资源已编译进二进制）
 ## 测试
 
 ```bash
-cargo test          # 40 个单元/集成测试（core 层全覆盖，http 用 wiremock）
+cargo test          # 46 个单元/集成测试（core 层全覆盖，http 用 wiremock）
 cargo clippy --all-targets -- -D warnings
 ```
 

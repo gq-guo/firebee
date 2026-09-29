@@ -122,6 +122,7 @@ mod tests {
                 request: crate::core::models::Request::new("r"),
                 status: Some(200),
                 duration_ms: Some(1),
+                response: None,
             })
             .collect();
         s.save_history(&entries).unwrap();

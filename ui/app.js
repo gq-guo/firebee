@@ -9,7 +9,9 @@ const MOD = MAC ? '⌘' : 'Ctrl+';
 const METHODS = ['Get', 'Post', 'Put', 'Delete', 'Patch', 'Head', 'Options'];
 const HISTORY_LIMIT = 500;
 let DYNAMIC_VARS = []; // 启动时从后端拉（core/vars.rs 是唯一来源）
-const TRUNCATE_AT = 300_000; // 超过就先显示前 300KB，点 Show all 再全量
+const TRUNCATE_AT = 300_000;
+const HISTORY_BODY_MAX = 64_000;   // 单条历史最多留 64KB 响应体
+const HISTORY_BODIES = 100;        // 只有最近 100 条留响应体，避免 history.json 无限长 // 超过就先显示前 300KB，点 Show all 再全量
 const REASON = { 200: 'OK', 201: 'Created', 204: 'No Content', 301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified',
   400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed', 408: 'Timeout',
   409: 'Conflict', 422: 'Unprocessable', 429: 'Too Many Requests', 500: 'Server Error', 502: 'Bad Gateway', 503: 'Unavailable', 504: 'Gateway Timeout' };
@@ -511,9 +513,11 @@ function ensureCurrent() {
 /** 历史：原请求还在就直接打开它，否则按快照在首个集合里新建一个 */
 function openFromHistory(hist) {
   const found = findById(hist.request.id);
-  if (found) return selectRequest(found);
-  const r = structuredClone(hist.request);
-  homeCollection().requests.push(r); dirty(); selectRequest(r);
+  const r = found || structuredClone(hist.request);
+  if (!found) { homeCollection().requests.push(r); dirty(); }
+  // 当时的响应还留着就放回响应面板，不用重发（重发 POST 是有副作用的）
+  if (hist.response) setResponse(r.id, { ok: { ...hist.response, body_base64: null, from_history: hist.timestamp } });
+  selectRequest(r);
 }
 function findById(id, nodes = data.collections) {
   for (const n of nodes) { const r = n.requests.find((x) => x.id === id); if (r) return r; const d = findById(id, n.folders); if (d) return d; }
@@ -757,11 +761,22 @@ async function send() {
     if (cap) toast(cap.ok || cap.error, { error: !cap.ok });
     if (cap?.ok) renderRequest();
   }
-  data.history.push({ timestamp: new Date().toISOString(), request: req, status, duration_ms });
+  data.history.push({ timestamp: new Date().toISOString(), request: req, status, duration_ms, response: storedResponse(result.ok) });
   if (data.history.length > HISTORY_LIMIT) data.history.splice(0, data.history.length - HISTORY_LIMIT);
+  // 只有最近 HISTORY_BODIES 条留响应体
+  for (let i = 0; i < data.history.length - HISTORY_BODIES; i++) data.history[i].response = null;
   saveHistory();
   if (current.id === rid) { renderRequestHeader(); renderResponse(); }
   renderSidebar();
+}
+
+/** 存进历史的响应；二进制（图片等）不留 body，超长截断 */
+function storedResponse(dto) {
+  if (!dto) return null;
+  const text = dto.body_base64 ? '' : dto.body || '';
+  const truncated = text.length > HISTORY_BODY_MAX;
+  return { status: dto.status, headers: dto.headers, body: truncated ? text.slice(0, HISTORY_BODY_MAX) : text,
+    duration_ms: dto.duration_ms, size_bytes: dto.size_bytes, truncated };
 }
 
 const saveHistory = () => invoke('save_history', { history: data.history }).catch((e) => toast(`Couldn't save history. ${e}`, { error: true }));
@@ -805,6 +820,8 @@ function renderResponse() {
   meta.append(
     h('span', { class: `status s${Math.floor(r.status / 100)}` }, `${r.status} ${REASON[r.status] || ''}`.trim()),
     h('span', { class: 'meta' }, `${r.duration_ms} ms`), h('span', { class: 'meta' }, fmtSize(r.size_bytes)),
+    r.from_history ? h('span', { class: 'meta from-history', title: `Kept from ${new Date(r.from_history).toLocaleString()} — press Send for a fresh one` },
+      r.truncated ? 'from history · first 64 KB' : 'from history') : null,
     h('span', { class: 'spacer' }), r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct)),
   );
   const previewTab = document.querySelector('[data-resp=preview]');
