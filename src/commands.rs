@@ -45,6 +45,7 @@ pub struct ResponseDto {
     body_base64: Option<String>,
     duration_ms: u128,
     size_bytes: usize,
+    redirects: Vec<String>,
 }
 
 fn vars(env: &Option<Environment>) -> HashMap<String, String> {
@@ -105,6 +106,7 @@ pub async fn send_request(
     env: Option<Environment>,
     timeout_secs: u64,
     inherited: Option<Vec<Inherited>>,
+    follow_redirects: Option<bool>,
 ) -> Result<ResponseDto, String> {
     let request = merge_inherited(&request, &inherited.unwrap_or_default());
     let (req, _) = substitute_request(&request, &vars(&env));
@@ -116,6 +118,7 @@ pub async fn send_request(
         Duration::from_secs(timeout_secs.max(1)),
         rx,
         Some(jar),
+        follow_redirects.unwrap_or(true),
     )
     .await;
     pending.0.lock().unwrap().remove(&job_id);
@@ -143,6 +146,7 @@ pub async fn send_request(
                 body_base64,
                 duration_ms: r.duration_ms,
                 size_bytes: r.size_bytes,
+                redirects: r.redirects,
             }
         })
         .map_err(|e| e.to_string())

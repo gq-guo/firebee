@@ -297,6 +297,8 @@ pub struct ResponseMeta {
     pub body: Vec<u8>,
     pub duration_ms: u128,
     pub size_bytes: usize,
+    /// 实际跟过的重定向目标，按顺序；没有重定向就是空的
+    pub redirects: Vec<String>,
 }
 
 /// 存进历史的响应：字段与前端 ResponseDto 同名，重开历史时直接喂给响应面板。

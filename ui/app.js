@@ -20,6 +20,8 @@ const REASON = { 200: 'OK', 201: 'Created', 204: 'No Content', 301: 'Moved Perma
 // ---------- 状态 ----------
 let data = { collections: [], environments: [], history: [] };
 let activeEnvId = (() => { try { return localStorage.getItem('firebee.env'); } catch { return null; } })();
+const pref = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch { return d; } };
+let followRedirects = pref('firebee.follow', true);
 let current = newRequest();
 // 响应按请求 id 保留在内存里（切换请求不丢），最多 50 条；进行中的请求按 id 记 job_id，互不阻塞
 const responses = new Map(); // request.id → { ok: dto } | { error: string } | { cancelled: true }
@@ -308,7 +310,7 @@ function nameNode(obj) {
     if (renaming !== obj) return; // Enter 后 blur 会再触发一次
     const v = e.target.value.trim();
     if (v) { obj.name = v; dirty(); }
-    renaming = null; renderSidebar(); renderRequestHeader();
+    renaming = null; renderSidebar(); renderRequestHeader(); renderTabs();
   };
   return h('input', { class: 'rename', value: obj.name, 'aria-label': 'New name',
     onclick: (e) => e.stopPropagation(),
@@ -324,7 +326,7 @@ const startRename = (obj) => (e) => { e.stopPropagation(); renaming = obj; rende
 /** 乐观删除 + Undo toast，不弹确认框 */
 const remove = (arr, obj, what) => () => {
   const idx = arr.indexOf(obj);
-  arr.splice(idx, 1); dirty(); ensureCurrent(); renderSidebar(); renderRequestHeader();
+  arr.splice(idx, 1); dirty(); ensureCurrent(); renderSidebar(); renderRequestHeader(); renderTabs();
   toast(`Deleted ${what} “${obj.name}”.`, { action: ['Undo', () => { arr.splice(idx, 0, obj); dirty(); renderSidebar(); renderRequestHeader(); }] });
 };
 
@@ -426,7 +428,7 @@ function deleteSelected() {
   const removed = [...selected].map((r) => { const arr = locateArr(r); return arr && { arr, idx: arr.indexOf(r), r }; }).filter(Boolean)
     .sort((a, b) => b.idx - a.idx);
   removed.forEach(({ arr, idx }) => arr.splice(idx, 1));
-  selected.clear(); dirty(); ensureCurrent(); renderSidebar(); renderRequestHeader();
+  selected.clear(); dirty(); ensureCurrent(); renderSidebar(); renderRequestHeader(); renderTabs();
   toast(`Deleted ${removed.length} requests.`, { action: ['Undo', () => {
     removed.sort((a, b) => a.idx - b.idx).forEach(({ arr, idx, r }) => arr.splice(idx, 0, r));
     dirty(); renderSidebar(); renderRequestHeader();
@@ -436,7 +438,45 @@ function deleteSelected() {
 /** 选中请求：来自集合时直接引用（编辑即写回集合并保存），来自历史时为副本。 */
 function selectRequest(r) {
   current = r; missing = [];
-  renderRequest(); renderResponse(); renderSidebar();
+  if (!openTabs.includes(r.id)) openTabs.push(r.id);
+  saveTabs();
+  renderTabs(); renderRequest(); renderResponse(); renderSidebar();
+}
+
+// ---------- 标签页 ----------
+// 打开的请求 id 列表；请求对象本身住在集合里，这里只记"开着哪些"。
+// 编辑本来就直接写回集合对象，所以切标签不会丢任何东西。
+let openTabs = (() => { try { return JSON.parse(localStorage.getItem('firebee.tabs') || '[]'); } catch { return []; } })();
+const saveTabs = () => { try { localStorage.setItem('firebee.tabs', JSON.stringify(openTabs)); } catch { /* private mode */ } };
+
+/** 关掉一个标签；关的是当前标签时，焦点给右边的、没有就给左边的 */
+function closeTab(id) {
+  const i = openTabs.indexOf(id);
+  if (i < 0) return;
+  openTabs.splice(i, 1); saveTabs();
+  if (id !== current.id) return renderTabs();
+  // 关的是当前标签：焦点给右边的，没有就给左边的；一个都不剩就回到集合里的第一个
+  // （请求面板没有"空"状态，标签栏不能关成空的）
+  const next = findById(openTabs[i] || openTabs[i - 1]) || firstRequest();
+  next ? selectRequest(next) : createRequest();
+}
+
+function renderTabs() {
+  // 集合里已经没有的请求（被删了）顺手清掉
+  const live = openTabs.map((id) => [id, findById(id)]).filter(([, r]) => r);
+  if (live.length !== openTabs.length) { openTabs = live.map(([id]) => id); saveTabs(); }
+  put($('#tabs'), ...live.map(([id, r]) => {
+    const on = id === current.id;
+    return h('div', { class: 'tab' + (on ? ' active' : ''), role: 'tab', tabindex: 0, 'aria-selected': on ? 'true' : 'false',
+      title: `${r.name} — ${r.url || 'no URL'}`,
+      onclick: () => !on && selectRequest(r),
+      onkeydown: activate,
+      onauxclick: (e) => { if (e.button === 1) { e.preventDefault(); closeTab(id); } } },
+      reqTag(r), h('span', { class: 'tab-name' }, r.name),
+      pendings.has(id) ? h('span', { class: 'spinner' }) : null,
+      btn('×', (e) => { e.stopPropagation(); closeTab(id); }, 'small more close')
+        .withAttr('aria-label', `Close ${r.name}`));
+  }));
 }
 
 /** 当前请求在集合树中的位置（面包屑）；不在任何集合里返回 null */
@@ -789,10 +829,10 @@ async function send() {
   const id = ++jobSeq, rid = current.id, req = structuredClone(current), chain = chainFor(current) || [];
   const capEnv = activeEnv(); // 目标环境按发送时算：飞行中切环境不能把 dev 的 token 写进 prod
   pendings.set(rid, id); responses.delete(rid);
-  renderRequestHeader(); renderResponse(); renderSidebar();
+  renderRequestHeader(); renderResponse(); renderSidebar(); renderTabs();
   let status = null, duration_ms = null, result;
   try {
-    const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(), timeout_secs: Number($('#timeout').value) || 30, inherited: chain });
+    const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(), timeout_secs: Number($('#timeout').value) || 30, inherited: chain, follow_redirects: followRedirects });
     result = { ok: r }; status = r.status; duration_ms = r.duration_ms;
   } catch (e) {
     result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
@@ -809,7 +849,7 @@ async function send() {
   for (let i = 0; i < data.history.length - HISTORY_BODIES; i++) data.history[i].response = null;
   saveHistory();
   if (current.id === rid) { renderRequestHeader(); renderResponse(); }
-  renderSidebar();
+  renderSidebar(); renderTabs();
 }
 
 /** 按字节预算截断，且不切开码位——半个代理对 serde_json 会拒收，整个 save_history 都会失败 */
@@ -889,11 +929,14 @@ function renderResponse() {
       r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null,
     h('span', { class: 'spacer' }), r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct)),
   );
-  // 3xx 到这里说明没被跟随（同 host 的已经跟完了）——告诉用户去哪儿，别让他以为坏了
+  // 跟过的每一跳都列出来；3xx 说明停下了，说清为什么并给一键跟进
+  if (r.redirects?.length) body.append(h('div', { class: 'helper redirects' },
+    h('span', {}, `Followed ${r.redirects.length} redirect${r.redirects.length > 1 ? 's' : ''}: `),
+    ...r.redirects.flatMap((u, i) => [i ? h('span', { class: 'muted' }, ' → ') : null, h('code', {}, u)])));
   if (r.status >= 300 && r.status < 400) {
     const loc = r.headers.find(([k]) => k.toLowerCase() === 'location')?.[1];
     if (loc) body.append(h('div', { class: 'helper' },
-      h('span', {}, 'Redirect to a different host was not followed — credentials stay here. Target: '),
+      h('span', {}, followRedirects ? 'Not followed — a redirect to a different host would leak this request’s headers. Target: ' : 'Not followed — “Follow redirects” is off. Target: '),
       h('code', {}, loc), ' ',
       btn('Use this URL', () => { current.url = loc; $('#url').value = loc; dirty(); renderRequest(); renderUrlMirror(); })));
   }
@@ -1177,8 +1220,13 @@ function bind() {
     if (await importCurl($('#import-text').value, (m) => { $('#import-error').textContent = m; }, importInto)) { $('#import-text').value = ''; $('#import-dialog').close(); }
   };
   $('#import-text').onkeydown = (e) => { if ((MAC ? e.metaKey : e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); $('#import-run').click(); } };
-  $('#req-name').oninput = (e) => { current.name = e.target.value; sizeName(); dirty(); renderSidebar(); };
+  $('#req-name').oninput = (e) => { current.name = e.target.value; sizeName(); dirty(); renderSidebar(); renderTabs(); };
   $('#req-name').onkeydown = (e) => { if (e.key === 'Enter') e.target.blur(); };
+  $('#follow').checked = followRedirects;
+  $('#follow').onchange = (e) => {
+    followRedirects = e.target.checked;
+    try { localStorage.setItem('firebee.follow', followRedirects ? '1' : '0'); } catch { /* private mode */ }
+  };
   $('#send').onclick = send;
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pendings.get(current.id) });
   $('#export-copy').onclick = (e) => copyText($('#export-text').textContent, e.currentTarget);
@@ -1209,6 +1257,13 @@ function bind() {
     if (e.key === 'Enter') { e.preventDefault(); send(); }
     else if (e.key === 'n') { e.preventDefault(); createRequest(); $('#url').focus(); }
     else if (e.key === 'f') { e.preventDefault(); const f = $('#find') || $('#search'); f.focus(); f.select(); }
+    else if (e.key === 'w') { e.preventDefault(); closeTab(current.id); }
+    else if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      const i = openTabs.indexOf(current.id);
+      const next = findById(openTabs[(i + (e.key === 'ArrowRight' ? 1 : -1) + openTabs.length) % openTabs.length]);
+      if (next) selectRequest(next);
+    }
   });
   document.addEventListener('keydown', (e) => {
     const el = document.activeElement;
@@ -1230,8 +1285,11 @@ async function main() {
     invoke('load_data'),
     invoke('dynamic_vars').catch((e) => { toast(`Built-in variables unavailable. ${e}`, { error: true }); return []; }),
   ]);
-  current = firstRequest() || (homeCollection().requests.push(current), dirty(), current);
-  renderTopbar(); renderSidebar(); renderRequest(); renderResponse();
+  const restored = openTabs.map((id) => findById(id)).filter(Boolean);
+  current = restored[0] || firstRequest() || (homeCollection().requests.push(current), dirty(), current);
+  openTabs = restored.length ? restored.map((r) => r.id) : [current.id];
+  saveTabs();
+  renderTopbar(); renderTabs(); renderSidebar(); renderRequest(); renderResponse();
   $('#url').focus();
 }
 main();
