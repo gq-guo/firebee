@@ -63,7 +63,7 @@ pub async fn execute(
     // referer(false)：reqwest 默认在重定向时带上 Referer，且只剥掉用户名/密码/fragment，
     // query 原样保留 —— ApiKey in_query 的密钥会被 302 的目标站点收到。
     //
-    // 重定向只跟同一 host（端口和 http→https 不算换家，换 host 才算）。
+    // 重定向只跟同一 host，且不跟 https→http 的降级（端口变化和 http→https 升级照跟）。
     // reqwest 换 host 时只剥 Authorization / Cookie，
     // X-API-Key 这类自定义鉴权头会原样发给新 host；一个被控制的接口用 302
     // 就能把密钥取走。跨 host 时停下来，把 3xx 和 Location 交给用户自己看。
@@ -78,8 +78,15 @@ pub async fn execute(
             if attempt.previous().len() >= 10 {
                 return attempt.error("too many redirects");
             }
-            if attempt.previous().last().and_then(|u| u.host_str()) != attempt.url().host_str() {
-                return attempt.stop(); // 换 host 了，见上面的注释
+            let Some(prev) = attempt.previous().last() else {
+                return attempt.stop();
+            };
+            // 换 host 要停（见上面的注释）；https→http 也要停 ——
+            // 同一个 host 也不能把 X-API-Key 降级成明文发出去
+            if prev.host_str() != attempt.url().host_str()
+                || (prev.scheme() == "https" && attempt.url().scheme() != "https")
+            {
+                return attempt.stop();
             }
             rec.lock().unwrap().push(attempt.url().to_string());
             attempt.follow()

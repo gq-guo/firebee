@@ -215,8 +215,10 @@ pub fn import_file(path: String) -> Result<Imported, String> {
     let v: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| format!("Not valid JSON: {e}"))?;
     if v.get("firebee").is_some() {
-        let collection = serde_json::from_value(v["collection"].clone())
+        let mut collection: Collection = serde_json::from_value(v["collection"].clone())
             .map_err(|e| format!("Not a Firebee collection file: {e}"))?;
+        // 换一套新 id：导进来的是副本，不是原件。同 id 会让前端把两份请求认成一份。
+        collection.reid();
         return Ok(Imported {
             collection: Some(collection),
             ..Default::default()

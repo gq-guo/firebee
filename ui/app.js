@@ -20,6 +20,11 @@ const REASON = { 200: 'OK', 201: 'Created', 204: 'No Content', 301: 'Moved Perma
 // ---------- 状态 ----------
 let data = { collections: [], environments: [], history: [] };
 let activeEnvId = (() => { try { return localStorage.getItem('firebee.env'); } catch { return null; } })();
+// activeEnvId 只能通过这里改，否则容易漏掉持久化（曾经漏过对话框里的 Set active）
+function setActiveEnv(id) {
+  activeEnvId = id || null;
+  try { activeEnvId ? localStorage.setItem('firebee.env', activeEnvId) : localStorage.removeItem('firebee.env'); } catch { /* private mode */ }
+}
 const pref = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch { return d; } };
 let followRedirects = pref('firebee.follow', true);
 let current = newRequest();
@@ -63,6 +68,7 @@ const activeEnv = () => data.environments.find((e) => e.id === activeEnvId) || n
 function dirty() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
+    saveTimer = null;
     try {
       await invoke('save_collections', { collections: data.collections });
       await invoke('save_environments', { environments: data.environments });
@@ -106,18 +112,35 @@ function copyText(text, button) {
 
 /** 右下角 toast：错误、或带 Undo 的可撤销操作。悬停时不消失。 */
 let toastTimer = null;
-function toast(message, { error = false, action = null, ms = 6000 } = {}) {
+function toast(text, { error = false, action = null } = {}) {
+  // 一次只显示一个 toast。前一个还带着没用过的 Undo 时不能直接盖掉——
+  // 删了 A 再删 B、或者删完 A 又发了个带 capture 的请求，A 就永久没了
+  // （删除是乐观的，500ms 后就落盘）。有待撤销动作时一律排队。
+  if (pendingUndo) { toastQueue.push([text, { error, action }]); return; }
+  showToast(text, { error, action });
+}
+const toastQueue = [];
+let pendingUndo = null;
+
+function showToast(text, { error = false, action = null } = {}) {
   const el = $('#toast');
   clearTimeout(toastTimer);
-  el.className = error ? 'error' : '';
-  put(el, h('span', {}, message),
-    action && btn(action[0], () => { hideToast(); action[1](); }),
-    btn('×', hideToast, 'small ghost'));
-  const arm = () => { toastTimer = setTimeout(hideToast, ms); };
-  el.onmouseenter = () => clearTimeout(toastTimer); el.onmouseleave = arm;
-  arm();
+  pendingUndo = action || null;
+  const done = () => {
+    el.classList.add('hidden');
+    pendingUndo = null;
+    const next = toastQueue.shift();
+    if (next) showToast(next[0], next[1]);
+  };
+  put(el, h('span', {}, text),
+    action && btn(action[0], () => { action[1](); done(); }, 'small'),
+    btn('×', done, 'small ghost').withAttr('aria-label', 'Dismiss'));
+  el.className = 'toast' + (error ? ' error' : '');
+  el.onmouseenter = () => clearTimeout(toastTimer);
+  el.onmouseleave = () => { toastTimer = setTimeout(done, 3000); };
+  toastTimer = setTimeout(done, action ? 8000 : 3000);
 }
-function hideToast() { clearTimeout(toastTimer); $('#toast').classList.add('hidden'); }
+function hideToast() { clearTimeout(toastTimer); pendingUndo = null; toastQueue.length = 0; $('#toast').classList.add('hidden'); }
 
 /** 右键 / ⋯ 菜单：items = [[label, fn, {danger, kbd}], ...]，点击任意处或 Esc 关闭 */
 function openMenu(e, items) {
@@ -157,7 +180,10 @@ function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = n
     const ghost = r === null;
     const promote = (field, value) => {
       const nr = kv(); nr[field] = value; rows.push(nr); dirty(); rerender(); renderTabCounts();
-      const cell = document.querySelector(`table.kv tr:nth-last-child(2) td.${field === 'key' ? 'key' : 'val'} input`);
+      const table = document.querySelector('dialog[open] table.kv') || $('#req-body table.kv');
+      // 必须在刚重建的这张表里找：#req-body 的表在 DOM 里排在对话框前面，
+      // 全文档选择器会选中它，而模态框打开时它是 inert 的，focus() 静默失效
+      const cell = table.closest('body') ? table.querySelector(`tr:nth-last-child(2) td.${field === 'key' ? 'key' : 'val'} input`) : null;
       if (cell) { cell.focus(); cell.setSelectionRange(cell.value.length, cell.value.length); }
     };
     const val = h('input', { placeholder: valHint, value: ghost ? '' : r.value, 'aria-label': valHint, spellcheck: 'false', list: ghost ? null : listFor(r.key),
@@ -258,11 +284,14 @@ function renderSidebar() {
     body.append(h('div', { class: 'row' }, h('span', { class: 'muted' }, `${data.history.length} entries`), h('span', { class: 'spacer' }),
       btn('Clear history', () => {
         const old = data.history; data.history = []; saveHistory(); renderSidebar();
-        toast(`Cleared ${old.length} history entries.`, { action: ['Undo', () => { data.history = old; saveHistory(); renderSidebar(); }] });
+        // Undo 时把清空之后新产生的记录接在后面，别把它们一起丢了
+        toast(`Cleared ${old.length} history entries.`, { action: ['Undo', () => { data.history = [...old, ...data.history]; saveHistory(); renderSidebar(); }] });
       }, 'small ghost')));
     for (const hist of shown.reverse()) {
       const hmenu = (e) => openMenu(e, [['Delete entry', () => {
-        const idx = data.history.indexOf(hist); data.history.splice(idx, 1); saveHistory(); renderSidebar();
+        const idx = data.history.indexOf(hist);
+        if (idx < 0) return; // splice(-1,1) 会删掉最新那条
+        data.history.splice(idx, 1); saveHistory(); renderSidebar();
         toast('Deleted history entry.', { action: ['Undo', () => { data.history.splice(idx, 0, hist); saveHistory(); renderSidebar(); }] });
       }, { danger: true }]]);
       const t = new Date(hist.timestamp);
@@ -326,8 +355,14 @@ const startRename = (obj) => (e) => { e.stopPropagation(); renaming = obj; rende
 /** 乐观删除 + Undo toast，不弹确认框 */
 const remove = (arr, obj, what) => () => {
   const idx = arr.indexOf(obj);
+  if (idx < 0) return; // splice(-1,1) 会删掉最后一个，不是这一个
+  const tabsBefore = [...openTabs];
   arr.splice(idx, 1); dirty(); ensureCurrent(); renderSidebar(); renderRequestHeader(); renderTabs();
-  toast(`Deleted ${what} “${obj.name}”.`, { action: ['Undo', () => { arr.splice(idx, 0, obj); dirty(); renderSidebar(); renderRequestHeader(); }] });
+  toast(`Deleted ${what} “${obj.name}”.`, { action: ['Undo', () => {
+    arr.splice(idx, 0, obj); dirty();
+    if (tabsBefore.includes(obj.id) && !openTabs.includes(obj.id)) { openTabs.push(obj.id); saveTabs(); }
+    renderSidebar(); renderRequestHeader(); renderTabs();
+  }] });
 };
 
 /** 集合或文件夹节点（结构相同：name / folders / requests） */
@@ -411,6 +446,8 @@ function moveDragged(targetArr, index) {
   if (arr === targetArr && from < index) index -= 1;
   targetArr.splice(index, 0, r);
   dirty(); renderSidebar();
+  // 换了父容器 = 换了继承链：面包屑、继承的头 / auth、未解析变量统计全都要重算
+  if (r === current) { renderRequestHeader(); renderRequest(); renderMissing(); }
 }
 
 /** 当前请求所在的 requests 数组；不在集合里返回 null */
@@ -429,9 +466,11 @@ function deleteSelected() {
     .sort((a, b) => b.idx - a.idx);
   removed.forEach(({ arr, idx }) => arr.splice(idx, 1));
   selected.clear(); dirty(); ensureCurrent(); renderSidebar(); renderRequestHeader(); renderTabs();
+  const tabsBefore = [...openTabs];
   toast(`Deleted ${removed.length} requests.`, { action: ['Undo', () => {
     removed.sort((a, b) => a.idx - b.idx).forEach(({ arr, idx, r }) => arr.splice(idx, 0, r));
-    dirty(); renderSidebar(); renderRequestHeader();
+    tabsBefore.forEach((id) => { if (!openTabs.includes(id) && findById(id)) openTabs.push(id); });
+    saveTabs(); dirty(); renderSidebar(); renderRequestHeader(); renderTabs();
   }] });
 }
 
@@ -446,7 +485,12 @@ function selectRequest(r) {
 // ---------- 标签页 ----------
 // 打开的请求 id 列表；请求对象本身住在集合里，这里只记"开着哪些"。
 // 编辑本来就直接写回集合对象，所以切标签不会丢任何东西。
-let openTabs = (() => { try { return JSON.parse(localStorage.getItem('firebee.tabs') || '[]'); } catch { return []; } })();
+let openTabs = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem('firebee.tabs') || '[]');
+    return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; // 别让一个坏值把启动打挂
+  } catch { return []; }
+})();
 const saveTabs = () => { try { localStorage.setItem('firebee.tabs', JSON.stringify(openTabs)); } catch { /* private mode */ } };
 
 /** 关掉一个标签；关的是当前标签时，焦点给右边的、没有就给左边的 */
@@ -586,7 +630,10 @@ async function importCurl(text, onError, into = null) {
     const r = await invoke('import_curl', { text });
     if (into) { into.requests.push(r); collapsed.delete(into.id); dirty(); selectRequest(r); return true; }
     const keepName = !/^(Untitled request|New Request)/i.test(current.name);
-    Object.assign(current, r, { id: current.id, name: keepName ? current.name : r.name });
+    // import_curl 返回的是全新的 Request，captures / pinned 是空的——
+  // 直接 assign 会把用户配好的提取规则和置顶状态静默抹掉
+  Object.assign(current, r, { id: current.id, name: keepName ? current.name : r.name,
+    captures: current.captures || [], pinned: current.pinned });
     dirty(); selectRequest(current);
     return true;
   } catch (e) { onError(String(e)); return false; }
@@ -700,7 +747,9 @@ function renderRequest() {
   else if (reqTab === 'capture') body.append(captureEditor());
   else {
     const ia = inheritedAuth(current);
-    if (ia && current.auth === 'Off') body.append(h('div', { class: 'helper' }, `${authKind(ia)} auth from the collection or folder is turned off for this request — no credentials are sent, and an inherited Authorization header is dropped too.`));
+    if (current.auth === 'Off') body.append(h('div', { class: 'helper' }, ia
+      ? `${authKind(ia)} auth from the collection or folder is turned off for this request. Inherited Authorization, Cookie and Proxy-Authorization headers are dropped too; other inherited headers still apply.`
+      : 'No credentials are sent. Inherited Authorization, Cookie and Proxy-Authorization headers are dropped; other inherited headers still apply.'));
     else if (ia) body.append(h('div', { class: 'helper' }, `Inheriting ${authKind(ia)} auth from the collection or folder. Pick another option to override it, or “No auth” to send nothing.`));
     body.append(authEditor());
   }
@@ -797,7 +846,7 @@ function authEditor(obj = current, rerender = renderRequest, container = false) 
   const inh = container ? null : inheritedAuth(obj);
   // 有东西可继承时，None 的语义就是"跟随上层"，标签跟着变；并多给一个明确不带凭据的选项
   const opts = [['None', inh ? 'Inherit' : 'None'],
-    ...(inh ? [['Off', 'No auth']] : []),
+    ...(inh || kind === 'Off' ? [['Off', 'No auth']] : []), // 已经是 Off 就一直显示，否则会四个都不选中
     ['Bearer', 'Bearer token'], ['Basic', 'Basic auth'], ['ApiKey', 'API key']];
   const wrap = h('div', {}, radios(`auth-${obj.id}`, opts, kind, (v) => {
     obj.auth = { None: 'None', Off: 'Off', Bearer: { Bearer: { token: '' } }, Basic: { Basic: { username: '', password: '' } },
@@ -876,14 +925,20 @@ let histTimer = null;
 function saveHistory() {
   clearTimeout(histTimer);
   histTimer = setTimeout(() => {
+    histTimer = null;
     invoke('save_history', { history: data.history })
       .catch((e) => toast(`Couldn't save history. ${e}`, { error: true, action: ['Retry', saveHistory] }));
   }, 500);
 }
-// 关窗前尽量补一次（WKWebView 上 beforeunload 在 ⌘Q 时未必触发，只是兜底：
-// 最坏情况丢最后半秒的历史记录，集合和环境走 dirty() 各自的防抖，不受影响）
+// 关窗前尽量把两个防抖都冲掉（WKWebView 上 beforeunload 在 ⌘Q 时未必触发，
+// 只是兜底：最坏情况丢最后半秒的改动）
 window.addEventListener('beforeunload', () => {
   if (histTimer) { clearTimeout(histTimer); histTimer = null; invoke('save_history', { history: data.history }); }
+  if (saveTimer) {
+    clearTimeout(saveTimer); saveTimer = null;
+    invoke('save_collections', { collections: data.collections });
+    invoke('save_environments', { environments: data.environments });
+  }
 });
 
 // ---------- 响应面板 ----------
@@ -939,7 +994,12 @@ function renderResponse() {
     if (loc) body.append(h('div', { class: 'helper' },
       h('span', {}, followRedirects ? 'Not followed — a redirect to a different host would leak this request’s headers. Target: ' : 'Not followed — “Follow redirects” is off. Target: '),
       h('code', {}, loc), ' ',
-      btn('Use this URL', () => { current.url = loc; $('#url').value = loc; dirty(); renderRequest(); renderUrlMirror(); })));
+      btn('Use this URL', () => {
+        // Location 可以是相对的（`/login`），直接写进去会毁掉原 URL
+        let next = loc;
+        try { next = new URL(loc, current.url).href; } catch { /* 原样用 */ }
+        current.url = next; $('#url').value = next; dirty(); renderRequest(); renderUrlMirror();
+      })));
   }
   const previewTab = document.querySelector('[data-resp=preview]');
   previewTab.classList.toggle('hidden', !isHtml);
@@ -1117,15 +1177,15 @@ function renderEnvDialog() {
   const del = () => {
     const idx = data.environments.indexOf(env);
     data.environments.splice(idx, 1);
-    if (isActive) activeEnvId = null;
+    if (isActive) setActiveEnv(null);
     envSel = data.environments[Math.min(idx, data.environments.length - 1)] || null;
     dirty(); renderEnvDialog(); renderTopbar(); renderRequestHeader();
-    toast(`Deleted environment “${env.name}”.`, { action: ['Undo', () => { data.environments.splice(idx, 0, env); if (isActive) activeEnvId = env.id; envSel = env; dirty(); renderEnvDialog(); renderTopbar(); renderRequestHeader(); }] });
+    toast(`Deleted environment “${env.name}”.`, { action: ['Undo', () => { data.environments.splice(idx, 0, env); if (isActive) setActiveEnv(env.id); envSel = env; dirty(); renderEnvDialog(); renderTopbar(); renderRequestHeader(); }] });
   };
   editor.append(
     h('div', { class: 'head' },
       h('input', { value: env.name, 'aria-label': 'Environment name', oninput: (e) => { env.name = e.target.value; dirty(); renderTopbar(); $('#env-list .item.active .name').textContent = env.name; } }),
-      isActive ? h('span', { class: 'badge' }, 'Active') : btn('Set active', () => { activeEnvId = env.id; missing = []; renderTopbar(); renderRequestHeader(); renderEnvDialog(); }),
+      isActive ? h('span', { class: 'badge' }, 'Active') : btn('Set active', () => { setActiveEnv(env.id); missing = []; renderTopbar(); renderRequestHeader(); renderRequest(); renderEnvDialog(); }),
       btn('Duplicate', () => { const d = structuredClone(env); d.id = crypto.randomUUID(); d.name += ' copy'; data.environments.splice(data.environments.indexOf(env) + 1, 0, d); envSel = d; dirty(); renderEnvDialog(); renderTopbar(); }),
       btn('Delete', del, 'small ghost'),
     ),
@@ -1195,7 +1255,11 @@ function acBind() {
       ac.cur = (ac.cur + (e.key === 'ArrowDown' ? 1 : -1) + ac.items.length) % ac.items.length;
       [...ac.el.children].forEach((c, i) => c.classList.toggle('cur', i === ac.cur));
       ac.el.children[ac.cur].scrollIntoView({ block: 'nearest' });
-    } else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); acAccept(); }
+      e.stopPropagation();
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      // 这是在"接受候选项"，不能继续冒泡 —— URL 栏的 Enter 会把请求直接发出去
+      e.preventDefault(); e.stopPropagation(); acAccept();
+    }
     else if (e.key === 'Escape') { e.stopPropagation(); acHide(); }
   }, true);
   document.addEventListener('focusout', (e) => { if (e.target === ac.field) setTimeout(() => { if (document.activeElement !== ac.field) acHide(); }, 0); });
@@ -1234,8 +1298,7 @@ function bind() {
   $('#export-close').onclick = () => $('#export-dialog').close();
   $('#env-select').onchange = (e) => {
     if (e.target.value === '__manage') { e.target.value = activeEnvId || ''; envSel = activeEnv(); renderEnvDialog(); $('#env-dialog').showModal(); return; }
-    activeEnvId = e.target.value || null;
-      try { activeEnvId ? localStorage.setItem('firebee.env', activeEnvId) : localStorage.removeItem('firebee.env'); } catch { /* private mode */ }
+    setActiveEnv(e.target.value);
       missing = []; renderRequestHeader(); renderRequest();
   };
   // 原生菜单（macOS 菜单栏里可见快捷键）触发的动作
@@ -1255,6 +1318,8 @@ function bind() {
   document.addEventListener('keydown', (e) => {
     const mod = MAC ? e.metaKey : e.ctrlKey;
     if (!mod) return;
+    // 模态对话框开着时，⌘↩ 会把背后的请求发出去、⌘W 会关掉背后的标签页
+    if (document.querySelector('dialog[open]')) return;
     if (e.key === 'Enter') { e.preventDefault(); send(); }
     else if (e.key === 'n') { e.preventDefault(); createRequest(); $('#url').focus(); }
     else if (e.key === 'f') { e.preventDefault(); const f = $('#find') || $('#search'); f.focus(); f.select(); }

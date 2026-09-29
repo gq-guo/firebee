@@ -54,11 +54,14 @@ fn auth(v: Option<&Value>) -> Option<Auth> {
             value: get("value"),
             in_query: get("in") == "query",
         },
+        // noauth 在 Postman 里是"明确不带凭据"，映射成 None 会变成"继承"，
+        // 于是集合级的 prod token 被发给了一个本来不该带凭据的请求
+        "noauth" => Auth::Off,
         _ => Auth::None,
     })
 }
 
-fn request(item: &Value, inherited: &Auth) -> Request {
+fn request(item: &Value) -> Request {
     let r = &item["request"];
     let mut req = Request::new(s(&item["name"]));
     // 字符串形式的 request 只有 URL
@@ -82,7 +85,7 @@ fn request(item: &Value, inherited: &Auth) -> Request {
         _ => {}
     }
     req.headers = kvs(r.get("header"));
-    req.auth = auth(r.get("auth")).unwrap_or_else(|| inherited.clone());
+    req.auth = auth(r.get("auth")).unwrap_or(Auth::None); // None = 发送时按容器链继承
     if let Some(body) = r.get("body") {
         match s(&body["mode"]).as_str() {
             "raw" => {
@@ -124,16 +127,24 @@ fn request(item: &Value, inherited: &Auth) -> Request {
 
 /// Postman 的集合 / 文件夹级 auth 与 header 映射到同级的容器上（Firebee 有同样的继承机制），
 /// 不再压到每个请求里——这样在 Firebee 里改一次就全改了，和 Postman 里的结构对得上。
+/// 容器上的 auth：Off 只在请求上有意义（容器不决定"带不带凭据"），折回 None
+fn container_auth(v: Option<&Value>) -> Auth {
+    match auth(v).unwrap_or(Auth::None) {
+        Auth::Off => Auth::None,
+        a => a,
+    }
+}
+
 fn walk(items: &[Value], folders: &mut Vec<Folder>, requests: &mut Vec<Request>) {
     for it in items {
         if let Some(children) = it.get("item").and_then(Value::as_array) {
             let mut f = Folder::new(s(&it["name"]));
-            f.auth = auth(it.get("auth")).unwrap_or(Auth::None);
+            f.auth = container_auth(it.get("auth"));
             f.headers = kvs(it.get("header"));
             walk(children, &mut f.folders, &mut f.requests);
             folders.push(f);
         } else if it.get("request").is_some() {
-            requests.push(request(it, &Auth::None));
+            requests.push(request(it));
         }
     }
 }
@@ -151,7 +162,7 @@ pub fn to_collection(v: &Value) -> Collection {
     if col.name.is_empty() {
         col.name = "Imported collection".into();
     }
-    col.auth = auth(v.get("auth")).unwrap_or(Auth::None);
+    col.auth = container_auth(v.get("auth"));
     col.headers = kvs(v.get("header"));
     let items = v["item"].as_array().cloned().unwrap_or_default();
     walk(&items, &mut col.folders, &mut col.requests);
@@ -286,6 +297,27 @@ mod tests {
         assert_eq!(form.body_type, BodyType::Form);
         assert_eq!(form.form.len(), 2);
         assert!(!form.form[1].enabled);
+    }
+
+    #[test]
+    fn postman_noauth_request_does_not_inherit_the_collection_token() {
+        let v: Value = serde_json::from_str(
+            r#"{"info":{"name":"c","schema":"x"},
+                "auth":{"type":"bearer","bearer":[{"key":"token","value":"PROD"}]},
+                "item":[{"name":"third party","request":{"method":"GET","url":"https://third.example/x",
+                         "auth":{"type":"noauth"}}}]}"#,
+        )
+        .unwrap();
+        let c = to_collection(&v);
+        assert_eq!(c.requests[0].auth, Auth::Off);
+        let merged = crate::core::models::merge_inherited(
+            &c.requests[0],
+            &[Inherited {
+                headers: c.headers.clone(),
+                auth: c.auth.clone(),
+            }],
+        );
+        assert_eq!(merged.auth, Auth::None, "把集合的 prod token 发给第三方了");
     }
 
     #[test]

@@ -65,7 +65,8 @@ pub enum BodyType {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Auth {
-    /// 请求上 = 跟随集合 / 文件夹（没有可继承的就是不带认证）；容器上 = 不提供认证
+    /// 请求上 = 跟随集合 / 文件夹；容器上 = 这一层不提供，继续往外层找。
+    /// 两种情况下都找不到，就是不带认证。
     #[default]
     None,
     /// 只能出现在请求上：明确不带任何凭据，连继承来的 Authorization 头一起丢掉。
@@ -198,6 +199,24 @@ pub struct Collection {
 }
 
 impl Collection {
+    /// 给整棵树换一套新 id。导入 Firebee 自己导出的文件时必须换：
+    /// 前端的标签页、响应缓存、折叠状态全按 request.id 索引，两份同 id 的请求
+    /// 会让 findById 永远返回第一份 —— 你在编辑 B，界面却把 A 认成当前请求。
+    pub fn reid(&mut self) {
+        fn walk(folders: &mut [Folder], requests: &mut [Request]) {
+            for r in requests.iter_mut() {
+                r.id = Uuid::new_v4();
+            }
+            for f in folders.iter_mut() {
+                f.id = Uuid::new_v4();
+                let (sub, reqs) = (&mut f.folders, &mut f.requests);
+                walk(sub, reqs);
+            }
+        }
+        self.id = Uuid::new_v4();
+        walk(&mut self.folders, &mut self.requests);
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -223,6 +242,16 @@ pub struct Inherited {
 /// header：越靠内层越优先，同名（忽略大小写）整组覆盖外层；请求自己的最优先。
 /// auth：请求自己设了非 None 就用自己的，否则取最内层非 None 的那个。
 pub fn merge_inherited(req: &Request, chain: &[Inherited]) -> Request {
+    let is_auth_header = |k: &str| k.trim().eq_ignore_ascii_case("authorization");
+    // 明确的凭据头。Off 时连这些一起丢；自定义的（X-API-Key 之类）认不出来，
+    // ponytail: 只处理标准的三个，其余靠在请求上覆盖同名头
+    let is_credential_header = |k: &str| {
+        matches!(
+            k.trim().to_ascii_lowercase().as_str(),
+            "authorization" | "cookie" | "proxy-authorization"
+        )
+    };
+
     let mut out = req.clone();
     let mut headers: Vec<KeyValue> = vec![];
     for src in chain
@@ -230,47 +259,75 @@ pub fn merge_inherited(req: &Request, chain: &[Inherited]) -> Request {
         .map(|i| &i.headers)
         .chain(std::iter::once(&req.headers))
     {
-        let enabled: Vec<&KeyValue> = src
+        let enabled: Vec<KeyValue> = src
             .iter()
             .filter(|h| h.enabled && !h.key.trim().is_empty())
+            // key 存成 trim 过的：带空格的名字 reqwest 会当成非法 header name，
+            // 报出来只是一句 "builder error"，用户根本看不出是哪一行
+            .map(|h| KeyValue {
+                enabled: true,
+                key: h.key.trim().to_string(),
+                value: h.value.clone(),
+            })
             .collect();
         headers.retain(|kept| {
             !enabled
                 .iter()
-                .any(|h| h.key.trim().eq_ignore_ascii_case(kept.key.trim()))
+                .any(|h| h.key.eq_ignore_ascii_case(&kept.key))
         });
-        headers.extend(enabled.into_iter().cloned());
+        headers.extend(enabled);
     }
+    // 请求自己在 Headers 里敲的 Authorization —— 最明确的意图，永远保留
+    let own_auth_header = req
+        .headers
+        .iter()
+        .any(|h| h.enabled && is_auth_header(&h.key));
+
     if out.auth == Auth::Off {
-        // 明确不带凭据：不继承 auth，连继承来的 Authorization 头也一起丢
+        // 明确不带凭据：不继承 auth，继承来的标准凭据头也一起丢
         out.auth = Auth::None;
-        headers.retain(|h| !h.key.trim().eq_ignore_ascii_case("authorization"));
+        headers.retain(|h| {
+            !is_credential_header(&h.key) || (own_auth_header && is_auth_header(&h.key))
+        });
         out.headers = headers;
         return out;
     }
-    if out.auth == Auth::None {
-        if let Some(a) = chain
-            .iter()
-            .rev()
-            .map(|i| &i.auth)
-            .find(|a| **a != Auth::None)
-        {
-            out.auth = a.clone();
-        }
+
+    let inherited_auth = (out.auth == Auth::None)
+        .then(|| {
+            chain
+                .iter()
+                .rev()
+                .map(|i| &i.auth)
+                .find(|a| **a != Auth::None)
+        })
+        .flatten()
+        .cloned();
+    if own_auth_header {
+        // 手写的 Authorization 头已经说明了要带什么，就别再把上层的凭据叠上去
+        // （reqwest 的 header() 是追加，叠上去会发出两个 Authorization）
+        out.headers = headers;
+        return out;
     }
-    // auth 生效时丢掉继承来的 Authorization：reqwest 的 header() 是追加，
-    // 集合配了 Authorization 头、文件夹又配了 Bearer，会发出两个 Authorization。
-    // 请求自己写的那一行保留 —— 那是明确的手写覆盖。
-    if out.auth != Auth::None
-        && !req
-            .headers
-            .iter()
-            .any(|h| h.enabled && h.key.trim().eq_ignore_ascii_case("authorization"))
-    {
-        headers.retain(|h| !h.key.trim().eq_ignore_ascii_case("authorization"));
+    if let Some(a) = inherited_auth {
+        out.auth = a;
+    }
+    // auth 生效时丢掉继承来的 Authorization，同样是为了不发出两个
+    if effective(&out.auth) {
+        headers.retain(|h| !is_auth_header(&h.key));
     }
     out.headers = headers;
     out
+}
+
+/// auth 是否真的会往请求上加东西。ApiKey 的 key 为空时 http 层会跳过，
+/// 这里也得算"没生效"，否则会白白丢掉继承来的 Authorization 却什么都不加
+fn effective(a: &Auth) -> bool {
+    match a {
+        Auth::None | Auth::Off => false,
+        Auth::ApiKey { key, .. } => !key.trim().is_empty(),
+        _ => true,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -460,6 +517,29 @@ mod tests {
     }
 
     #[test]
+    fn auth_off_keeps_the_request_s_own_authorization_header() {
+        // 选了 No auth 又自己敲了一行 Authorization —— 那是明确意图，不能吃掉
+        let mut r = Request::new("third-party");
+        r.auth = Auth::Off;
+        r.headers = vec![KeyValue::new("Authorization", "Basic bWluZQ==")];
+        let chain = [inh(
+            &[("Authorization", "Bearer col")],
+            Auth::Bearer {
+                token: "prod".into(),
+            },
+        )];
+        let m = merge_inherited(&r, &chain);
+        assert_eq!(m.auth, Auth::None);
+        let auths: Vec<&str> = m
+            .headers
+            .iter()
+            .filter(|h| h.key.eq_ignore_ascii_case("authorization"))
+            .map(|h| h.value.as_str())
+            .collect();
+        assert_eq!(auths, vec!["Basic bWluZQ=="], "自己写的那行被吃掉了");
+    }
+
+    #[test]
     fn inherited_header_names_match_case_and_space_insensitively() {
         let mut r = Request::new("r");
         r.headers = vec![KeyValue::new("content-type", "text/plain")];
@@ -504,6 +584,49 @@ mod tests {
             1
         );
         assert_eq!(m2.headers[0].value, "Bearer mine");
+        // 手写了 Authorization 就别再把上层的凭据叠上来 —— reqwest 会发出两个
+        assert_eq!(m2.auth, Auth::None, "继承的 auth 和手写的头同时发出去了");
+    }
+
+    #[test]
+    fn empty_api_key_does_not_strip_the_inherited_authorization() {
+        // 选了 API key 但名字还没填，http 层会跳过它；这时不能把继承的凭据丢掉
+        let mut r = Request::new("r");
+        r.auth = Auth::ApiKey {
+            key: "  ".into(),
+            value: "v".into(),
+            in_query: false,
+        };
+        let chain = [inh(&[("Authorization", "Bearer col")], Auth::None)];
+        let m = merge_inherited(&r, &chain);
+        assert_eq!(m.headers.len(), 1);
+        assert_eq!(m.headers[0].value, "Bearer col");
+    }
+
+    #[test]
+    fn auth_off_drops_inherited_cookie_but_keeps_ordinary_headers() {
+        let mut r = Request::new("r");
+        r.auth = Auth::Off;
+        let chain = [inh(
+            &[
+                ("Authorization", "Bearer col"),
+                ("Cookie", "sid=secret"),
+                ("X-Trace", "keep"),
+            ],
+            Auth::None,
+        )];
+        let m = merge_inherited(&r, &chain);
+        let names: Vec<&str> = m.headers.iter().map(|h| h.key.as_str()).collect();
+        assert_eq!(names, vec!["X-Trace"]);
+    }
+
+    #[test]
+    fn merged_header_keys_are_trimmed() {
+        // 带空格的 header 名 reqwest 只会回一句 builder error，用户看不出是哪一行
+        let r = Request::new("r");
+        let chain = [inh(&[(" X-Api-Key ", "k")], Auth::None)];
+        let m = merge_inherited(&r, &chain);
+        assert_eq!(m.headers[0].key, "X-Api-Key");
     }
 
     #[test]
@@ -554,6 +677,44 @@ mod tests {
             "url":"","params":[],"headers":[],"body_type":"None","body":"","form":[],"auth":"None"}}"#;
         let e: HistoryEntry = serde_json::from_str(old).unwrap();
         assert!(e.response.is_none());
+    }
+
+    #[test]
+    fn reid_replaces_every_id_in_the_tree() {
+        let mut c = Collection::new("c");
+        c.requests = vec![Request::new("r1")];
+        let mut f = Folder::new("f");
+        f.requests = vec![Request::new("r2")];
+        let mut deep = Folder::new("deep");
+        deep.requests = vec![Request::new("r3")];
+        f.folders = vec![deep];
+        c.folders = vec![f];
+
+        let before: Vec<Uuid> = vec![
+            c.id,
+            c.requests[0].id,
+            c.folders[0].id,
+            c.folders[0].requests[0].id,
+            c.folders[0].folders[0].id,
+            c.folders[0].folders[0].requests[0].id,
+        ];
+        c.reid();
+        let after: Vec<Uuid> = vec![
+            c.id,
+            c.requests[0].id,
+            c.folders[0].id,
+            c.folders[0].requests[0].id,
+            c.folders[0].folders[0].id,
+            c.folders[0].folders[0].requests[0].id,
+        ];
+        for (b, a) in before.iter().zip(&after) {
+            assert_ne!(b, a, "有 id 没换");
+        }
+        assert_eq!(
+            after.iter().collect::<std::collections::HashSet<_>>().len(),
+            after.len(),
+            "换出来的 id 有重复"
+        );
     }
 
     #[test]

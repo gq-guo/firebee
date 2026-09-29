@@ -1,6 +1,8 @@
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use crate::core::models::{Collection, Environment, HistoryEntry};
 
@@ -19,13 +21,36 @@ fn restrict(_path: &std::path::Path, _mode: u32) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 直接以 0600 创建，别先 File::create 出一个 0644 再 chmod —— 中间有个窗口
+#[cfg(unix)]
+fn create_private(path: &std::path::Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+}
+#[cfg(not(unix))]
+fn create_private(path: &std::path::Path) -> std::io::Result<File> {
+    File::create(path)
+}
+
 pub struct Storage {
     dir: PathBuf,
+    /// 启动时读不出来（权限 / IO / 被锁，不含"文件不存在"）的文件。
+    /// 这些文件拒绝写入：前端拿到空数据会立刻存盘，那就把还在磁盘上的
+    /// 集合和凭据原地抹掉了 —— 宁可这次不保存，也不能覆盖。
+    unreadable: Mutex<HashSet<String>>,
 }
 
 impl Storage {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            unreadable: Mutex::default(),
+        }
     }
 
     /// 系统标准数据目录，如 macOS ~/Library/Application Support/firebee
@@ -41,8 +66,16 @@ impl Storage {
 
     fn load<T: serde::de::DeserializeOwned + Default>(&self, name: &str) -> T {
         let path = self.path(name);
-        let Ok(bytes) = fs::read(&path) else {
-            return T::default();
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            // 文件不存在 = 首次启动，正常。其它错误（权限、IO、被锁）不能当成"没数据"：
+            // 前端看到空集合会立刻 dirty() 写回，把还在那儿的数据原地抹掉。
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return T::default(),
+            Err(e) => {
+                tracing::error!("{name} 读不出来（{e}）；本次运行拒绝写入该文件，避免覆盖");
+                self.unreadable.lock().unwrap().insert(name.to_string());
+                return T::default();
+            }
         };
         match serde_json::from_slice(&bytes) {
             Ok(v) => v,
@@ -86,6 +119,12 @@ impl Storage {
         value: &T,
         pretty: bool,
     ) -> std::io::Result<()> {
+        if self.unreadable.lock().unwrap().contains(name) {
+            return Err(std::io::Error::other(format!(
+                "{name} couldn't be read at startup, so Firebee won't overwrite it. \
+                 Fix the file's permissions and restart."
+            )));
+        }
         fs::create_dir_all(&self.dir)?;
         restrict(&self.dir, 0o700)?;
         let data = if pretty {
@@ -97,14 +136,18 @@ impl Storage {
         let tmp = self.path(&format!("{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
         // 失败时别把 tmp 留在数据目录里
         let write = || -> std::io::Result<()> {
-            let mut f = File::create(&tmp)?;
-            restrict(&tmp, 0o600)?;
+            let mut f = create_private(&tmp)?;
             f.write_all(&data)?;
             f.sync_all()?;
             drop(f);
             fs::rename(&tmp, self.path(name))?;
-            // rename 本身也要落盘，否则掉电后可能回到旧名字
-            File::open(&self.dir).and_then(|d| d.sync_all())
+            // rename 本身也要落盘，否则掉电后可能回到旧名字。
+            // Windows 上打开目录句柄需要 FILE_FLAG_BACKUP_SEMANTICS，File::open 会直接失败。
+            #[cfg(unix)]
+            {
+                File::open(&self.dir).and_then(|d| d.sync_all())?;
+            }
+            Ok(())
         };
         write().inspect_err(|_| {
             let _ = fs::remove_file(&tmp);
@@ -226,6 +269,29 @@ mod tests {
             |p: std::path::PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(tmp.path().join("data/collections.json")), 0o600);
         assert_eq!(mode(tmp.path().join("data")), 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_file_is_never_overwritten() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("collections.json");
+        let precious = r#"[{"id":"00000000-0000-0000-0000-000000000009","name":"keep-me","folders":[],"requests":[]}]"#;
+        std::fs::write(&path, precious).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let s = Storage::new(tmp.path().to_path_buf());
+        assert!(s.load_collections().is_empty(), "读不出来时返回空");
+        // 前端见到空数据会立刻存盘——必须被拒绝
+        let err = s.save_collections(&[Collection::new("empty")]).unwrap_err();
+        assert!(err.to_string().contains("won't overwrite"), "{err}");
+
+        // 磁盘上的原文件一字未动
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(String::from_utf8(std::fs::read(&path).unwrap())
+            .unwrap()
+            .contains("keep-me"));
     }
 
     #[test]
