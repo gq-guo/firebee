@@ -821,7 +821,21 @@ function storedResponse(dto) {
     body, duration_ms: dto.duration_ms, size_bytes: dto.size_bytes, truncated };
 }
 
-const saveHistory = () => invoke('save_history', { history: data.history }).catch((e) => toast(`Couldn't save history. ${e}`, { error: true }));
+// 历史现在带响应体（最多 100 条 × 64KB），每次发送都全量序列化 + 重写整个文件太贵。
+// 和 dirty() 一样防抖 500ms：连点 Send 只写一次。掉的最多是最后半秒的历史，能接受。
+let histTimer = null;
+function saveHistory() {
+  clearTimeout(histTimer);
+  histTimer = setTimeout(() => {
+    invoke('save_history', { history: data.history })
+      .catch((e) => toast(`Couldn't save history. ${e}`, { error: true, action: ['Retry', saveHistory] }));
+  }, 500);
+}
+// 关窗前尽量补一次（WKWebView 上 beforeunload 在 ⌘Q 时未必触发，只是兜底：
+// 最坏情况丢最后半秒的历史记录，集合和环境走 dirty() 各自的防抖，不受影响）
+window.addEventListener('beforeunload', () => {
+  if (histTimer) { clearTimeout(histTimer); histTimer = null; invoke('save_history', { history: data.history }); }
+});
 
 // ---------- 响应面板 ----------
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
