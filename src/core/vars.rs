@@ -7,17 +7,180 @@ pub struct SubstituteResult {
     pub missing: Vec<String>,
 }
 
-/// 动态变量：`$` 开头，每次出现都重新生成（与 Postman 一致）
-pub const DYNAMIC_VARS: &[&str] = &["$uuid", "$timestamp", "$isoTimestamp", "$randomInt"];
+/// 动态变量：`$` 开头，每次出现都重新生成。名字与 Postman 一致，导入的 collection 可直接跑；
+/// 括号参数（`{{$randomInt(1,100)}}`、`{{$randomString(8)}}`）是 Firebee 扩展。
+/// (名字, 补全里显示的说明)
+pub const DYNAMIC_VARS: &[(&str, &str)] = &[
+    ("$uuid", "UUID v4"),
+    ("$guid", "UUID v4 (Postman alias)"),
+    ("$randomUUID", "UUID v4 (Postman alias)"),
+    ("$timestamp", "unix seconds"),
+    ("$timestampMs", "unix milliseconds"),
+    ("$isoTimestamp", "ISO 8601 UTC"),
+    ("$randomInt", "0–1000, or (min,max)"),
+    ("$randomString", "16 alphanumerics, or (len)"),
+    ("$randomBoolean", "true / false"),
+    ("$randomEmail", "jamie.brooks84@example.com"),
+    ("$randomFirstName", "first name"),
+    ("$randomLastName", "last name"),
+    ("$randomFullName", "first + last name"),
+    ("$randomUserName", "jamie_brooks84"),
+    ("$randomPassword", "12 alphanumerics, or (len)"),
+    ("$randomPhoneNumber", "555-123-4567"),
+    ("$randomUrl", "https://example.com"),
+    ("$randomDomainName", "example.com"),
+    ("$randomCompanyName", "company name"),
+    ("$randomStreetAddress", "742 Oak Street"),
+    ("$randomCity", "city name"),
+    ("$randomCountryCode", "ISO 3166 alpha-2"),
+    ("$randomPrice", "0.00–999.99, or (min,max)"),
+    ("$randomCurrencyCode", "ISO 4217"),
+    ("$randomIP", "IPv4"),
+    ("$randomLoremWord", "one lorem word"),
+    ("$randomLoremSentence", "one lorem sentence"),
+    ("$randomDatePast", "ISO 8601, within last year"),
+    ("$randomDateFuture", "ISO 8601, within next year"),
+];
+
+// ponytail: 用 uuid v4 的随机字节当熵源（底层就是 getrandom），省一个 rand 依赖。
+// 跳过 byte 6/8 —— 那两个字节含版本号与 variant 位，不是全随机。
+fn rnd() -> u64 {
+    let b = uuid::Uuid::new_v4().into_bytes();
+    let mut x = [0u8; 8];
+    x[..4].copy_from_slice(&b[..4]);
+    x[4..].copy_from_slice(&b[12..]);
+    u64::from_le_bytes(x)
+}
+
+/// [min, max] 闭区间；max <= min 时退化为 min
+fn between(min: i64, max: i64) -> i64 {
+    if max <= min {
+        min
+    } else {
+        min + (rnd() % (max - min + 1) as u64) as i64
+    }
+}
+
+fn pick(list: &[&str]) -> String {
+    list[(rnd() % list.len() as u64) as usize].to_string()
+}
+
+fn chars(n: i64) -> String {
+    const SET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    (0..n.clamp(1, 4096))
+        .map(|_| SET[(rnd() % SET.len() as u64) as usize] as char)
+        .collect()
+}
+
+const FIRST: &[&str] = &[
+    "Jamie", "Alex", "Taylor", "Jordan", "Casey", "Riley", "Morgan", "Avery", "Quinn", "Sam",
+    "Chris", "Dana", "Ellis", "Frankie", "Harper", "Reese",
+];
+const LAST: &[&str] = &[
+    "Brooks", "Chen", "Diaz", "Evans", "Foster", "Garcia", "Hayes", "Ito", "Jensen", "Khan",
+    "Lopez", "Miller", "Novak", "Okafor", "Patel", "Silva",
+];
+const DOMAINS: &[&str] = &["example.com", "example.org", "test.dev", "mail.example.net"];
+const COMPANY_A: &[&str] = &[
+    "Northwind", "Acme", "Globex", "Initech", "Umbrella", "Stark", "Wayne", "Soylent",
+];
+const COMPANY_B: &[&str] = &["Labs", "Group", "Industries", "Systems", "Holdings", "Works"];
+const STREETS: &[&str] = &[
+    "Oak", "Maple", "Cedar", "Pine", "Elm", "Birch", "Willow", "Sunset", "Lake", "Hill",
+];
+const STREET_SUFFIX: &[&str] = &["Street", "Avenue", "Road", "Lane", "Boulevard"];
+const CITIES: &[&str] = &[
+    "Springfield", "Riverside", "Fairview", "Kingston", "Georgetown", "Ashland", "Clinton",
+    "Salem", "Madison", "Bristol",
+];
+const COUNTRY_CODES: &[&str] = &[
+    "US", "CN", "JP", "DE", "FR", "GB", "SG", "AU", "CA", "BR", "IN", "NL",
+];
+const CURRENCY_CODES: &[&str] = &[
+    "USD", "CNY", "EUR", "JPY", "GBP", "SGD", "AUD", "CAD", "HKD", "KRW",
+];
+const LOREM: &[&str] = &[
+    "lorem", "ipsum", "dolor", "sit", "amet", "consectetur", "adipiscing", "elit", "sed", "do",
+    "eiusmod", "tempor", "incididunt", "labore", "dolore", "magna", "aliqua", "enim", "minim",
+    "veniam", "quis", "nostrud", "ullamco", "laboris",
+];
 
 fn dynamic(name: &str) -> Option<String> {
-    // 用 uuid v4 的随机字节当随机源，省一个 rand 依赖
-    let rnd = || u32::from_le_bytes(uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap());
-    Some(match name {
-        "$uuid" => uuid::Uuid::new_v4().to_string(),
-        "$timestamp" => chrono::Utc::now().timestamp().to_string(),
-        "$isoTimestamp" => chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "$randomInt" => (rnd() % 1001).to_string(),
+    // `$randomInt(1,100)` → base = "$randomInt", args = "1,100"
+    let (base, args) = match name.strip_suffix(')').and_then(|n| n.split_once('(')) {
+        Some((b, a)) => (b.trim_end(), a),
+        None => (name, ""),
+    };
+    let arg = |i: usize, default: i64| -> i64 {
+        args.split(',')
+            .nth(i)
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(default)
+    };
+    let now = chrono::Utc::now();
+    let iso = |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+    Some(match base {
+        "$uuid" | "$guid" | "$randomUUID" => uuid::Uuid::new_v4().to_string(),
+        "$timestamp" => now.timestamp().to_string(),
+        "$timestampMs" => now.timestamp_millis().to_string(),
+        "$isoTimestamp" => iso(now),
+        "$randomInt" => between(arg(0, 0), arg(1, 1000)).to_string(),
+        "$randomString" => chars(arg(0, 16)),
+        "$randomBoolean" => (rnd() % 2 == 0).to_string(),
+        "$randomFirstName" => pick(FIRST),
+        "$randomLastName" => pick(LAST),
+        "$randomFullName" => format!("{} {}", pick(FIRST), pick(LAST)),
+        "$randomEmail" => format!(
+            "{}.{}{}@{}",
+            pick(FIRST).to_lowercase(),
+            pick(LAST).to_lowercase(),
+            between(1, 99),
+            pick(DOMAINS)
+        ),
+        "$randomUserName" => format!(
+            "{}_{}{}",
+            pick(FIRST).to_lowercase(),
+            pick(LAST).to_lowercase(),
+            between(1, 99)
+        ),
+        "$randomPassword" => chars(arg(0, 12)),
+        "$randomPhoneNumber" => format!("555-{:03}-{:04}", between(100, 999), between(0, 9999)),
+        "$randomDomainName" => pick(DOMAINS),
+        "$randomUrl" => format!("https://{}", pick(DOMAINS)),
+        "$randomCompanyName" => format!("{} {}", pick(COMPANY_A), pick(COMPANY_B)),
+        "$randomStreetAddress" => format!(
+            "{} {} {}",
+            between(1, 9999),
+            pick(STREETS),
+            pick(STREET_SUFFIX)
+        ),
+        "$randomCity" => pick(CITIES),
+        "$randomCountryCode" => pick(COUNTRY_CODES),
+        "$randomCurrencyCode" => pick(CURRENCY_CODES),
+        "$randomPrice" => format!(
+            "{:.2}",
+            between(arg(0, 0) * 100, arg(1, 999) * 100 + 99) as f64 / 100.0
+        ),
+        "$randomIP" => format!(
+            "{}.{}.{}.{}",
+            between(1, 255),
+            between(0, 255),
+            between(0, 255),
+            between(1, 254)
+        ),
+        "$randomLoremWord" => pick(LOREM),
+        "$randomLoremSentence" => {
+            let mut s = (0..between(6, 12))
+                .map(|_| pick(LOREM))
+                .collect::<Vec<_>>()
+                .join(" ");
+            s[..1].make_ascii_uppercase();
+            s.push('.');
+            s
+        }
+        "$randomDatePast" => iso(now - chrono::Duration::seconds(between(1, 365 * 86400))),
+        "$randomDateFuture" => iso(now + chrono::Duration::seconds(between(1, 365 * 86400))),
         _ => return None,
     })
 }
@@ -135,6 +298,43 @@ mod tests {
         // 用户定义的同名变量优先
         let vars = HashMap::from([("$uuid".to_string(), "fixed".to_string())]);
         assert_eq!(substitute("{{$uuid}}", &vars).output, "fixed");
+    }
+
+    #[test]
+    fn parameterized_dynamic_vars() {
+        let v = HashMap::new();
+        for _ in 0..50 {
+            let n: i64 = substitute("{{$randomInt(5,7)}}", &v).output.parse().unwrap();
+            assert!((5..=7).contains(&n));
+        }
+        assert_eq!(substitute("{{$randomString(8)}}", &v).output.len(), 8);
+        assert_eq!(substitute("{{ $randomInt(3, 3) }}", &v).output, "3");
+        // 参数非法 / 缺失 → 回落到默认区间
+        assert!(substitute("{{$randomInt(x)}}", &v).output.parse::<i64>().unwrap() <= 1000);
+        // 未知名字带括号仍算缺失
+        assert_eq!(substitute("{{$nope(1)}}", &v).missing, vec!["$nope(1)".to_string()]);
+    }
+
+    #[test]
+    fn faker_vars_look_sane() {
+        let v = HashMap::new();
+        let out = substitute(
+            "{{$randomEmail}}|{{$randomPrice}}|{{$randomIP}}|{{$randomLoremSentence}}|{{$randomDatePast}}|{{$randomBoolean}}",
+            &v,
+        )
+        .output;
+        let p: Vec<&str> = out.split('|').collect();
+        assert!(p[0].contains('@') && p[0].contains('.'));
+        let price: f64 = p[1].parse().unwrap();
+        assert!((0.0..1000.0).contains(&price));
+        assert_eq!(p[2].split('.').filter(|o| o.parse::<u8>().is_ok()).count(), 4);
+        assert!(p[3].ends_with('.') && p[3].starts_with(char::is_uppercase));
+        assert!(chrono::DateTime::parse_from_rfc3339(p[4]).unwrap() < chrono::Utc::now());
+        assert!(p[5] == "true" || p[5] == "false");
+        // 清单里每个名字都真能生成
+        for (name, _) in DYNAMIC_VARS {
+            assert!(dynamic(name).is_some(), "{name} not generated");
+        }
     }
 
     #[test]

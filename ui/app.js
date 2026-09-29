@@ -8,7 +8,7 @@ const MOD = MAC ? '⌘' : 'Ctrl+';
 
 const METHODS = ['Get', 'Post', 'Put', 'Delete', 'Patch', 'Head', 'Options'];
 const HISTORY_LIMIT = 500;
-const DYNAMIC_VARS = [['$uuid', 'random UUID v4'], ['$timestamp', 'unix seconds'], ['$isoTimestamp', 'ISO 8601 UTC'], ['$randomInt', '0–1000']];
+let DYNAMIC_VARS = []; // 启动时从后端拉（core/vars.rs 是唯一来源）
 const TRUNCATE_AT = 300_000; // 超过就先显示前 300KB，点 Show all 再全量
 const REASON = { 200: 'OK', 201: 'Created', 204: 'No Content', 301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified',
   400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed', 408: 'Timeout',
@@ -176,7 +176,9 @@ function varMap() {
   const env = activeEnv();
   return new Set(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => v.key) : []);
 }
-const isResolved = (name, vars) => vars.has(name) || DYNAMIC_VARS.some(([k]) => k === name);
+/** `$randomInt(1,100)` → `$randomInt`，带参数的动态变量按基名判断 */
+const baseVarName = (name) => name.replace(/\(.*\)$/, '').trimEnd();
+const isResolved = (name, vars) => vars.has(name) || DYNAMIC_VARS.some(([k]) => k === baseVarName(name));
 /** 当前请求里所有未解析的变量名（去重、按出现顺序） */
 function unresolvedVars(req = current) {
   const vars = varMap(), out = [];
@@ -899,6 +901,23 @@ function renderEnvDialog() {
 const ac = { el: null, field: null, items: [], cur: 0, start: 0 };
 const acEligible = (el) => (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && (el.type === 'text' || !el.getAttribute('type'))))
   && el.closest('#request, #env-editor') && !el.matches('#req-name, .find, .jp input');
+/** 光标在输入框里的视口坐标（返回该行底部）：镜像一个同样排版的隐藏 div，量零宽标记的位置 */
+const CARET_STYLES = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'wordSpacing',
+  'lineHeight', 'textIndent', 'tabSize', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+  'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'width'];
+function caretPoint(el) {
+  const mirror = caretPoint.el ||= document.body.appendChild(
+    h('div', { 'aria-hidden': 'true', style: 'position:fixed;top:0;left:0;visibility:hidden;overflow-wrap:break-word' }));
+  const cs = getComputedStyle(el);
+  for (const k of CARET_STYLES) mirror.style[k] = cs[k];
+  mirror.style.whiteSpace = el.tagName === 'INPUT' ? 'pre' : 'pre-wrap';
+  mirror.style.boxSizing = 'content-box'; // cs.width 是内容宽，镜像也按内容宽算才和原框同一个换行点
+  const mark = h('span', {}, '\u200b');
+  mirror.replaceChildren(document.createTextNode(el.value.slice(0, el.selectionStart)), mark);
+  const box = el.getBoundingClientRect(), m = mirror.getBoundingClientRect(), c = mark.getBoundingClientRect();
+  return { x: box.left + (c.left - m.left) - el.scrollLeft, y: box.top + (c.bottom - m.top) - el.scrollTop, line: c.height };
+}
+
 function acUpdate(el) {
   const before = el.value.slice(0, el.selectionStart);
   const m = /\{\{([\w$-]*)$/.exec(before);
@@ -909,12 +928,14 @@ function acUpdate(el) {
     .filter(([k]) => k.toLowerCase().startsWith(prefix));
   if (!names.length) return acHide();
   Object.assign(ac, { field: el, items: names, cur: 0, start: el.selectionStart - m[1].length });
-  const rect = el.getBoundingClientRect();
-  ac.el.style.left = `${Math.min(rect.left, window.innerWidth - 260)}px`;
-  ac.el.style.top = `${rect.bottom + 4}px`;
   ac.el.replaceChildren(...names.map(([k, v], i) => h('div', { class: 'item' + (i === 0 ? ' cur' : ''), role: 'option',
     onmousedown: (e) => { e.preventDefault(); acAccept(i); } }, `{{${k}}}`, h('span', { class: 'muted' }, v))));
   ac.el.classList.remove('hidden');
+  // 先显示再量尺寸：贴着光标放，下方放不下就翻到光标上面
+  const p = caretPoint(el), pw = ac.el.offsetWidth, ph = ac.el.offsetHeight;
+  const below = p.y + 4 + ph <= window.innerHeight;
+  ac.el.style.left = `${Math.max(8, Math.min(p.x, window.innerWidth - pw - 8))}px`;
+  ac.el.style.top = `${Math.max(8, below ? p.y + 4 : p.y - p.line - ph - 4)}px`;
 }
 function acAccept(i = ac.cur) {
   const el = ac.field, name = ac.items[i][0];
@@ -936,6 +957,7 @@ function acBind() {
       e.preventDefault();
       ac.cur = (ac.cur + (e.key === 'ArrowDown' ? 1 : -1) + ac.items.length) % ac.items.length;
       [...ac.el.children].forEach((c, i) => c.classList.toggle('cur', i === ac.cur));
+      ac.el.children[ac.cur].scrollIntoView({ block: 'nearest' });
     } else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); acAccept(); }
     else if (e.key === 'Escape') { e.stopPropagation(); acHide(); }
   }, true);
@@ -1004,6 +1026,7 @@ function bind() {
 async function main() {
   bind();
   data = await invoke('load_data');
+  invoke('dynamic_vars').then((v) => { DYNAMIC_VARS = v; }).catch((e) => toast(`Built-in variables unavailable. ${e}`, { error: true }));
   current = firstRequest() || (homeCollection().requests.push(current), dirty(), current);
   renderTopbar(); renderSidebar(); renderRequest(); renderResponse();
   $('#url').focus();
