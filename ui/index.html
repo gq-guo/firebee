@@ -72,6 +72,11 @@
   <div class="row dialog-foot"><span class="muted">Cookies from servers are kept for this session.</span><span class="spacer"></span><button id="clear-cookies" class="small ghost">Clear cookies</button></div>
 </dialog>
 
+<dialog id="settings-dialog">
+  <div class="row dialog-head"><strong id="settings-title">Settings</strong><span class="muted">Applies to every request inside. A request's own header or auth wins.</span><span class="spacer"></span><button id="settings-close" class="small">Close</button></div>
+  <div id="settings-body"></div>
+</dialog>
+
 <dialog id="import-dialog">
   <div class="row"><strong>Import from curl</strong><span class="spacer"></span><button id="import-close" class="small">Close</button></div>
   <textarea id="import-text" spellcheck="false" aria-label="curl command" placeholder="curl -X POST 'https://api.example.com/items' -H 'Authorization: Bearer …' -d '{&quot;a&quot;:1}'"></textarea>

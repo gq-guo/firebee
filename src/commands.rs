@@ -11,7 +11,9 @@ use tokio::sync::watch;
 
 use crate::core::export::{to_curl, to_python};
 use crate::core::http::{build_url, execute};
-use crate::core::models::{Collection, Environment, HistoryEntry, Request};
+use crate::core::models::{
+    merge_inherited, Collection, Environment, HistoryEntry, Inherited, Request,
+};
 use crate::core::storage::Storage;
 use crate::core::vars::substitute_request;
 
@@ -102,7 +104,9 @@ pub async fn send_request(
     request: Request,
     env: Option<Environment>,
     timeout_secs: u64,
+    inherited: Option<Vec<Inherited>>,
 ) -> Result<ResponseDto, String> {
+    let request = merge_inherited(&request, &inherited.unwrap_or_default());
     let (req, _) = substitute_request(&request, &vars(&env));
     let (tx, rx) = watch::channel(false);
     pending.0.lock().unwrap().insert(job_id, tx);
@@ -222,7 +226,13 @@ pub fn import_curl(text: String) -> Result<Request, String> {
 
 /// kind: "curl" | "python"。先变量替换，再构造最终 URL。
 #[tauri::command]
-pub fn export_code(request: Request, env: Option<Environment>, kind: String) -> String {
+pub fn export_code(
+    request: Request,
+    env: Option<Environment>,
+    kind: String,
+    inherited: Option<Vec<Inherited>>,
+) -> String {
+    let request = merge_inherited(&request, &inherited.unwrap_or_default());
     let (req, _) = substitute_request(&request, &vars(&env));
     let url = build_url(&req).unwrap_or_else(|_| req.url.clone());
     match kind.as_str() {

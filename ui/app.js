@@ -50,7 +50,7 @@ function newRequest(name = 'Untitled request', kind = 'http') {
            body_type: gql ? 'GraphQL' : 'None', body: '', form: [], auth: 'None', pinned: false, graphql_variables: '', captures: [] };
 }
 const isGql = (r) => r.body_type === 'GraphQL';
-const newContainer = (name) => ({ id: crypto.randomUUID(), name, folders: [], requests: [] });
+const newContainer = (name) => ({ id: crypto.randomUUID(), name, folders: [], requests: [], headers: [], auth: 'None' });
 const kv = () => ({ enabled: true, key: '', value: '' });
 const activeEnv = () => data.environments.find((e) => e.id === activeEnvId) || null;
 
@@ -185,7 +185,9 @@ function unresolvedVars(req = current) {
   const scan = (str) => { for (const m of (str || '').matchAll(VAR_RE)) { const n = m[1]; if (!isResolved(n, vars) && !out.includes(n)) out.push(n); } };
   scan(req.url); scan(req.body); scan(req.graphql_variables);
   for (const kvr of [...req.params, ...req.headers, ...req.form]) { scan(kvr.key); scan(kvr.value); }
-  const a = req.auth; if (a !== 'None') Object.values(Object.values(a)[0]).forEach((v) => typeof v === 'string' && scan(v));
+  for (const kvr of inheritedHeaders(req)) { scan(kvr.key); scan(kvr.value); }
+  const a = req.auth !== 'None' ? req.auth : inheritedAuth(req);
+  if (a && a !== 'None') Object.values(Object.values(a)[0]).forEach((v) => typeof v === 'string' && scan(v));
   return out;
 }
 /** URL 镜像：把 {{var}} 按可解析与否着色，其余原样 */
@@ -325,6 +327,7 @@ function containerNode(c, parentArr, isFolder = false) {
     ...[['http', 'New HTTP request'], ['graphql', 'New GraphQL request']].map(([kind, label]) =>
       [label, () => { const r = newRequest(undefined, kind); c.requests.push(r); collapsed.delete(c.id); dirty(); selectRequest(r); }]),
     ['New folder', () => { c.folders.push(newContainer('New folder')); collapsed.delete(c.id); dirty(); renderSidebar(); }],
+    ['Shared headers & auth…', () => openSettings(c, isFolder)],
     ['Import from curl…', () => openImport(c)],
     !isFolder && ['Export collection…', () => exportCollection(c)],
     ['Rename', startRename(c)],
@@ -439,6 +442,50 @@ function locate(r, nodes = data.collections, path = []) {
   return null;
 }
 
+/** 集合 / 文件夹的公共 header 与 auth */
+function openSettings(c, isFolder) {
+  c.headers ||= []; c.auth ||= 'None';
+  const dlg = $('#settings-dialog');
+  const draw = () => {
+    $('#settings-title').textContent = `${isFolder ? 'Folder' : 'Collection'} · ${c.name}`;
+    $('#settings-body').replaceChildren(
+      h('div', { class: 'row' }, h('strong', {}, 'Headers')),
+      kvTable(c.headers, 'Header', 'Value', draw, { keyList: 'hdr-names', valList: 'ct-values' }),
+      h('div', { class: 'row settings-auth' }, h('strong', {}, 'Auth')),
+      authEditor(c, draw));
+  };
+  draw();
+  if (!dlg.open) dlg.showModal();
+  $('#settings-close').onclick = () => { dlg.close(); renderRequest(); renderSidebar(); };
+  dlg.onclose = () => renderRequest();
+}
+
+/** 请求所在集合 / 文件夹链上的公共配置，外层在前；找不到返回 [] */
+function chainFor(r, nodes = data.collections, path = []) {
+  for (const n of nodes) {
+    const here = [...path, { headers: n.headers || [], auth: n.auth || 'None' }];
+    if (n.requests.includes(r)) return here;
+    const deep = chainFor(r, n.folders, here);
+    if (deep) return deep;
+  }
+  return path.length ? null : [];
+}
+/** 链上生效的 header（同名内层覆盖外层），用于在 Headers 标签里只读展示 */
+function inheritedHeaders(r) {
+  const out = [];
+  for (const link of chainFor(r) || []) {
+    const on = link.headers.filter((h) => h.enabled && h.key);
+    for (let i = out.length - 1; i >= 0; i--) if (on.some((h) => h.key.toLowerCase() === out[i].key.toLowerCase())) out.splice(i, 1);
+    out.push(...on);
+  }
+  return out.filter((h) => !r.headers.some((own) => own.enabled && own.key.toLowerCase() === h.key.toLowerCase()));
+}
+/** 链上生效的 auth（最内层非 None）；请求自己设了就返回 null */
+function inheritedAuth(r) {
+  if (r.auth !== 'None') return null;
+  return [...(chainFor(r) || [])].reverse().find((l) => l.auth !== 'None')?.auth || null;
+}
+
 /** 所有请求都在集合里、全部自动保存。没有集合时自动建一个。 */
 function homeCollection() {
   if (!data.collections.length) { data.collections.push(newContainer('My requests')); dirty(); }
@@ -475,7 +522,7 @@ function findById(id, nodes = data.collections) {
 
 /** 导出 curl / Python 到对话框 */
 async function exportCode(req, kind) {
-  $('#export-text').textContent = await invoke('export_code', { request: req, env: activeEnv(), kind });
+  $('#export-text').textContent = await invoke('export_code', { request: req, env: activeEnv(), kind, inherited: chainFor(req) || [] });
   $('#export-dialog').showModal();
 }
 const exportItems = (req) => [['Export as curl', () => exportCode(req, 'curl')], ['Export as Python', () => exportCode(req, 'python')]];
@@ -571,10 +618,22 @@ function renderRequest() {
   const body = $('#req-body');
   body.replaceChildren();
   if (reqTab === 'params') body.append(kvTable(current.params, 'Key', 'Value', renderRequest));
-  else if (reqTab === 'headers') body.append(kvTable(current.headers, 'Header', 'Value', renderRequest, { keyList: 'hdr-names', valList: 'ct-values' }));
+  else if (reqTab === 'headers') {
+    const inh = inheritedHeaders(current);
+    if (inh.length) {
+      const mark = () => h('td', { class: 'ctl muted', title: 'Inherited from the collection or folder — add the same header below to override it' }, '↑');
+      body.append(h('table', { class: 'kv inherited' }, ...inh.map((hd) =>
+        h('tr', {}, h('td', { class: 'ctl' }), h('td', { class: 'key' }, hd.key), h('td', { class: 'val', title: hd.value }, hd.value), mark()))));
+    }
+    body.append(kvTable(current.headers, 'Header', 'Value', renderRequest, { keyList: 'hdr-names', valList: 'ct-values' }));
+  }
   else if (reqTab === 'body') body.append(bodyEditor());
   else if (reqTab === 'capture') body.append(captureEditor());
-  else body.append(authEditor());
+  else {
+    const ia = inheritedAuth(current);
+    if (ia) body.append(h('div', { class: 'helper' }, `Inheriting ${authKind(ia)} auth from the collection or folder. Pick anything but None to override it here.`));
+    body.append(authEditor());
+  }
 }
 
 function radios(name, options, value, onchange) {
@@ -657,16 +716,16 @@ function runCaptures(req, dto) {
 }
 
 const authKind = (a) => (a === 'None' ? 'None' : Object.keys(a)[0]);
-function authEditor() {
-  const kind = authKind(current.auth);
-  const wrap = h('div', {}, radios('auth', [['None', 'None'], ['Bearer', 'Bearer token'], ['Basic', 'Basic auth'], ['ApiKey', 'API key']], kind, (v) => {
-    current.auth = { None: 'None', Bearer: { Bearer: { token: '' } }, Basic: { Basic: { username: '', password: '' } },
-                     ApiKey: { ApiKey: { key: '', value: '', in_query: false } } }[v];
-    dirty(); renderRequest();
+function authEditor(obj = current, rerender = renderRequest) {
+  const kind = authKind(obj.auth);
+  const wrap = h('div', {}, radios(`auth-${obj.id}`, [['None', 'None'], ['Bearer', 'Bearer token'], ['Basic', 'Basic auth'], ['ApiKey', 'API key']], kind, (v) => {
+    obj.auth = { None: 'None', Bearer: { Bearer: { token: '' } }, Basic: { Basic: { username: '', password: '' } },
+                 ApiKey: { ApiKey: { key: '', value: '', in_query: false } } }[v];
+    dirty(); rerender();
   }));
   const field = (obj, key, label, type = 'text') => h('label', {}, `${label}`,
     h('input', { type, value: obj[key], spellcheck: 'false', 'aria-label': label, oninput: (e) => { obj[key] = e.target.value; dirty(); } }));
-  const a = current.auth[kind];
+  const a = obj.auth[kind];
   if (kind === 'Bearer') wrap.append(h('div', { class: 'row' }, field(a, 'token', 'Token')));
   else if (kind === 'Basic') wrap.append(h('div', { class: 'row' }, field(a, 'username', 'Username'), field(a, 'password', 'Password', 'password')));
   else if (kind === 'ApiKey') wrap.append(h('div', { class: 'row' }, field(a, 'key', 'Header or param name'), field(a, 'value', 'Value'),
@@ -682,12 +741,12 @@ async function send() {
   // 有未定义变量：第一次点击只提示（Send 旁的槽位变成"再点一次即发送"），第二次强制发送
   if (m.length && JSON.stringify(m) !== JSON.stringify(missing)) { missing = m; renderMissing(); return; }
   missing = [];
-  const id = ++jobSeq, rid = current.id, req = structuredClone(current);
+  const id = ++jobSeq, rid = current.id, req = structuredClone(current), chain = chainFor(current) || [];
   pendings.set(rid, id); responses.delete(rid);
   renderRequestHeader(); renderResponse(); renderSidebar();
   let status = null, duration_ms = null, result;
   try {
-    const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(), timeout_secs: Number($('#timeout').value) || 30 });
+    const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(), timeout_secs: Number($('#timeout').value) || 30, inherited: chain });
     result = { ok: r }; status = r.status; duration_ms = r.duration_ms;
   } catch (e) {
     result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };

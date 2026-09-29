@@ -260,3 +260,7 @@ mark.cur { background: var(--color-warn); color: var(--color-accent-ink); }
   .spinner { animation-duration: 800ms !important; }
   dialog[open], #menu, #toast { animation: none; }
 }
+#settings-dialog { width: min(640px, 92vw); }
+.kv.inherited td { color: var(--color-muted); padding: 3px var(--space-2xs); font-size: var(--text-xs); }
+.kv.inherited td.val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+.settings-auth { margin-top: var(--space-md); padding-top: var(--space-sm); border-top: 1px solid var(--color-rule); }

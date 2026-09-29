@@ -63,8 +63,9 @@ pub enum BodyType {
     GraphQL,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Auth {
+    #[default]
     None,
     Bearer {
         token: String,
@@ -157,6 +158,12 @@ pub struct Folder {
     pub name: String,
     pub folders: Vec<Folder>,
     pub requests: Vec<Request>,
+    /// 下属请求共用的 header；请求自己同名的覆盖它
+    #[serde(default)]
+    pub headers: Vec<KeyValue>,
+    /// 下属请求的默认认证；请求自己设了非 None 就用自己的
+    #[serde(default)]
+    pub auth: Auth,
 }
 
 impl Folder {
@@ -166,6 +173,8 @@ impl Folder {
             name: name.into(),
             folders: vec![],
             requests: vec![],
+            headers: vec![],
+            auth: Auth::None,
         }
     }
 }
@@ -176,6 +185,12 @@ pub struct Collection {
     pub name: String,
     pub folders: Vec<Folder>,
     pub requests: Vec<Request>,
+    /// 下属请求共用的 header；请求自己同名的覆盖它
+    #[serde(default)]
+    pub headers: Vec<KeyValue>,
+    /// 下属请求的默认认证；请求自己设了非 None 就用自己的
+    #[serde(default)]
+    pub auth: Auth,
 }
 
 impl Collection {
@@ -185,8 +200,55 @@ impl Collection {
             name: name.into(),
             folders: vec![],
             requests: vec![],
+            headers: vec![],
+            auth: Auth::None,
         }
     }
+}
+
+/// 请求所在集合 / 文件夹链上的公共配置，前端按 外层→内层 的顺序传过来
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Inherited {
+    #[serde(default)]
+    pub headers: Vec<KeyValue>,
+    #[serde(default)]
+    pub auth: Auth,
+}
+
+/// 把集合 / 文件夹链上的公共 header 与 auth 合进请求。
+/// header：越靠内层越优先，同名（忽略大小写）整组覆盖外层；请求自己的最优先。
+/// auth：请求自己设了非 None 就用自己的，否则取最内层非 None 的那个。
+pub fn merge_inherited(req: &Request, chain: &[Inherited]) -> Request {
+    let mut out = req.clone();
+    let mut headers: Vec<KeyValue> = vec![];
+    for src in chain
+        .iter()
+        .map(|i| &i.headers)
+        .chain(std::iter::once(&req.headers))
+    {
+        let enabled: Vec<&KeyValue> = src
+            .iter()
+            .filter(|h| h.enabled && !h.key.is_empty())
+            .collect();
+        headers.retain(|kept| {
+            !enabled
+                .iter()
+                .any(|h| h.key.eq_ignore_ascii_case(&kept.key))
+        });
+        headers.extend(enabled.into_iter().cloned());
+    }
+    out.headers = headers;
+    if out.auth == Auth::None {
+        if let Some(a) = chain
+            .iter()
+            .rev()
+            .map(|i| &i.auth)
+            .find(|a| **a != Auth::None)
+        {
+            out.auth = a.clone();
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,6 +347,95 @@ mod tests {
         assert_eq!(r.effective_method(), HttpMethod::Post);
         r.headers = vec![KeyValue::new(" content-TYPE", "application/json")];
         assert!(r.has_header("Content-Type"));
+    }
+
+    fn inh(headers: &[(&str, &str)], auth: Auth) -> Inherited {
+        Inherited {
+            headers: headers.iter().map(|(k, v)| KeyValue::new(*k, *v)).collect(),
+            auth,
+        }
+    }
+
+    #[test]
+    fn inherited_headers_inner_wins_request_wins_all() {
+        let mut r = Request::new("r");
+        r.headers = vec![KeyValue::new("X-Trace", "req")];
+        let chain = [
+            inh(&[("Authorization", "col"), ("X-Trace", "col")], Auth::None),
+            inh(&[("X-Trace", "folder"), ("X-Only-Folder", "f")], Auth::None),
+        ];
+        let m = merge_inherited(&r, &chain);
+        let get = |k: &str| {
+            m.headers
+                .iter()
+                .find(|h| h.key.eq_ignore_ascii_case(k))
+                .map(|h| h.value.clone())
+        };
+        assert_eq!(get("X-Trace").unwrap(), "req");
+        assert_eq!(get("Authorization").unwrap(), "col");
+        assert_eq!(get("X-Only-Folder").unwrap(), "f");
+        // 同名只留一份
+        assert_eq!(m.headers.iter().filter(|h| h.key == "X-Trace").count(), 1);
+    }
+
+    #[test]
+    fn inherited_headers_skip_disabled_and_keep_same_source_dupes() {
+        let r = Request::new("r");
+        let chain = [Inherited {
+            headers: vec![
+                KeyValue::new("X-Tag", "a"),
+                KeyValue::new("X-Tag", "b"),
+                KeyValue {
+                    enabled: false,
+                    key: "X-Off".into(),
+                    value: "x".into(),
+                },
+            ],
+            auth: Auth::None,
+        }];
+        let m = merge_inherited(&r, &chain);
+        assert_eq!(m.headers.len(), 2);
+        assert!(!m.headers.iter().any(|h| h.key == "X-Off"));
+    }
+
+    #[test]
+    fn inherited_auth_innermost_non_none_then_request() {
+        let r = Request::new("r");
+        let chain = [
+            inh(
+                &[],
+                Auth::Bearer {
+                    token: "col".into(),
+                },
+            ),
+            inh(
+                &[],
+                Auth::Bearer {
+                    token: "folder".into(),
+                },
+            ),
+        ];
+        assert_eq!(
+            merge_inherited(&r, &chain).auth,
+            Auth::Bearer {
+                token: "folder".into()
+            }
+        );
+        let mut own = r.clone();
+        own.auth = Auth::Bearer {
+            token: "own".into(),
+        };
+        assert_eq!(
+            merge_inherited(&own, &chain).auth,
+            Auth::Bearer {
+                token: "own".into()
+            }
+        );
+        // 链上全是 None → 保持 None
+        assert_eq!(
+            merge_inherited(&r, &[Inherited::default()]).auth,
+            Auth::None
+        );
     }
 
     #[test]
