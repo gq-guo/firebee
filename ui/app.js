@@ -47,7 +47,7 @@ const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘
 function newRequest(name = 'Untitled request', kind = 'http') {
   const gql = kind === 'graphql';
   return { id: crypto.randomUUID(), name, method: gql ? 'Post' : 'Get', url: '', params: [], headers: [],
-           body_type: gql ? 'GraphQL' : 'None', body: '', form: [], auth: 'None', pinned: false, graphql_variables: '' };
+           body_type: gql ? 'GraphQL' : 'None', body: '', form: [], auth: 'None', pinned: false, graphql_variables: '', captures: [] };
 }
 const isGql = (r) => r.body_type === 'GraphQL';
 const newContainer = (name) => ({ id: crypto.randomUUID(), name, folders: [], requests: [] });
@@ -557,9 +557,9 @@ function renderTabCounts() {
   const count = (rows) => rows.filter((r) => r.enabled && r.key).length;
   const n = { params: count(current.params), headers: count(current.headers),
     body: current.body_type === 'None' ? 0 : current.body_type === 'Form' ? count(current.form) : (current.body.trim() ? 1 : 0),
-    auth: current.auth === 'None' ? 0 : 1 };
+    auth: current.auth === 'None' ? 0 : 1, capture: count(current.captures || []) };
   document.querySelectorAll('[data-req]').forEach((b) => {
-    const key = b.dataset.req, countable = key === 'params' || key === 'headers' || (key === 'body' && current.body_type === 'Form');
+    const key = b.dataset.req, countable = key === 'params' || key === 'headers' || key === 'capture' || (key === 'body' && current.body_type === 'Form');
     const label = key === 'body' && isGql(current) ? 'Query' : key[0].toUpperCase() + key.slice(1);
     put(b, label, n[key] ? h('span', { class: countable ? 'n' : 'n dot' }, countable ? n[key] : '•') : null);
   });
@@ -573,6 +573,7 @@ function renderRequest() {
   if (reqTab === 'params') body.append(kvTable(current.params, 'Key', 'Value', renderRequest));
   else if (reqTab === 'headers') body.append(kvTable(current.headers, 'Header', 'Value', renderRequest, { keyList: 'hdr-names', valList: 'ct-values' }));
   else if (reqTab === 'body') body.append(bodyEditor());
+  else if (reqTab === 'capture') body.append(captureEditor());
   else body.append(authEditor());
 }
 
@@ -617,6 +618,44 @@ function bodyEditor() {
   return wrap;
 }
 
+/** 响应后把值写进当前环境的变量：变量名 + JSONPath。复用 kvTable，行就是 KeyValue。 */
+function captureEditor() {
+  current.captures ||= [];
+  const env = activeEnv();
+  return h('div', {},
+    h('div', { class: 'helper' }, env
+      ? `After a 2xx response, each path below is read from the JSON body and written into “${env.name}”. Use it to carry a login token into the next request.`
+      : 'Select an environment first — captured values are written into the active environment.'),
+    kvTable(current.captures, 'Variable', 'JSONPath, e.g. $.data.token', renderRequest));
+}
+
+/** 跑一个请求的 captures；没有可跑的规则返回 null */
+function runCaptures(req, dto) {
+  const rules = (req.captures || []).filter((c) => c.enabled && c.key.trim() && c.value.trim());
+  if (!rules.length) return null;
+  const env = activeEnv();
+  if (!env) return { error: 'Captured nothing — no environment is active.' };
+  let json;
+  try { json = JSON.parse(dto.body); }
+  catch { return { error: "Captured nothing — the response body isn't JSON." }; }
+  const done = [], failed = [];
+  for (const c of rules) {
+    const name = c.key.trim();
+    let hits;
+    try { hits = jsonPath_(json, c.value.trim()); }
+    catch (e) { failed.push(`${name} (${e.message})`); continue; }
+    if (!hits.length) { failed.push(`${name} (no match)`); continue; }
+    const v = hits[0];
+    const text = typeof v === 'string' ? v : v === undefined ? '' : JSON.stringify(v);
+    const row = env.variables.find((x) => x.key === name);
+    if (row) { row.value = text; row.enabled = true; } else env.variables.push({ enabled: true, key: name, value: text });
+    done.push(name);
+  }
+  if (done.length) dirty();
+  if (!done.length) return { error: `Captured nothing — ${failed.join(', ')}.` };
+  return { ok: `Captured ${done.join(', ')} into “${env.name}”.` + (failed.length ? ` Missed ${failed.join(', ')}.` : '') };
+}
+
 const authKind = (a) => (a === 'None' ? 'None' : Object.keys(a)[0]);
 function authEditor() {
   const kind = authKind(current.auth);
@@ -654,6 +693,11 @@ async function send() {
     result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
   }
   pendings.delete(rid); setResponse(rid, result);
+  if (result.ok && result.ok.status < 300) {
+    const cap = runCaptures(req, result.ok);
+    if (cap) toast(cap.ok || cap.error, { error: !cap.ok });
+    if (cap?.ok) renderRequest();
+  }
   data.history.push({ timestamp: new Date().toISOString(), request: req, status, duration_ms });
   if (data.history.length > HISTORY_LIMIT) data.history.splice(0, data.history.length - HISTORY_LIMIT);
   saveHistory();

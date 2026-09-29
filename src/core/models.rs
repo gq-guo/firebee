@@ -96,6 +96,9 @@ pub struct Request {
     /// 置顶到侧栏 Pinned 区；老的存档文件没有这个字段
     #[serde(default)]
     pub pinned: bool,
+    /// 响应后把值提取到环境变量：key = 变量名，value = JSONPath（复用 KeyValue，前端表格直接沿用）
+    #[serde(default)]
+    pub captures: Vec<KeyValue>,
     /// GraphQL 变量（JSON 文本），仅 body_type == GraphQL 时使用
     #[serde(default)]
     pub graphql_variables: String,
@@ -116,6 +119,7 @@ impl Request {
             auth: Auth::None,
             pinned: false,
             graphql_variables: String::new(),
+            captures: vec![],
         }
     }
 
@@ -260,6 +264,7 @@ mod tests {
             "url":"","params":[],"headers":[],"body_type":"None","body":"","form":[],"auth":"None"}"#;
         let r: Request = serde_json::from_str(old).unwrap();
         assert!(!r.pinned);
+        assert!(r.captures.is_empty());
     }
 
     #[test]
