@@ -260,8 +260,18 @@ mark.cur { background: var(--color-warn); color: var(--color-accent-ink); }
   .spinner { animation-duration: 800ms !important; }
   dialog[open], #menu, #toast { animation: none; }
 }
-#settings-dialog { width: min(640px, 92vw); }
+#settings-dialog { width: min(620px, 92vw); }
+.settings-block + .settings-block { margin-top: var(--space-lg); padding-top: var(--space-md); border-top: 1px solid var(--color-rule); }
+.settings-block h3 { margin: 0; font-size: var(--text-sm); font-weight: 600; }
+.settings-block .helper { margin: 2px 0 var(--space-xs); }
+.settings-block table.kv { margin-top: 0; }
+/* 字段标签在上、输入框在下；inline-flex 的 label 在窄容器里会把标签文字挤成竖排 */
+.row.fields { align-items: flex-end; gap: var(--space-sm); }
+label.field { display: flex; flex-direction: column; align-items: stretch; gap: 3px; flex: 1; min-width: 0;
+  font-size: var(--text-xs); color: var(--color-muted); }
+label.field input { width: 100%; color: var(--color-ink); }
+label.check { margin-top: var(--space-xs); align-items: center; }
+label.check input { flex: none; }
 .kv.inherited td { color: var(--color-muted); padding: 3px var(--space-2xs); font-size: var(--text-xs); }
 .kv.inherited td.val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
-.settings-auth { margin-top: var(--space-md); padding-top: var(--space-sm); border-top: 1px solid var(--color-rule); }
 .from-history { color: var(--color-warn); }

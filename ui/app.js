@@ -456,10 +456,14 @@ function openSettings(c, isFolder) {
   const draw = () => {
     $('#settings-title').textContent = `${isFolder ? 'Folder' : 'Collection'} · ${c.name}`;
     $('#settings-body').replaceChildren(
-      h('div', { class: 'row' }, h('strong', {}, 'Headers')),
-      kvTable(c.headers, 'Header', 'Value', draw, { keyList: 'hdr-names', valList: 'ct-values' }),
-      h('div', { class: 'row settings-auth' }, h('strong', {}, 'Auth')),
-      authEditor(c, draw, true));
+      h('section', { class: 'settings-block' },
+        h('h3', {}, 'Headers'),
+        h('p', { class: 'helper' }, 'Sent with every request inside. A request that sets the same header wins.'),
+        kvTable(c.headers, 'Header', 'Value', draw, { keyList: 'hdr-names', valList: 'ct-values' })),
+      h('section', { class: 'settings-block' },
+        h('h3', {}, 'Auth'),
+        h('p', { class: 'helper' }, 'Used by requests that leave their own auth on Inherit.'),
+        authEditor(c, draw, true)));
   };
   draw();
   if (!dlg.open) dlg.showModal();
@@ -760,13 +764,17 @@ function authEditor(obj = current, rerender = renderRequest, container = false) 
                  ApiKey: { ApiKey: { key: '', value: '', in_query: false } } }[v];
     dirty(); rerender();
   }));
-  const field = (obj, key, label, type = 'text') => h('label', {}, `${label}`,
+  // 字段标签走 .field（文字在上、输入框在下）——inline-flex 的 label 在窄容器里
+  // 会把标签文字挤成竖排的一列
+  const field = (obj, key, label, type = 'text') => h('label', { class: 'field' }, label,
     h('input', { type, value: obj[key], spellcheck: 'false', 'aria-label': label, oninput: (e) => { obj[key] = e.target.value; dirty(); } }));
   const a = obj.auth[kind];
-  if (kind === 'Bearer') wrap.append(h('div', { class: 'row' }, field(a, 'token', 'Token')));
-  else if (kind === 'Basic') wrap.append(h('div', { class: 'row' }, field(a, 'username', 'Username'), field(a, 'password', 'Password', 'password')));
-  else if (kind === 'ApiKey') wrap.append(h('div', { class: 'row' }, field(a, 'key', 'Header or param name'), field(a, 'value', 'Value'),
-    h('label', {}, h('input', { type: 'checkbox', checked: a.in_query, onchange: (e) => { a.in_query = e.target.checked; dirty(); } }), 'Send as query param instead of header')));
+  if (kind === 'Bearer') wrap.append(h('div', { class: 'row fields' }, field(a, 'token', 'Token')));
+  else if (kind === 'Basic') wrap.append(h('div', { class: 'row fields' }, field(a, 'username', 'Username'), field(a, 'password', 'Password', 'password')));
+  else if (kind === 'ApiKey') wrap.append(
+    h('div', { class: 'row fields' }, field(a, 'key', 'Name'), field(a, 'value', 'Value')),
+    h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: a.in_query, onchange: (e) => { a.in_query = e.target.checked; dirty(); } }),
+      'Send as a query parameter instead of a header'));
   return wrap;
 }
 
