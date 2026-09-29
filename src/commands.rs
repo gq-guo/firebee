@@ -97,6 +97,17 @@ pub fn missing_vars(request: Request, env: Option<Environment>) -> Vec<String> {
     substitute_request(&request, &vars(&env)).1
 }
 
+/// 发送时的各种开关，单独一个结构：Tauri command 的参数表就是 IPC 契约，
+/// 每加一个开关就多一个参数不好扩展（clippy 也会在第 8 个上拦下来）
+#[derive(serde::Deserialize)]
+pub struct SendOptions {
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub inherited: Option<Vec<Inherited>>,
+    #[serde(default)]
+    pub follow_redirects: Option<bool>,
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn send_request(
     pending: State<'_, Pending>,
@@ -104,10 +115,13 @@ pub async fn send_request(
     job_id: u64,
     request: Request,
     env: Option<Environment>,
-    timeout_secs: u64,
-    inherited: Option<Vec<Inherited>>,
-    follow_redirects: Option<bool>,
+    options: SendOptions,
 ) -> Result<ResponseDto, String> {
+    let SendOptions {
+        timeout_secs,
+        inherited,
+        follow_redirects,
+    } = options;
     let request = merge_inherited(&request, &inherited.unwrap_or_default());
     let (req, _) = substitute_request(&request, &vars(&env));
     let (tx, rx) = watch::channel(false);

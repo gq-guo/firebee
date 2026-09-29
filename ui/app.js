@@ -832,7 +832,8 @@ async function send() {
   renderRequestHeader(); renderResponse(); renderSidebar(); renderTabs();
   let status = null, duration_ms = null, result;
   try {
-    const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(), timeout_secs: Number($('#timeout').value) || 30, inherited: chain, follow_redirects: followRedirects });
+    const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(),
+      options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, follow_redirects: followRedirects } });
     result = { ok: r }; status = r.status; duration_ms = r.duration_ms;
   } catch (e) {
     result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
