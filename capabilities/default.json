@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2/capability",
   "identifier": "default",
-  "description": "Main window: core APIs + native file dialogs",
+  "description": "Main window: core APIs + native file dialogs + window theme (title bar follows the in-app theme)",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": ["core:default", "core:window:allow-set-theme", "dialog:default"]
 }

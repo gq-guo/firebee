@@ -48,6 +48,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::load_data,
             commands::dynamic_vars,
+            commands::debug_build,
             commands::save_collections,
             commands::save_environments,
             commands::save_history,
