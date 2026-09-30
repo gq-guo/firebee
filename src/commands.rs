@@ -58,6 +58,12 @@ pub fn dynamic_vars() -> &'static [(&'static str, &'static str)] {
     crate::core::vars::DYNAMIC_VARS
 }
 
+/// debug 构建（cargo tauri dev）才保留 WebView 默认右键菜单（Reload / Inspect Element）
+#[tauri::command]
+pub fn debug_build() -> bool {
+    cfg!(debug_assertions)
+}
+
 #[tauri::command]
 pub fn load_data(storage: State<Storage>) -> AppData {
     AppData {

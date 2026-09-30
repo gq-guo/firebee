@@ -7,57 +7,84 @@
 </head>
 <body>
 <header id="topbar">
-  <select id="env-select" class="ghost" aria-label="Active environment" title="Active environment"></select>
+  <select id="env-select" aria-label="Active environment" title="Active environment"></select>
   <span class="spacer"></span>
-  <label class="check" title="Off: stop at the first 3xx and show its Location. Redirects to a different host are never followed."><input id="follow" type="checkbox" checked> Follow redirects</label>
-  <label>Timeout (s) <input id="timeout" type="number" min="1" max="300" value="30" aria-label="Request timeout in seconds"></label>
+  <button id="theme-btn" class="icon" aria-label="Theme" title="Theme">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+  </button>
+  <button id="settings-btn" class="icon" aria-label="Request settings" title="Request settings" aria-expanded="false" aria-controls="req-settings">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>
+  </button>
+  <div id="req-settings" class="popover hidden" role="dialog" aria-label="Request settings">
+    <div><strong>Request settings</strong><div class="muted">Applies to every request you send.</div></div>
+    <label class="setting" title="Off: stop at the first 3xx and show its Location. Redirects to a different host are never followed.">Follow redirects <input id="follow" type="checkbox" class="switch" checked></label>
+    <label class="setting">Timeout <span><input id="timeout" type="number" min="1" max="300" value="30" aria-label="Request timeout in seconds"> <span class="muted">s</span></span></label>
+  </div>
 </header>
 
 <aside id="sidebar">
   <nav class="tabs" role="tablist">
     <button data-side="collections" class="active" role="tab" aria-selected="true">Collections</button>
     <button data-side="history" role="tab" aria-selected="false">History</button>
+    <span class="spacer"></span>
+    <button id="side-add" class="icon" aria-label="New request, collection or import" title="New request, collection or import">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+    </button>
   </nav>
-  <input id="search" type="search" placeholder="Filter by name or URL" aria-label="Filter collections and history" spellcheck="false">
+  <div class="search">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+    <input id="search" type="search" placeholder="Search requests…" aria-label="Filter collections and history" spellcheck="false">
+    <span class="hint" aria-hidden="true"></span>
+  </div>
   <div id="side-body"></div>
 </aside>
 <div class="splitter" id="split-side" role="separator" aria-orientation="vertical" title="Drag to resize · double-click to reset"></div>
 
 <main>
-  <section id="request">
-    <div id="tabs" role="tablist" aria-label="Open requests"></div>
-    <div id="req-head">
-      <input id="req-name" aria-label="Request name"><span id="req-name-measure" aria-hidden="true"></span>
-      <span id="req-where"></span>
-      <span class="spacer"></span>
-    </div>
-    <div class="row">
-      <select id="method" aria-label="HTTP method"></select>
-      <div class="url-wrap"><div id="url-mirror" aria-hidden="true"></div><input id="url" placeholder="https://api.example.com/path — {{vars}} supported" aria-label="Request URL" spellcheck="false" autocomplete="off"></div>
-      <span id="missing" class="warn hidden" role="status"></span>
-      <button id="send" class="primary" title="Send (⌘↩)">Send</button>
-      <button id="cancel" class="danger hidden">Cancel</button>
-    </div>
-    <nav class="tabs" id="req-tabs" role="tablist">
-      <button data-req="params" class="active">Params</button>
-      <button data-req="headers">Headers</button>
-      <button data-req="body">Body</button>
-      <button data-req="auth">Auth</button>
-      <button data-req="capture">Capture</button>
-    </nav>
-    <div id="req-body"></div>
-  </section>
-
-  <div class="splitter" id="split-main" role="separator" aria-orientation="vertical" title="Drag to resize · double-click to reset"></div>
-  <section id="response" aria-live="polite">
-    <div id="resp-meta" class="row"></div>
-    <nav class="tabs" id="resp-tabs" role="tablist">
-      <button data-resp="body" class="active">Body</button>
-      <button data-resp="headers">Headers</button>
-      <button data-resp="preview" class="hidden">Preview</button>
-    </nav>
-    <div id="resp-body"></div>
-  </section>
+  <div id="tabs" role="tablist" aria-label="Open requests"></div>
+  <div class="toolbar">
+  <div class="bar">
+    <select id="method" aria-label="HTTP method"></select>
+    <span class="bar-div"></span>
+    <div class="url-wrap"><div id="url-mirror" aria-hidden="true"></div><input id="url" placeholder="Enter a URL — {{vars}} supported" aria-label="Request URL" spellcheck="false" autocomplete="off"><span id="flash" aria-hidden="true"></span></div>
+  </div>
+  <button id="send" class="primary send">Send</button>
+  <button id="cancel" class="send hidden">Cancel</button>
+  </div>
+  <div id="resolved">
+    <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 10 5 5-5 5"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>
+    <span id="resolved-url"></span>
+    <span id="missing" class="warn hidden" role="status"></span>
+    <button id="copy-resolved" class="icon" aria-label="Copy resolved URL" title="Copy resolved URL">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+    </button>
+  </div>
+  <div id="split">
+    <section id="request">
+      <nav class="tabs" id="req-tabs" role="tablist">
+        <button data-req="params" class="active">Params</button>
+        <button data-req="headers">Headers</button>
+        <button data-req="body">Body</button>
+        <button data-req="auth">Auth</button>
+        <button data-req="capture">Capture</button>
+        <span class="spacer"></span>
+        <button id="req-more" class="icon" aria-label="More" title="More">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
+        </button>
+      </nav>
+      <div id="req-body"></div>
+    </section>
+    <div class="splitter" id="split-main" role="separator" aria-orientation="vertical" title="Drag to resize · double-click to reset"></div>
+    <section id="response" aria-live="polite">
+      <div id="resp-meta"></div>
+      <nav class="tabs" id="resp-tabs" role="tablist">
+        <button data-resp="body" class="active">Body</button>
+        <button data-resp="headers">Headers</button>
+        <button data-resp="preview" class="hidden">Preview</button>
+      </nav>
+      <div id="resp-body"></div>
+    </section>
+  </div>
 </main>
 
 <dialog id="export-dialog">

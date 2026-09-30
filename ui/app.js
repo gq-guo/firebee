@@ -27,6 +27,20 @@ function setActiveEnv(id) {
 }
 const pref = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch { return d; } };
 let followRedirects = pref('firebee.follow', true);
+// 主题：'light' | 'dark' | 'system'。<html data-theme> 永远是解析后的 light / dark
+let theme = (() => { try { return localStorage.getItem('firebee.theme') || 'system'; } catch { return 'system'; } })();
+const lightMq = matchMedia('(prefers-color-scheme: light)');
+const applyTheme = () => {
+  document.documentElement.dataset.theme = theme === 'system' ? (lightMq.matches ? 'light' : 'dark') : theme;
+  // 原生标题栏跟着走；null = 交还给系统。失败（没权限 / 非 Tauri）不影响页面主题
+  window.__TAURI__.window?.getCurrentWindow().setTheme(theme === 'system' ? null : theme).catch(() => {});
+};
+function setTheme(v) {
+  theme = v; applyTheme();
+  try { localStorage.setItem('firebee.theme', v); } catch { /* private mode */ }
+}
+lightMq.addEventListener('change', applyTheme);
+applyTheme();
 let current = newRequest();
 // 响应按请求 id 保留在内存里（切换请求不丢），最多 50 条；进行中的请求按 id 记 job_id，互不阻塞
 const responses = new Map(); // request.id → { ok: dto } | { error: string } | { cancelled: true }
@@ -45,9 +59,7 @@ let renaming = null;   // 正在重命名的对象（collection / folder / reque
 let envSel = null;     // env 对话框中选中的环境
 let saveTimer = null;
 let filter = '';       // 侧栏搜索关键字（匹配集合/文件夹/请求名、URL）
-let jsonPath = '';     // 响应 JSONPath 过滤，跨请求保留
-let treeView = false;  // 响应 JSON 以可折叠树显示
-let findText = '';     // 响应体内查找
+let respQuery = '';    // 响应区的查询框，跨请求保留：以 $ 开头是 JSONPath 过滤，否则是正文查找
 const showAll = new Set();     // 已点过 Show all 的 request.id
 const selected = new Set();    // 侧栏多选（⌘点击）的请求
 let dragging = null;           // { arr, r } 正在拖动的请求
@@ -145,6 +157,8 @@ function hideToast() { clearTimeout(toastTimer); pendingUndo = null; toastQueue.
 /** 右键 / ⋯ 菜单：items = [[label, fn, {danger, kbd}], ...]，点击任意处或 Esc 关闭 */
 function openMenu(e, items) {
   e.preventDefault(); e.stopPropagation();
+  // 这里 stopPropagation 了，document 上关设置弹窗的监听收不到，手动关
+  $('#req-settings').classList.add('hidden'); $('#settings-btn').setAttribute('aria-expanded', 'false');
   const menu = $('#menu');
   items = items.filter(Boolean);
   menu.replaceChildren(...items.map(([label, fn, opt = {}]) =>
@@ -160,6 +174,14 @@ function openMenu(e, items) {
   menu.firstElementChild?.focus();
 }
 document.addEventListener('click', () => $('#menu').classList.add('hidden'));
+// 正式版不弹 WebView 自带的右键菜单（Reload / Inspect Element），开发版保留方便调试。
+// 自定义菜单已经 preventDefault；输入框和选中的文字保留原生菜单，复制粘贴还要用
+let debugBuild = false; // 查询结果回来前按正式版处理
+invoke('debug_build').then((v) => { debugBuild = v; }, () => {});
+document.addEventListener('contextmenu', (e) => {
+  if (debugBuild || e.defaultPrevented || e.target.closest('input, textarea, [contenteditable]') || String(getSelection())) return;
+  e.preventDefault();
+});
 document.addEventListener('keydown', (e) => {
   const menu = $('#menu');
   if (e.key === 'Escape') menu.classList.add('hidden');
@@ -237,6 +259,48 @@ function renderUrlMirror() {
   }
   el.append(url.slice(last), '\u200b');
   el.scrollLeft = $('#url').scrollLeft;
+  renderResolved();
+}
+/** URL 下方的"解析后"预览：环境变量换成值，$动态变量和未定义的原样（后者标红） */
+function renderResolved() {
+  const env = activeEnv(), url = current.url;
+  const vals = new Map(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.value]) : []);
+  const out = $('#resolved-url');
+  out.replaceChildren();
+  // enc：query 里的键值要按 URL 编码显示，复制出来才是能直接用的地址
+  const add = (str, enc = (x) => x) => {
+    let last = 0;
+    for (const m of str.matchAll(VAR_RE)) {
+      if (m.index > last) out.append(enc(str.slice(last, m.index)));
+      out.append(vals.has(m[1]) ? h('span', { class: 'rv' }, enc(vals.get(m[1])))
+        : h('span', { class: isResolved(m[1], vals) ? '' : 'rbad' }, m[0]));
+      last = m.index + m[0].length;
+    }
+    out.append(enc(str.slice(last)));
+  };
+  // 与 core/http.rs 的 build_url 一致：启用且有键名的 param + query 型 ApiKey，
+  // 按 form 编码（空格是 +）追加在已有 query 之后、#fragment 之前
+  const sub = (str) => str.replace(VAR_RE, (m, n) => (vals.has(n) ? vals.get(n) : m));
+  const pairs = current.params.filter((p) => p.enabled && p.key).map((p) => [sub(p.key), sub(p.value)]);
+  const auth = current.auth === 'Off' ? null : current.auth !== 'None' ? current.auth : inheritedAuth(current);
+  const ak = auth?.ApiKey;
+  if (ak?.in_query && ak.key) pairs.push([sub(ak.key), sub(ak.value)]);
+  const extra = new URLSearchParams(pairs).toString();
+  const hash = url.indexOf('#'), head = hash < 0 ? url : url.slice(0, hash);
+  add(head);
+  if (extra) out.append(head.includes('?') ? (/[?&]$/.test(head) ? '' : '&') : '?', extra);
+  if (hash >= 0) add(url.slice(hash));
+  // 复制用真正解析过的 URL；解析不了（比如 host 里还有未定义变量）就用显示的文本
+  let exact = null;
+  try {
+    const u = new URL(sub(url));
+    if (extra) u.search = u.search ? `${u.search.slice(1)}&${extra}` : extra;
+    if (!u.search) u.search = ''; // 去掉孤零零的 "?"，同 build_url
+    exact = u.href;
+  } catch { /* 不是合法 URL */ }
+  out.dataset.exact = exact ?? '';
+  $('#resolved').classList.toggle('empty', !url.trim());
+  $('#resolved').title = env ? `Resolved with ${env.name}` : 'No environment active';
 }
 /** 未解析变量提示：常驻在 Send 左侧的固定槽位，不撑开布局 */
 function renderMissing() {
@@ -244,7 +308,7 @@ function renderMissing() {
   m.classList.toggle('hidden', list.length === 0);
   if (!list.length) { missing = []; return; }
   const armed = JSON.stringify(missing) === JSON.stringify(list);
-  m.textContent = armed ? 'Send again to send with placeholders as-is' : `${list.length} unresolved: ${list.join(', ')}`;
+  m.textContent = armed ? 'Send again to send with placeholders as-is' : `${list.join(', ')} not defined${activeEnv() ? ` in ${activeEnv().name}` : ''}`;
   m.title = armed ? '' : `Not defined in the active environment: ${list.join(', ')}`;
 }
 
@@ -304,19 +368,20 @@ function renderSidebar() {
     }
     return;
   }
-  const addCol = () => { data.collections.push(newContainer(`Collection ${data.collections.length + 1}`)); dirty(); renderSidebar(); };
+  const addCol = addCollection;
   if (!data.collections.length) {
     body.append(emptyState('No collections yet', 'A collection keeps the requests you want to reuse, in folders if you like.', ['Create a collection', addCol]));
     return;
   }
   const shown = data.collections.filter((c) => filterView(c).show);
   if (q() && !shown.length) { body.append(emptyState(`Nothing matches “${filter.trim()}”`, 'Names of collections, folders and requests are searched, and request URLs.')); return; }
-  body.append(h('div', { class: 'row' }, btn('+ New collection', addCol, 'small'), btn('Import…', importFile, 'small ghost')));
   const pins = pinnedNode();
   if (pins) body.append(pins);
   shown.forEach((c) => body.append(containerNode(c, data.collections)));
   body.querySelector('input.rename')?.focus();
 }
+
+function addCollection() { data.collections.push(newContainer(`Collection ${data.collections.length + 1}`)); sideTab = 'collections'; dirty(); renderSidebar(); }
 
 // ---------- 搜索过滤 ----------
 const q = () => filter.trim().toLowerCase();
@@ -476,7 +541,7 @@ function deleteSelected() {
 
 /** 选中请求：来自集合时直接引用（编辑即写回集合并保存），来自历史时为副本。 */
 function selectRequest(r) {
-  current = r; missing = [];
+  current = r; missing = []; flash(null);
   if (!openTabs.includes(r.id)) openTabs.push(r.id);
   saveTabs();
   renderTabs(); renderRequest(); renderResponse(); renderSidebar();
@@ -528,7 +593,7 @@ function renderTabs() {
       ['Close all', () => closeTabsExcept([])],
     ]);
     return h('div', { class: 'tab' + (on ? ' active' : ''), role: 'tab', tabindex: 0, 'aria-selected': on ? 'true' : 'false',
-      title: `${r.name} — ${r.url || 'no URL'}`,
+      title: [...(locate(r) || []), r.name].join(' / '),
       onclick: () => !on && selectRequest(r),
       onkeydown: activate,
       oncontextmenu: tmenu,
@@ -725,22 +790,14 @@ function splitter(el, cssVar, measure, min, max, key) {
 
 // ---------- 请求面板 ----------
 function renderRequestHeader() {
-  $('#req-name').value = current.name;
-  const where = locate(current);
-  $('#req-where').textContent = where ? `in ${where.join(' / ')}` : '';
   $('#method').value = current.method;
+  $('#method').className = `m-${current.method.toLowerCase()}`;
   $('#method').classList.toggle('hidden', isGql(current)); // GraphQL 固定 POST
   $('#url').value = current.url;
   $('#send').classList.toggle('hidden', isPending());
   $('#cancel').classList.toggle('hidden', !isPending());
-  sizeName(); renderUrlMirror(); renderMissing();
+  renderUrlMirror(); renderMissing();
   renderTabCounts();
-}
-
-function sizeName() {
-  const inp = $('#req-name'), m = $('#req-name-measure');
-  m.textContent = inp.value || inp.placeholder || '';
-  inp.style.width = `${m.offsetWidth + 12}px`;
 }
 
 function renderTabCounts() {
@@ -752,12 +809,13 @@ function renderTabCounts() {
     const key = b.dataset.req, countable = key === 'params' || key === 'headers' || key === 'capture' || (key === 'body' && current.body_type === 'Form');
     const label = key === 'body' && isGql(current) ? 'Query' : key[0].toUpperCase() + key.slice(1);
     put(b, label, n[key] ? h('span', { class: countable ? 'n' : 'n dot' }, countable ? n[key] : '•') : null);
+    if (key === 'capture') b.classList.toggle('hidden', !n.capture && reqTab !== 'capture');
   });
 }
 
 function renderRequest() {
-  renderRequestHeader();
   setTab('req', reqTab);
+  renderRequestHeader();
   const body = $('#req-body');
   body.replaceChildren();
   if (reqTab === 'params') body.append(kvTable(current.params, 'Key', 'Value', renderRequest));
@@ -904,7 +962,7 @@ async function send() {
   missing = [];
   const id = ++jobSeq, rid = current.id, req = structuredClone(current), chain = chainFor(current) || [];
   const capEnv = activeEnv(); // 目标环境按发送时算：飞行中切环境不能把 dev 的 token 写进 prod
-  pendings.set(rid, id); responses.delete(rid);
+  pendings.set(rid, id); responses.delete(rid); sentAt.set(rid, performance.now()); flash(null);
   renderRequestHeader(); renderResponse(); renderSidebar(); renderTabs();
   let status = null, duration_ms = null, result;
   try {
@@ -925,8 +983,22 @@ async function send() {
   // 只有最近 HISTORY_BODIES 条留响应体
   for (let i = 0; i < data.history.length - HISTORY_BODIES; i++) data.history[i].response = null;
   saveHistory();
-  if (current.id === rid) { renderRequestHeader(); renderResponse(); }
+  sentAt.delete(rid);
+  if (current.id === rid) { renderRequestHeader(); renderResponse(); flash(result.ok); }
   renderSidebar(); renderTabs();
+}
+const sentAt = new Map(); // request.id → 发出时刻，Waiting 计时用
+
+/** URL 栏右侧的瞬时结果：亮 1.5s 后变淡，切请求 / 再次发送时清掉 */
+let flashTimer = null;
+function flash(dto) {
+  const el = $('#flash'), wrap = el.parentElement;
+  clearTimeout(flashTimer);
+  el.className = ''; wrap.classList.remove('flashing');
+  if (!dto) return;
+  put(el, h('b', { class: `s${Math.floor(dto.status / 100)}` }, dto.status), `${dto.duration_ms} ms · ${fmtSize(dto.size_bytes)}`);
+  el.className = 'on'; wrap.classList.add('flashing');
+  flashTimer = setTimeout(() => { el.className = 'dim'; }, 1500);
 }
 
 /** 按字节预算截断，且不切开码位——半个代理对 serde_json 会拒收，整个 save_history 都会失败 */
@@ -982,35 +1054,43 @@ const fmtSize = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 10
 
 const contentType = (r) => (r.headers.find(([k]) => k.toLowerCase() === 'content-type')?.[1] || '').toLowerCase();
 
+let waitTick = null;
 function renderResponse() {
   const meta = $('#resp-meta'), body = $('#resp-body'), tabs = $('#resp-tabs');
   const response = resp(), pending = isPending();
   meta.replaceChildren(); body.replaceChildren();
   tabs.classList.toggle('hidden', !response?.ok);
+  // 首个响应回来后分栏从 70/30 变 55/45（用户拖过就不动，见 CSS）
+  if (response) $('#split').classList.add('has-resp');
+  clearInterval(waitTick);
   if (!response) {
-    if (pending) meta.append(h('span', { class: 'spinner' }), h('span', { class: 'muted' }, 'Sending…'));
-    else {
-      const last = [...data.history].reverse().find((x) => x.request.id === current.id);
-      const when = last && new Date(last.timestamp);
-      body.append(emptyState('Response will show here', `Fill in a URL and press Send, or ${MOD}↩ from anywhere in the editor.`));
-      if (last) body.append(h('div', { class: 'empty' }, h('span', { class: 'muted' }, `Last sent ${when.toLocaleDateString()} ${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')} · `,
-          h('span', { class: last.status ? `s${Math.floor(last.status / 100)}` : 's0' }, last.status ? `${last.status} ${REASON[last.status] || ''}`.trim() : 'failed'),
-          last.duration_ms != null ? ` · ${last.duration_ms} ms` : '')));
-    }
+    if (pending) {
+      const el = h('span', { class: 'muted waiting' });
+      const t0 = sentAt.get(current.id) ?? performance.now();
+      const tick = () => { el.textContent = `${((performance.now() - t0) / 1000).toFixed(1)} s`; };
+      tick(); waitTick = setInterval(tick, 100);
+      meta.append(h('span', { class: 'spinner' }), h('span', { class: 'waiting' }, 'Waiting for response…'), el);
+    } else body.append(h('div', { class: 'ready' }, h('strong', {}, 'Ready'),
+      h('span', {}, h('span', { class: 'kbd' }, MAC ? '⌘' : 'Ctrl'), h('span', { class: 'kbd' }, '↵'), 'to send')));
     return;
   }
-  if (response.cancelled) { meta.append(h('span', { class: 'muted' }, 'Cancelled — nothing was received.')); return; }
-  if (response.error) { meta.append(h('span', { class: 'error' }, h('span', {}, '⚠'), h('span', {}, response.error))); return; }
+  if (response.cancelled) { body.append(h('div', { class: 'ready' }, h('strong', {}, 'Cancelled'), h('span', {}, 'Nothing was received.'))); return; }
+  if (response.error) {
+    body.append(h('div', { class: 'net-err' }, h('strong', {}, 'Request failed'), h('div', {}, response.error),
+      h('div', { class: 'row' }, btn('Retry', send), btn('Switch environment', () => $('#env-select').focus(), 'small ghost'))));
+    return;
+  }
   const r = response.ok, ct = contentType(r);
   const isImage = ct.startsWith('image/'), isHtml = ct.includes('text/html');
-  const copy = btn('Copy body', () => copyText(r.body, copy));
+  const copy = btn('Copy body', () => copyText(r.body, copy), 'small ghost');
   // put 会过滤掉 null/undefined/false；append 不会——它会把 null 当文本渲染成 "null"
   put(meta,
-    h('span', { class: `status s${Math.floor(r.status / 100)}` }, `${r.status} ${REASON[r.status] || ''}`.trim()),
-    h('span', { class: 'meta' }, `${r.duration_ms} ms`), h('span', { class: 'meta' }, fmtSize(r.size_bytes)),
+    h('span', { class: `status s${Math.floor(r.status / 100)}` }, r.status), REASON[r.status] && h('span', { class: 'reason' }, REASON[r.status]),
+    h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: 'Time from request start to last byte received' }, `${r.duration_ms} ms`),
+    h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: 'Body size' }, fmtSize(r.size_bytes)),
     r.from_history ? h('span', { class: 'meta from-history', title: `Kept from ${new Date(r.from_history).toLocaleString()} — press Send for a fresh one` },
       r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null,
-    h('span', { class: 'spacer' }), r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct)),
+    h('span', { class: 'spacer' }), r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost'),
   );
   // 跟过的每一跳都列出来；3xx 说明停下了，说清为什么并给一键跟进
   if (r.redirects?.length) body.append(h('div', { class: 'helper redirects' },
@@ -1032,6 +1112,7 @@ function renderResponse() {
   previewTab.classList.toggle('hidden', !isHtml);
   if (respTab === 'preview' && !isHtml) respTab = 'body';
   setTab('resp', respTab);
+  put(document.querySelector('[data-resp=headers]'), 'Headers', h('span', { class: 'n' }, r.headers.length));
   if (respTab === 'headers') {
     body.append(h('table', { class: 'hdrs' }, ...r.headers.map(([k, v]) => h('tr', {}, h('td', {}, k), h('td', {}, v)))));
     return;
@@ -1050,22 +1131,24 @@ function renderResponse() {
   let parsed, isJson = false;
   try { parsed = JSON.parse(r.body); isJson = true; } catch { /* not JSON */ }
 
-  // 工具行：JSONPath（仅 JSON）· Tree 切换（仅 JSON）· 查找 · 计数
+  // 工具行只有一个输入框：JSON 且以 $ 开头 → JSONPath 过滤；否则 → 在正文里查找并高亮
+  const isPath = () => isJson && respQuery.trim().startsWith('$');
   const count = h('span', { class: 'meta' });
-  const findCount = h('span', { class: 'meta' });
   const out = h('div', { class: 'out' });
   let marks = [], cur = -1;
   const paint = () => {
     out.replaceChildren();
-    let value = parsed, text = r.body, err = null;
-    if (isJson && jsonPath.trim()) {
-      try { const res = jsonPath_(parsed, jsonPath); value = res.length === 1 ? res[0] : res; count.className = 'meta'; count.textContent = res.length === 1 ? '1 match' : `${res.length} matches`; }
-      catch (e) { err = e.message; count.className = 'meta error'; count.textContent = err; }
-    } else count.textContent = '';
+    let value = parsed, text = r.body;
+    count.className = 'meta'; count.textContent = '';
+    if (isPath()) {
+      try { const res = jsonPath_(parsed, respQuery); value = res.length === 1 ? res[0] : res; count.textContent = res.length === 1 ? '1 result' : `${res.length} results`; }
+      catch (e) { count.className = 'meta error'; count.textContent = e.message; }
+    }
     if (isJson) text = JSON.stringify(value, null, 2);
-    if (isJson && treeView && !err) { out.append(jsonTree(value, null, 0, text.length > 50_000)); }
+    const full = showAll.has(current.id) || text.length <= TRUNCATE_AT;
+    // JSON 默认就是可折叠树。ponytail: >1MB 不建树（DOM 节点太多会卡），退回纯文本
+    if (isJson && full && text.length <= 1_000_000) out.append(jsonTree(value, null, 0, text.length > 50_000));
     else {
-      const full = showAll.has(current.id) || text.length <= TRUNCATE_AT;
       const shown = full ? text : text.slice(0, TRUNCATE_AT);
       const pre = h('pre', {});
       if (isJson && shown.length <= 1_000_000) pre.innerHTML = highlightJson(shown); else pre.textContent = shown;
@@ -1079,32 +1162,38 @@ function renderResponse() {
     marks.forEach((m) => m.replaceWith(...m.childNodes));
     out.normalize();
     marks = []; cur = -1;
-    const q = findText.trim().toLowerCase();
-    if (!q) { findCount.textContent = ''; return; }
+    const q = isPath() ? '' : respQuery.trim().toLowerCase();
+    if (!q) { if (!isPath()) count.textContent = ''; return; }
     marks = markMatches(out, q);
-    findCount.textContent = marks.length ? `${marks.length} found` : 'No matches';
+    count.className = 'meta'; count.textContent = marks.length ? `${marks.length} found` : 'No matches';
     if (marks.length) gotoMark(1);
   };
   const gotoMark = (dir) => {
     if (!marks.length) return;
     marks[cur]?.classList.remove('cur');
     cur = (cur + dir + marks.length) % marks.length;
-    marks[cur].classList.add('cur');
-    marks[cur].scrollIntoView({ block: 'center' });
-    findCount.textContent = `${cur + 1} / ${marks.length}`;
+    const m = marks[cur];
+    // 命中可能在折叠的节点里：把祖先 <details> 都展开再滚过去
+    for (let d = m.closest('details'); d; d = d.parentElement.closest('details')) d.open = true;
+    m.classList.add('cur');
+    m.scrollIntoView({ block: 'center' });
+    count.textContent = `${cur + 1} / ${marks.length}`;
   };
-  let t1, t2;
-  const treeBtn = btn('Tree', () => { treeView = !treeView; treeBtn.classList.toggle('on', treeView); paint(); }, 'small' + (treeView ? ' on' : ''));
-  treeBtn.title = 'Toggle collapsible tree view';
+  let t, wasPath = isPath();
   body.append(h('div', { class: 'jp' },
-    isJson && h('input', { value: jsonPath, placeholder: '$.data.orders.*.app.key', 'aria-label': 'JSONPath filter', spellcheck: 'false',
-      oninput: (e) => { jsonPath = e.target.value; clearTimeout(t1); t1 = setTimeout(paint, 150); },
-      onkeydown: (e) => { if (e.key === 'Escape' && jsonPath) { e.stopPropagation(); jsonPath = e.target.value = ''; paint(); } } }),
-    isJson && count, isJson && treeBtn,
-    h('input', { id: 'find', class: 'find', value: findText, placeholder: `Find in body (${MOD}F)`, 'aria-label': 'Find in response body', spellcheck: 'false',
-      oninput: (e) => { findText = e.target.value; clearTimeout(t2); t2 = setTimeout(applyFind, 150); },
-      onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); gotoMark(e.shiftKey ? -1 : 1); } else if (e.key === 'Escape' && findText) { e.stopPropagation(); findText = e.target.value = ''; applyFind(); } } }),
-    findCount), out);
+    h('input', { id: 'find', value: respQuery, spellcheck: 'false', 'aria-label': isJson ? 'Search the body, or filter with JSONPath' : 'Find in response body',
+      placeholder: isJson ? `Search or $.json.path (${MOD}F)` : `Find in body (${MOD}F)`,
+      title: isJson ? 'Plain text highlights matches. Start with $ for JSONPath, e.g. $.data.items[*].id or $..id' : null,
+      oninput: (e) => {
+        respQuery = e.target.value; clearTimeout(t);
+        // 路径模式要重建内容；纯查找只重新标记。进出路径模式都要重建一次
+        t = setTimeout(() => { const p = isPath(); p || wasPath ? paint() : applyFind(); wasPath = p; }, 150);
+      },
+      onkeydown: (e) => {
+        if (e.key === 'Enter' && !isPath()) { e.preventDefault(); gotoMark(e.shiftKey ? -1 : 1); }
+        else if (e.key === 'Escape' && respQuery) { e.stopPropagation(); clearTimeout(t); respQuery = e.target.value = ''; wasPath = false; paint(); }
+      } }),
+    count), out);
   paint();
 }
 
@@ -1139,7 +1228,10 @@ function jsonTree(v, key, depth, big) {
   const entries = Array.isArray(v) ? v.map((x, i) => [[i], x]) : Object.entries(v);
   const open = Array.isArray(v) ? '[' : '{', close = Array.isArray(v) ? ']' : '}';
   const d = h('details', { class: depth === 0 ? 'tree' : null, open: !(big && depth >= 2) },
-    h('summary', {}, label, label && ': ', open, h('span', { class: 'n' }, `${entries.length} ${Array.isArray(v) ? 'items' : 'keys'}`)),
+    // 折叠时显示成 "key": { … }, 5 keys —— .fold 和 .n 只在折叠状态下可见（见 CSS）
+    h('summary', {}, label, label && ': ', open,
+      h('span', { class: 'fold' }, `…${close}${depth ? ',' : ''}`),
+      h('span', { class: 'n' }, `${entries.length} ${Array.isArray(v) ? (entries.length === 1 ? 'item' : 'items') : (entries.length === 1 ? 'key' : 'keys')}`)),
     ...entries.map(([k, x]) => jsonTree(x, k, depth + 1, big)),
     h('div', { class: 'tl' }, close, depth ? ',' : ''));
   return d;
@@ -1224,7 +1316,7 @@ function renderEnvDialog() {
 // ---------- {{变量}} 自动补全 ----------
 const ac = { el: null, field: null, items: [], cur: 0, start: 0 };
 const acEligible = (el) => (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && (el.type === 'text' || !el.getAttribute('type'))))
-  && el.closest('#request, #env-editor') && !el.matches('#req-name, .find, .jp input');
+  && el.closest('main, #env-editor') && !el.matches('.find, .jp input');
 /** 光标在输入框里的视口坐标（返回该行底部）：镜像一个同样排版的隐藏 div，量零宽标记的位置 */
 const CARET_STYLES = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'wordSpacing',
   'lineHeight', 'textIndent', 'tabSize', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
@@ -1297,7 +1389,7 @@ function bind() {
   acBind();
   $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies cleared for this session.'); };
   $('#method').replaceChildren(...METHODS.map((m) => h('option', { value: m }, m.toUpperCase())));
-  $('#method').onchange = (e) => { current.method = e.target.value; dirty(); renderSidebar(); };
+  $('#method').onchange = (e) => { current.method = e.target.value; e.target.className = `m-${current.method.toLowerCase()}`; dirty(); renderSidebar(); renderTabs(); };
   $('#url').oninput = (e) => { current.url = e.target.value; dirty(); renderUrlMirror(); renderMissing(); };
   $('#url').onscroll = () => { $('#url-mirror').scrollLeft = $('#url').scrollLeft; };
   // ⌘↩ 交给全局快捷键处理；这里只管裸 Enter，否则一次按键触发两次 send，
@@ -1312,8 +1404,40 @@ function bind() {
     if (await importCurl($('#import-text').value, (m) => { $('#import-error').textContent = m; }, importInto)) { $('#import-text').value = ''; $('#import-dialog').close(); }
   };
   $('#import-text').onkeydown = (e) => { if ((MAC ? e.metaKey : e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); $('#import-run').click(); } };
-  $('#req-name').oninput = (e) => { current.name = e.target.value; sizeName(); dirty(); renderSidebar(); renderTabs(); };
-  $('#req-name').onkeydown = (e) => { if (e.key === 'Enter') e.target.blur(); };
+  $('#side-add').onclick = (e) => openMenu(e, [
+    ['New request', () => { createRequest(); $('#url').focus(); }, { kbd: `${MOD}N` }],
+    ['New collection', addCollection],
+    ['Import file…', importFile],
+    ['Import from curl…', () => openImport()],
+  ]);
+  // Capture 有规则时本身就是一个标签；只有标签藏起来时，菜单里才放入口
+  $('#req-more').onclick = (e) => {
+    const tabHidden = document.querySelector('[data-req=capture]').classList.contains('hidden');
+    openMenu(e, [
+      tabHidden && ['Capture', () => { reqTab = 'capture'; renderRequest(); }],
+      ['Request settings…', () => toggleSettings(true)],
+      ...exportItems(current),
+    ]);
+  };
+  const pop = $('#req-settings'), popBtn = $('#settings-btn');
+  const toggleSettings = (open = pop.classList.contains('hidden')) => {
+    pop.classList.toggle('hidden', !open); popBtn.setAttribute('aria-expanded', open);
+    if (open) $('#timeout').focus();
+  };
+  // 不 stopPropagation：让 document 上关 #menu 的监听照常跑，两者不会同时开着
+  popBtn.onclick = () => toggleSettings();
+  document.addEventListener('click', (e) => { if (!pop.contains(e.target) && !popBtn.contains(e.target)) toggleSettings(false); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.classList.contains('hidden')) { toggleSettings(false); popBtn.focus(); } });
+  // 图标按钮不能走 copyText 的换文字逻辑（会把 svg 冲掉），只改颜色和 title
+  $('#copy-resolved').onclick = (e) => {
+    const b = e.currentTarget; const r = $('#resolved-url'); copyText(r.dataset.exact || r.textContent);
+    b.dataset.state = 'copied'; b.title = 'Copied';
+    setTimeout(() => { delete b.dataset.state; b.title = 'Copy resolved URL'; }, 1500);
+  };
+  $('.search .hint').textContent = `${MOD}K`;
+  for (const ev of ['input', 'change']) $('#req-body').addEventListener(ev, () => { if (reqTab === 'params' || reqTab === 'auth') renderResolved(); });
+  $('#theme-btn').onclick = (e) => openMenu(e, [['Light', 'light'], ['Dark', 'dark'], ['System', 'system']].map(([label, v]) =>
+    [label, () => setTheme(v), { kbd: theme === v ? '✓' : '' }]));
   $('#follow').checked = followRedirects;
   $('#follow').onchange = (e) => {
     followRedirects = e.target.checked;
@@ -1336,6 +1460,8 @@ function bind() {
     else if (payload === 'filter') { $('#search').focus(); $('#search').select(); }
   });
   $('#env-close').onclick = () => $('#env-dialog').close();
+  $('#env-dialog').addEventListener('close', renderRequestHeader); // 对话框里改过的变量要反映到 URL 预览
+
   document.querySelectorAll('[data-side]').forEach((b) => b.onclick = () => { sideTab = b.dataset.side; renderSidebar(); });
   $('#search').oninput = (e) => { filter = e.target.value; renderSidebar(); };
   $('#search').onkeydown = (e) => { if (e.key === 'Escape' && filter) { e.stopPropagation(); filter = e.target.value = ''; renderSidebar(); } };
@@ -1348,7 +1474,9 @@ function bind() {
     // 模态对话框开着时，⌘↩ 会把背后的请求发出去、⌘W 会关掉背后的标签页
     if (document.querySelector('dialog[open]')) return;
     if (e.key === 'Enter') { e.preventDefault(); send(); }
-    else if (e.key === 'n') { e.preventDefault(); createRequest(); $('#url').focus(); }
+    else if (e.key === 'n' || e.key === 't') { e.preventDefault(); createRequest(); $('#url').focus(); }
+    else if (e.key === 'k') { e.preventDefault(); sideTab = 'collections'; renderSidebar(); $('#search').focus(); $('#search').select(); }
+    else if (e.key === '/') { e.preventDefault(); $('#url').focus(); }
     else if (e.key === 'f') { e.preventDefault(); const f = $('#find') || $('#search'); f.focus(); f.select(); }
     else if (e.key === 'w') { e.preventDefault(); closeTab(current.id); }
     else if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
@@ -1367,7 +1495,7 @@ function bind() {
   });
   splitter($('#split-side'), '--side-w', (ev) => ev.clientX, 180, () => window.innerWidth * 0.5, 'firebee.sideW');
   splitter($('#split-main'), '--req-w', (ev) => ev.clientX - $('#request').getBoundingClientRect().left, 360,
-    () => $('main').getBoundingClientRect().width - 326, 'firebee.reqW');
+    () => $('#split').getBoundingClientRect().width - 266, 'firebee.reqW');
   $('#send').title = `Send (${MOD}↩)`;
 }
 
