@@ -37,5 +37,13 @@
     "macOS": {
       "minimumSystemVersion": "12.0"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEzM0QwRjE5RUQzMEVGQkIKUldTNzd6RHRHUTg5bzFvRWppZklHOG1KR1ZjYklvZmRvdGgwdkliWW5aT0ZHdzZaTVdISFcyNHcK",
+      "endpoints": [
+        "https://github.com/gq-guo/firebee/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
