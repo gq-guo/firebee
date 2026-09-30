@@ -493,16 +493,24 @@ let openTabs = (() => {
 })();
 const saveTabs = () => { try { localStorage.setItem('firebee.tabs', JSON.stringify(openTabs)); } catch { /* private mode */ } };
 
-/** 关掉一个标签；关的是当前标签时，焦点给右边的、没有就给左边的 */
+/** 关掉一个标签；关的是当前标签时，焦点给右边的、没有就给左边的。
+ *  全关完也没关系：标签条自己隐藏，请求面板继续显示当前请求（标签只是快捷入口）。 */
 function closeTab(id) {
   const i = openTabs.indexOf(id);
   if (i < 0) return;
   openTabs.splice(i, 1); saveTabs();
   if (id !== current.id) return renderTabs();
-  // 关的是当前标签：焦点给右边的，没有就给左边的；一个都不剩就回到集合里的第一个
-  // （请求面板没有"空"状态，标签栏不能关成空的）
-  const next = findById(openTabs[i] || openTabs[i - 1]) || firstRequest();
-  next ? selectRequest(next) : createRequest();
+  const next = findById(openTabs[i] ?? openTabs[i - 1]);
+  next ? selectRequest(next) : renderTabs();
+}
+
+/** 只留下 keep 里的标签；当前标签被关掉时，焦点给 focusId（右键的那个），没有就给第一个 */
+function closeTabsExcept(keep, focusId) {
+  openTabs = openTabs.filter((id) => keep.includes(id));
+  saveTabs();
+  if (openTabs.includes(current.id)) return renderTabs();
+  const stay = findById(focusId && openTabs.includes(focusId) ? focusId : openTabs[0]);
+  stay ? selectRequest(stay) : renderTabs();
 }
 
 function renderTabs() {
@@ -512,10 +520,18 @@ function renderTabs() {
   const bar = $('#tabs');
   put(bar, ...live.map(([id, r]) => {
     const on = id === current.id;
+    const i = openTabs.indexOf(id);
+    const tmenu = (e) => openMenu(e, [
+      ['Close', () => closeTab(id), { kbd: `${MOD}W` }],
+      live.length > 1 && ['Close others', () => closeTabsExcept([id], id)],
+      i < live.length - 1 && ['Close to the right', () => closeTabsExcept(openTabs.slice(0, i + 1), id)],
+      ['Close all', () => closeTabsExcept([])],
+    ]);
     return h('div', { class: 'tab' + (on ? ' active' : ''), role: 'tab', tabindex: 0, 'aria-selected': on ? 'true' : 'false',
       title: `${r.name} — ${r.url || 'no URL'}`,
       onclick: () => !on && selectRequest(r),
       onkeydown: activate,
+      oncontextmenu: tmenu,
       onauxclick: (e) => { if (e.button === 1) { e.preventDefault(); closeTab(id); } } },
       reqTag(r), h('span', { class: 'tab-name' }, r.name),
       pendings.has(id) ? h('span', { class: 'spinner' }) : null,
