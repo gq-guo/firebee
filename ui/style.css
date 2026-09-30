@@ -250,10 +250,12 @@ mark.cur { background: var(--color-warn); color: var(--color-accent-ink); }
 /* ---- menu + toast ---- */
 #menu { position: fixed; z-index: var(--z-dropdown); min-width: 160px; background: var(--color-paper-2); border: 1px solid var(--color-rule); border-radius: var(--radius-card); padding: var(--space-2xs); box-shadow: 0 8px 24px oklch(8% 0.01 250 / 0.5); display: flex; flex-direction: column; animation: menu-in var(--dur-short) var(--ease-out); }
 @keyframes menu-in { from { opacity: 0; transform: translateY(-2px); } }
-.menu-item { text-align: left; border: none; background: none; height: 28px; padding: 0 var(--space-sm); border-radius: 4px; display: flex; justify-content: space-between; gap: var(--space-md); }
+.menu-item { text-align: left; border: none; background: none; height: 28px; padding: 0 var(--space-sm); border-radius: 4px; display: flex; align-items: center; gap: var(--space-md); }
 .menu-item:hover, .menu-item:focus-visible { background: var(--color-selected); outline: none; }
 .menu-item.danger-item { color: var(--color-err); }
-.menu-item .kbd { margin-left: auto; }
+/* 菜单里的快捷键是提示不是控件：去掉边框和底色，跟系统菜单一样只留符号 */
+.menu-item .kbd { margin-left: auto; border: none; background: none; padding: 0; color: var(--color-muted); }
+.menu-item:hover .kbd, .menu-item:focus-visible .kbd { color: var(--color-ink-2); }
 #toast { position: fixed; right: var(--space-md); bottom: var(--space-md); z-index: var(--z-toast); display: flex; align-items: center; gap: var(--space-sm); background: var(--color-paper-3); color: var(--color-ink); border: 1px solid var(--color-rule); border-radius: var(--radius-card); padding: var(--space-xs) var(--space-sm); box-shadow: 0 8px 24px oklch(8% 0.01 250 / 0.5); max-width: 360px; animation: toast-in var(--dur-short) var(--ease-out); }
 #toast.error { border-color: var(--color-err); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
