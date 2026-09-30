@@ -79,10 +79,13 @@ jobs:
                "darwin-x86_64": {signature: $sig, url: $url}}}' > "$out/latest.json"
           (cd "$out" && shasum -a 256 * > SHA256SUMS.txt)
           ls -la "$out"
-      - name: Publish GitHub Release
+      # 先建草稿、传完全部产物再公开：否则 releases/latest 会先指向还没有文件的版本，
+      # install.sh 和 app 内更新在这段时间里会 404
+      - name: Create draft GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: Firebee ${{ github.ref_name }}
+          draft: true
           files: dist/*
           generate_release_notes: true
           body: |
@@ -95,3 +98,7 @@ jobs:
             The script downloads this release, verifies `SHA256SUMS.txt` and installs to `/Applications`. The build is not notarized; files downloaded with curl carry no quarantine flag, so it opens without a Gatekeeper prompt. If you download the `.dmg` in a browser instead, run `xattr -dr com.apple.quarantine /Applications/Firebee.app` once after dragging it to Applications.
 
             Data lives in `~/Library/Application Support/firebee/`. Checksums are in `SHA256SUMS.txt`.
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --draft=false

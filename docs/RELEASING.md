@@ -11,7 +11,7 @@ scripts/check-version.sh            # 本地校验四处一致
 git tag v0.1.3 && git push origin v0.1.3
 ```
 
-Release 工作流（`.github/workflows/release.yml`）的 `gate` 作业先校验版本号，再跑 `fmt` / `clippy` / `test`——tag 推送不触发 `ci.yml`（它只在 push master 和 PR 上跑），所以门禁必须在这里重跑一遍，否则测试挂了照样能发版。通过后才在 macOS runner 上构建 universal（Intel + Apple Silicon）的 `.dmg` / `.app.zip`，附 `SHA256SUMS.txt` 发布到 GitHub Release。tag 与版本号不一致时直接失败，不会产出包。
+Release 工作流（`.github/workflows/release.yml`）的 `gate` 作业先校验版本号，再跑 `fmt` / `clippy` / `test`——tag 推送不触发 `ci.yml`（它只在 push master 和 PR 上跑），所以门禁必须在这里重跑一遍，否则测试挂了照样能发版。通过后才在 macOS runner 上构建 universal（Intel + Apple Silicon）的 `.dmg` / `.app.zip`，附 `SHA256SUMS.txt` 先传到草稿 Release，全部传完才公开（`releases/latest` 不会指向缺文件的版本）。tag 与版本号不一致时直接失败，不会产出包。
 
 ## App 内更新
 
@@ -24,7 +24,8 @@ cargo tauri signer generate -w ~/.tauri/firebee.key   # 私钥自己保管好，
 ```
 
 - 公钥（`~/.tauri/firebee.key.pub` 的内容）填进 `tauri.conf.json` 的 `plugins.updater.pubkey`；还是占位符时 Release 工作流的 `gate` 会直接失败
-- 私钥内容存为仓库 Secret `TAURI_SIGNING_PRIVATE_KEY`，设了密码再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+- 在仓库 Settings → Environments 建 `firebee` 环境，私钥内容存为这个环境的 Secret `TAURI_SIGNING_PRIVATE_KEY`，设了密码再加 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。只有 Release 工作流的 `build-macos` job 声明了这个环境，别的 workflow 读不到私钥
+- 环境的 Deployment branches and tags 选 Selected branches and tags，加一条 Tag 规则 `v*`；保持默认的 "Protected branches only" 会把推 tag 触发的发版拦下来
 
 Release 工作流只在 CI 里开 `createUpdaterArtifacts`，产出签名的 tar.gz，再用 GitHub 自动生成的 release notes 拼出 `latest.json`（弹窗里显示的更新说明就是它）。本地 `cargo tauri build` 不产出更新包，也不需要私钥。
 

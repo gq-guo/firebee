@@ -58,6 +58,7 @@ let reqTab = 'params', respTab = 'body', sideTab = 'collections';
 let renaming = null;   // 正在重命名的对象（collection / folder / request）
 let envSel = null;     // env 对话框中选中的环境
 let saveTimer = null;
+let saving = Promise.resolve(); // 已经在写盘的那次保存；更新后重启前要等它写完
 let filter = '';       // 侧栏搜索关键字（匹配集合/文件夹/请求名、URL）
 let respQuery = '';    // 响应区的查询框，跨请求保留：以 $ 开头是 JSONPath 过滤，否则是正文查找
 const showAll = new Set();     // 已点过 Show all 的 request.id
@@ -79,12 +80,13 @@ const activeEnv = () => data.environments.find((e) => e.id === activeEnvId) || n
 // 防抖保存集合与环境（500ms）。成功无提示；失败必须让用户知道。
 function dirty() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
+  saveTimer = setTimeout(() => {
     saveTimer = null;
-    try {
+    saving = (async () => {
       await invoke('save_collections', { collections: data.collections });
       await invoke('save_environments', { environments: data.environments });
-    } catch (e) { toast(`Couldn't save your changes. ${e}`, { error: true, action: ['Retry', dirty] }); }
+    })();
+    saving.catch((e) => toast(`Couldn't save your changes. ${e}`, { error: true, action: ['Retry', dirty] }));
   }, 500);
 }
 
@@ -1021,18 +1023,19 @@ function storedResponse(dto) {
 // 历史现在带响应体（最多 100 条 × 64KB），每次发送都全量序列化 + 重写整个文件太贵。
 // 和 dirty() 一样防抖 500ms：连点 Send 只写一次。掉的最多是最后半秒的历史，能接受。
 let histTimer = null;
+let histSaving = Promise.resolve();
 function saveHistory() {
   clearTimeout(histTimer);
   histTimer = setTimeout(() => {
     histTimer = null;
-    invoke('save_history', { history: data.history })
-      .catch((e) => toast(`Couldn't save history. ${e}`, { error: true, action: ['Retry', saveHistory] }));
+    histSaving = invoke('save_history', { history: data.history });
+    histSaving.catch((e) => toast(`Couldn't save history. ${e}`, { error: true, action: ['Retry', saveHistory] }));
   }, 500);
 }
 // 把两个防抖立刻冲掉。关窗前是兜底（WKWebView 上 beforeunload 在 ⌘Q 时未必触发，
-// 最坏情况丢最后半秒的改动）；更新后重启前会等它写完
+// 最坏情况丢最后半秒的改动）；更新后重启前会等它和已经在写的那次都写完
 function flushSaves() {
-  const jobs = [];
+  const jobs = [saving, histSaving];
   if (histTimer) { clearTimeout(histTimer); histTimer = null; jobs.push(invoke('save_history', { history: data.history })); }
   if (saveTimer) {
     clearTimeout(saveTimer); saveTimer = null;
@@ -1051,14 +1054,17 @@ const updater = window.__TAURI__.updater;
 const SKIP_KEY = 'firebee.update.skip';
 let update = null; // 查到的新版本（插件的 Update 对象）
 let updateState = 'idle'; // idle | downloading | ready
+let checking = null; // 进行中的 check()：连点菜单、手动撞上自动检查时共用一次
 
 async function checkForUpdates(manual = false) {
   if (!updater) return;
   if (updateState === 'downloading') { if (manual) toast('An update is already downloading.'); return; }
   if (updateState === 'ready') { if (manual) showUpdateReady(); return; }
   let found;
-  try { found = await updater.check(); }
+  try { found = await (checking ??= updater.check().finally(() => { checking = null; })); }
   catch (e) { if (manual) toast(`Couldn't check for updates. ${e}`, { error: true }); return; }
+  // 等 check 的这段时间里用户可能已经点了 Update，别再弹一次、再下一份
+  if (updateState !== 'idle') return;
   if (!found) {
     if (manual) toast(`You're on the latest version (${await window.__TAURI__.app.getVersion()}).`);
     return;
@@ -1067,6 +1073,7 @@ async function checkForUpdates(manual = false) {
   try { skipped = localStorage.getItem(SKIP_KEY); } catch { /* private mode */ }
   // 自动检查不打断正在用的对话框，也不再提跳过的版本；手动检查一律弹
   if (!manual && (found.version === skipped || document.querySelector('dialog[open]'))) return;
+  if (update && update !== found) update.close().catch(() => {});
   update = found;
   showUpdateDialog(`Firebee ${found.version} is available`, `You have ${found.currentVersion}.`, found.body || '', [
     btn('Skip This Version', () => {
