@@ -509,7 +509,8 @@ function renderTabs() {
   // 集合里已经没有的请求（被删了）顺手清掉
   const live = openTabs.map((id) => [id, findById(id)]).filter(([, r]) => r);
   if (live.length !== openTabs.length) { openTabs = live.map(([id]) => id); saveTabs(); }
-  put($('#tabs'), ...live.map(([id, r]) => {
+  const bar = $('#tabs');
+  put(bar, ...live.map(([id, r]) => {
     const on = id === current.id;
     return h('div', { class: 'tab' + (on ? ' active' : ''), role: 'tab', tabindex: 0, 'aria-selected': on ? 'true' : 'false',
       title: `${r.name} — ${r.url || 'no URL'}`,
@@ -521,6 +522,16 @@ function renderTabs() {
       btn('×', (e) => { e.stopPropagation(); closeTab(id); }, 'small more close')
         .withAttr('aria-label', `Close ${r.name}`));
   }));
+  scrollTabIntoView(bar);
+}
+
+/** 标签多到溢出时，当前标签可能在可视区外——只滚标签条本身，别动页面 */
+function scrollTabIntoView(bar) {
+  const act = bar.querySelector('.tab.active');
+  if (!act) return;
+  const pad = 12, left = act.offsetLeft - bar.offsetLeft, right = left + act.offsetWidth;
+  if (left < bar.scrollLeft + pad) bar.scrollLeft = Math.max(0, left - pad);
+  else if (right > bar.scrollLeft + bar.clientWidth - pad) bar.scrollLeft = right - bar.clientWidth + pad;
 }
 
 /** 当前请求在集合树中的位置（面包屑）；不在任何集合里返回 null */
