@@ -55,9 +55,42 @@ pub async fn execute(
     timeout: Duration,
     cancel: tokio::sync::watch::Receiver<bool>,
     jar: Option<Arc<reqwest::cookie::Jar>>,
+    follow_redirects: bool,
 ) -> Result<ResponseMeta, HttpError> {
     let url = build_url(req)?;
-    let mut builder = reqwest::Client::builder().timeout(timeout);
+    // 跟过的重定向记下来给界面显示 —— 否则"到底跳去哪了"完全看不见
+    let trail: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    // referer(false)：reqwest 默认在重定向时带上 Referer，且只剥掉用户名/密码/fragment，
+    // query 原样保留 —— ApiKey in_query 的密钥会被 302 的目标站点收到。
+    //
+    // 重定向只跟同一 host，且不跟 https→http 的降级（端口变化和 http→https 升级照跟）。
+    // reqwest 换 host 时只剥 Authorization / Cookie，
+    // X-API-Key 这类自定义鉴权头会原样发给新 host；一个被控制的接口用 302
+    // 就能把密钥取走。跨 host 时停下来，把 3xx 和 Location 交给用户自己看。
+    let rec = trail.clone();
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .referer(false)
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if !follow_redirects {
+                return attempt.stop();
+            }
+            if attempt.previous().len() >= 10 {
+                return attempt.error("too many redirects");
+            }
+            let Some(prev) = attempt.previous().last() else {
+                return attempt.stop();
+            };
+            // 换 host 要停（见上面的注释）；https→http 也要停 ——
+            // 同一个 host 也不能把 X-API-Key 降级成明文发出去
+            if prev.host_str() != attempt.url().host_str()
+                || (prev.scheme() == "https" && attempt.url().scheme() != "https")
+            {
+                return attempt.stop();
+            }
+            rec.lock().unwrap().push(attempt.url().to_string());
+            attempt.follow()
+        }));
     if let Some(jar) = jar {
         builder = builder.cookie_provider(jar);
     }
@@ -138,12 +171,14 @@ pub async fn execute(
         .await
         .map_err(|e| HttpError::Network(e.to_string()))?;
     let duration_ms = start.elapsed().as_millis();
+    let redirects = std::mem::take(&mut *trail.lock().unwrap());
     Ok(ResponseMeta {
         status,
         headers,
         size_bytes: bytes.len(),
         body: bytes.to_vec(),
         duration_ms,
+        redirects,
     })
 }
 
@@ -199,7 +234,7 @@ mod tests {
         req.url = format!("{}/users", server.uri());
         req.params = vec![KeyValue::new("page", "1")];
         req.headers = vec![KeyValue::new("x-token", "abc")];
-        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None)
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None, true)
             .await
             .unwrap();
         assert_eq!(resp.status, 200);
@@ -229,7 +264,7 @@ mod tests {
         req.auth = Auth::Bearer {
             token: "t123".into(),
         };
-        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None)
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None, true)
             .await
             .unwrap();
         assert_eq!(resp.status, 201);
@@ -255,7 +290,7 @@ mod tests {
         req.headers = vec![KeyValue::new("Content-Type", "application/json")];
         req.body = "{ me { id } }".into();
         req.graphql_variables = r#"{"a": 1}"#.into();
-        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None)
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None, true)
             .await
             .unwrap();
         assert_eq!(resp.status, 200);
@@ -278,7 +313,7 @@ mod tests {
             value: "k9".into(),
             in_query: true,
         };
-        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None)
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None, true)
             .await
             .unwrap();
         assert_eq!(resp.status, 200);
@@ -294,7 +329,7 @@ mod tests {
 
         let mut req = Request::new("t");
         req.url = server.uri();
-        let err = execute(&req, Duration::from_millis(100), no_cancel(), None)
+        let err = execute(&req, Duration::from_millis(100), no_cancel(), None, true)
             .await
             .unwrap_err();
         assert!(matches!(err, HttpError::Timeout(_)));
@@ -312,7 +347,9 @@ mod tests {
         let mut req = Request::new("t");
         req.url = server.uri();
         let handle =
-            tokio::spawn(async move { execute(&req, Duration::from_secs(10), rx, None).await });
+            tokio::spawn(
+                async move { execute(&req, Duration::from_secs(10), rx, None, true).await },
+            );
         tokio::time::sleep(Duration::from_millis(50)).await;
         tx.send(true).unwrap();
         let err = handle.await.unwrap().unwrap_err();
@@ -323,7 +360,7 @@ mod tests {
     async fn invalid_url_error() {
         let mut req = Request::new("t");
         req.url = "not a url".into();
-        let err = execute(&req, Duration::from_secs(5), no_cancel(), None)
+        let err = execute(&req, Duration::from_secs(5), no_cancel(), None, true)
             .await
             .unwrap_err();
         assert!(matches!(err, HttpError::InvalidUrl(_)));
@@ -333,7 +370,7 @@ mod tests {
     async fn connection_refused_is_network_error() {
         let mut req = Request::new("t");
         req.url = "http://127.0.0.1:1/".into();
-        let err = execute(&req, Duration::from_secs(2), no_cancel(), None)
+        let err = execute(&req, Duration::from_secs(2), no_cancel(), None, true)
             .await
             .unwrap_err();
         assert!(matches!(err, HttpError::Network(_)));
@@ -361,15 +398,99 @@ mod tests {
             Duration::from_secs(5),
             no_cancel(),
             Some(jar.clone()),
+            true,
         )
         .await
         .unwrap();
         let mut me = Request::new("m");
         me.url = format!("{}/me", server.uri());
-        let resp = execute(&me, Duration::from_secs(5), no_cancel(), Some(jar))
+        let resp = execute(&me, Duration::from_secs(5), no_cancel(), Some(jar), true)
             .await
             .unwrap();
         assert_eq!(resp.status, 200);
+    }
+
+    #[tokio::test]
+    async fn same_host_redirect_is_followed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/old"))
+            .respond_with(ResponseTemplate::new(301).insert_header("location", "/new"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/new"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("arrived"))
+            .mount(&server)
+            .await;
+        let mut r = Request::new("r");
+        r.url = format!("{}/old", server.uri());
+        let resp = execute(&r, Duration::from_secs(5), no_cancel(), None, true)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(String::from_utf8(resp.body).unwrap(), "arrived");
+    }
+
+    #[tokio::test]
+    async fn redirect_trail_is_recorded_and_can_be_turned_off() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/a"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", "/b"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/b"))
+            .respond_with(ResponseTemplate::new(301).insert_header("location", "/c"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/c"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let mut r = Request::new("r");
+        r.url = format!("{}/a", server.uri());
+
+        let followed = execute(&r, Duration::from_secs(5), no_cancel(), None, true)
+            .await
+            .unwrap();
+        assert_eq!(followed.status, 200);
+        assert_eq!(followed.redirects.len(), 2, "跟过的每一跳都要记下来");
+        assert!(followed.redirects[0].ends_with("/b"));
+        assert!(followed.redirects[1].ends_with("/c"));
+
+        // 关掉之后停在第一个 3xx，界面自己显示 Location
+        let stopped = execute(&r, Duration::from_secs(5), no_cancel(), None, false)
+            .await
+            .unwrap();
+        assert_eq!(stopped.status, 302);
+        assert!(stopped.redirects.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cross_host_redirect_stops() {
+        // 被控制的接口用 302 指向别的 host：X-API-Key 这类自定义头不能跟过去。
+        // 目标用不可解析的域名 —— 真跟过去就会是 DNS 错误，而不是拿到 302。
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", "http://evil.invalid/steal"),
+            )
+            .mount(&api)
+            .await;
+        let mut r = Request::new("r");
+        r.url = api.uri();
+        r.headers = vec![KeyValue::new("X-API-Key", "super-secret")];
+        let resp = execute(&r, Duration::from_secs(5), no_cancel(), None, true)
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 302, "跨 host 的重定向不应该被跟随");
+        assert!(resp
+            .headers
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("location") && v.contains("evil.invalid")));
     }
 
     #[test]

@@ -52,13 +52,17 @@ fn rnd() -> u64 {
     u64::from_le_bytes(x)
 }
 
-/// [min, max] 闭区间；max <= min 时退化为 min
+/// [min, max] 闭区间；max <= min 时退化为 min。
+/// 参数来自用户输入（`{{$randomInt(a,b)}}`），必须扛住 i64 极值：
+/// max-min 会溢出，+1 后可能为 0，取模就 panic——而 Tauri command 里 panic
+/// 不会变成 JS 的 reject，invoke 永不 settle，界面直接卡死。
 fn between(min: i64, max: i64) -> i64 {
     if max <= min {
-        min
-    } else {
-        min + (rnd() % (max - min + 1) as u64) as i64
+        return min;
     }
+    // span = max-min+1，饱和到 u64 上界；wrapping_add 让 i64 全域也能取到
+    let span = (max as i128 - min as i128 + 1).min(u64::MAX as i128) as u64;
+    min.wrapping_add((rnd() % span) as i64)
 }
 
 fn pick(list: &[&str]) -> String {
@@ -204,7 +208,11 @@ fn dynamic(name: &str) -> Option<String> {
         "$randomCurrencyCode" => pick(CURRENCY_CODES),
         "$randomPrice" => format!(
             "{:.2}",
-            between(arg(0, 0) * 100, arg(1, 999) * 100 + 99) as f64 / 100.0
+            between(
+                arg(0, 0).saturating_mul(100),
+                arg(1, 999).saturating_mul(100).saturating_add(99),
+            ) as f64
+                / 100.0
         ),
         "$randomIP" => format!(
             "{}.{}.{}.{}",
@@ -301,7 +309,7 @@ pub fn substitute_request(req: &Request, vars: &HashMap<String, String>) -> (Req
             *key = apply(key, vars, &mut missing);
             *value = apply(value, vars, &mut missing);
         }
-        Auth::None => {}
+        Auth::None | Auth::Off => {}
     }
     (out, missing)
 }
@@ -342,6 +350,30 @@ mod tests {
         // 用户定义的同名变量优先
         let vars = HashMap::from([("$uuid".to_string(), "fixed".to_string())]);
         assert_eq!(substitute("{{$uuid}}", &vars).output, "fixed");
+    }
+
+    #[test]
+    fn extreme_dynamic_var_args_dont_panic() {
+        // 参数来自用户随手敲的文本，i64 极值不能把命令打 panic（panic 会让 invoke 永不 settle）
+        let v = HashMap::new();
+        for src in [
+            "{{$randomInt(-9223372036854775808,9223372036854775807)}}",
+            "{{$randomInt(-9000000000000000000,9000000000000000000)}}",
+            "{{$randomInt(9223372036854775807,-9223372036854775808)}}",
+            "{{$randomPrice(0,99999999999999999)}}",
+            "{{$randomPrice(-9223372036854775808,9223372036854775807)}}",
+        ] {
+            let out = substitute(src, &v).output;
+            assert!(!out.contains("{{"), "{src} 没被替换：{out}");
+        }
+        // 正常区间仍然守约
+        for _ in 0..200 {
+            let n: i64 = substitute("{{$randomInt(-5,5)}}", &v)
+                .output
+                .parse()
+                .unwrap();
+            assert!((-5..=5).contains(&n));
+        }
     }
 
     #[test]

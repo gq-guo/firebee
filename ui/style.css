@@ -45,7 +45,10 @@ body {
   display: grid; grid-template-columns: var(--side-w, 264px) 6px minmax(0, 1fr); grid-template-rows: 40px 1fr;
   grid-template-areas: "top top top" "side split main";
 }
-#topbar { grid-area: top; display: flex; align-items: center; gap: var(--space-xs); padding: 0 var(--space-sm); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-2); }
+#topbar { grid-area: top; display: flex; align-items: center; gap: var(--space-md); padding: 0 var(--space-sm); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-2); }
+/* 右侧的发送选项：同高同字号同色，读起来是一组而不是两个飘着的控件 */
+#topbar > label { height: var(--control-h); gap: var(--space-2xs); font-size: var(--text-xs); color: var(--color-muted); white-space: nowrap; }
+#topbar > label:has(#timeout) { gap: var(--space-xs); }
 #sidebar { grid-area: side; background: var(--color-paper-2); display: flex; flex-direction: column; min-height: 0; }
 #side-body { overflow: auto; padding: var(--space-xs); flex: 1; }
 #search { margin: var(--space-xs) var(--space-xs) 0; height: 28px; font-size: var(--text-sm); }
@@ -247,10 +250,12 @@ mark.cur { background: var(--color-warn); color: var(--color-accent-ink); }
 /* ---- menu + toast ---- */
 #menu { position: fixed; z-index: var(--z-dropdown); min-width: 160px; background: var(--color-paper-2); border: 1px solid var(--color-rule); border-radius: var(--radius-card); padding: var(--space-2xs); box-shadow: 0 8px 24px oklch(8% 0.01 250 / 0.5); display: flex; flex-direction: column; animation: menu-in var(--dur-short) var(--ease-out); }
 @keyframes menu-in { from { opacity: 0; transform: translateY(-2px); } }
-.menu-item { text-align: left; border: none; background: none; height: 28px; padding: 0 var(--space-sm); border-radius: 4px; display: flex; justify-content: space-between; gap: var(--space-md); }
+.menu-item { text-align: left; border: none; background: none; height: 28px; padding: 0 var(--space-sm); border-radius: 4px; display: flex; align-items: center; gap: var(--space-md); }
 .menu-item:hover, .menu-item:focus-visible { background: var(--color-selected); outline: none; }
 .menu-item.danger-item { color: var(--color-err); }
-.menu-item .kbd { margin-left: auto; }
+/* 菜单里的快捷键是提示不是控件：去掉边框和底色，跟系统菜单一样只留符号 */
+.menu-item .kbd { margin-left: auto; border: none; background: none; padding: 0; color: var(--color-muted); }
+.menu-item:hover .kbd, .menu-item:focus-visible .kbd { color: var(--color-ink-2); }
 #toast { position: fixed; right: var(--space-md); bottom: var(--space-md); z-index: var(--z-toast); display: flex; align-items: center; gap: var(--space-sm); background: var(--color-paper-3); color: var(--color-ink); border: 1px solid var(--color-rule); border-radius: var(--radius-card); padding: var(--space-xs) var(--space-sm); box-shadow: 0 8px 24px oklch(8% 0.01 250 / 0.5); max-width: 360px; animation: toast-in var(--dur-short) var(--ease-out); }
 #toast.error { border-color: var(--color-err); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
@@ -260,3 +265,41 @@ mark.cur { background: var(--color-warn); color: var(--color-accent-ink); }
   .spinner { animation-duration: 800ms !important; }
   dialog[open], #menu, #toast { animation: none; }
 }
+#settings-dialog { width: min(620px, 92vw); }
+.settings-block + .settings-block { margin-top: var(--space-lg); padding-top: var(--space-md); border-top: 1px solid var(--color-rule); }
+.settings-block h3 { margin: 0; font-size: var(--text-sm); font-weight: 600; }
+.settings-block .helper { margin: 2px 0 var(--space-xs); }
+.settings-block table.kv { margin-top: 0; }
+/* 字段标签在上、输入框在下；inline-flex 的 label 在窄容器里会把标签文字挤成竖排 */
+.row.fields { align-items: flex-end; gap: var(--space-sm); }
+label.field { display: flex; flex-direction: column; align-items: stretch; gap: 3px; flex: 1; min-width: 0;
+  font-size: var(--text-xs); color: var(--color-muted); }
+label.field input { width: 100%; color: var(--color-ink); }
+#req-body label.check, #settings-body label.check { margin-top: var(--space-xs); }
+label.check input { flex: none; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--color-accent); }
+.kv.inherited td { color: var(--color-muted); padding: 3px var(--space-2xs); font-size: var(--text-xs); }
+.kv.inherited td.val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+.from-history { color: var(--color-warn); }
+
+/* ---- 打开的请求标签页 ---- */
+#tabs { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; flex: none;
+  margin: calc(var(--space-sm) * -1) calc(var(--space-md) * -1) var(--space-xs);
+  padding: var(--space-2xs) var(--space-md) 0; border-bottom: 1px solid var(--color-rule); }
+#tabs::-webkit-scrollbar { display: none; }
+/* 溢出时两端渐隐，提示还能横向滚 */
+#tabs { mask-image: linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%); }
+#tabs:empty { display: none; }
+.tab { display: flex; align-items: center; gap: 6px; flex: none; min-width: 0; max-width: 200px;
+  padding: 4px var(--space-2xs) 4px var(--space-xs); border-radius: 5px 5px 0 0; cursor: pointer;
+  border-bottom: 2px solid transparent; color: var(--color-muted);
+  transition: background-color var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out); }
+@media (hover: hover) { .tab:hover { background: var(--color-paper-3); color: var(--color-ink-2); } }
+.tab.active { color: var(--color-ink); border-bottom-color: var(--color-accent); background: var(--color-paper-2); }
+.tab:focus-visible { outline-offset: -2px; }
+.tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); }
+.tab .method { min-width: 0; font-size: 10px; }
+.tab .close { opacity: 0; width: 18px; height: 18px; font-size: var(--text-xs); }
+.tab:hover .close, .tab.active .close, .close:focus-visible { opacity: 1; }
+.tab .spinner { width: 9px; height: 9px; flex: none; }
+.helper.redirects code { font-size: var(--text-xs); }

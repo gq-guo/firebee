@@ -11,7 +11,9 @@ use tokio::sync::watch;
 
 use crate::core::export::{to_curl, to_python};
 use crate::core::http::{build_url, execute};
-use crate::core::models::{Collection, Environment, HistoryEntry, Request};
+use crate::core::models::{
+    merge_inherited, Collection, Environment, HistoryEntry, Inherited, Request,
+};
 use crate::core::storage::Storage;
 use crate::core::vars::substitute_request;
 
@@ -43,6 +45,7 @@ pub struct ResponseDto {
     body_base64: Option<String>,
     duration_ms: u128,
     size_bytes: usize,
+    redirects: Vec<String>,
 }
 
 fn vars(env: &Option<Environment>) -> HashMap<String, String> {
@@ -94,6 +97,17 @@ pub fn missing_vars(request: Request, env: Option<Environment>) -> Vec<String> {
     substitute_request(&request, &vars(&env)).1
 }
 
+/// 发送时的各种开关，单独一个结构：Tauri command 的参数表就是 IPC 契约，
+/// 每加一个开关就多一个参数不好扩展（clippy 也会在第 8 个上拦下来）
+#[derive(serde::Deserialize)]
+pub struct SendOptions {
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub inherited: Option<Vec<Inherited>>,
+    #[serde(default)]
+    pub follow_redirects: Option<bool>,
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn send_request(
     pending: State<'_, Pending>,
@@ -101,8 +115,14 @@ pub async fn send_request(
     job_id: u64,
     request: Request,
     env: Option<Environment>,
-    timeout_secs: u64,
+    options: SendOptions,
 ) -> Result<ResponseDto, String> {
+    let SendOptions {
+        timeout_secs,
+        inherited,
+        follow_redirects,
+    } = options;
+    let request = merge_inherited(&request, &inherited.unwrap_or_default());
     let (req, _) = substitute_request(&request, &vars(&env));
     let (tx, rx) = watch::channel(false);
     pending.0.lock().unwrap().insert(job_id, tx);
@@ -112,6 +132,7 @@ pub async fn send_request(
         Duration::from_secs(timeout_secs.max(1)),
         rx,
         Some(jar),
+        follow_redirects.unwrap_or(true),
     )
     .await;
     pending.0.lock().unwrap().remove(&job_id);
@@ -139,6 +160,7 @@ pub async fn send_request(
                 body_base64,
                 duration_ms: r.duration_ms,
                 size_bytes: r.size_bytes,
+                redirects: r.redirects,
             }
         })
         .map_err(|e| e.to_string())
@@ -193,8 +215,10 @@ pub fn import_file(path: String) -> Result<Imported, String> {
     let v: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| format!("Not valid JSON: {e}"))?;
     if v.get("firebee").is_some() {
-        let collection = serde_json::from_value(v["collection"].clone())
+        let mut collection: Collection = serde_json::from_value(v["collection"].clone())
             .map_err(|e| format!("Not a Firebee collection file: {e}"))?;
+        // 换一套新 id：导进来的是副本，不是原件。同 id 会让前端把两份请求认成一份。
+        collection.reid();
         return Ok(Imported {
             collection: Some(collection),
             ..Default::default()
@@ -222,7 +246,13 @@ pub fn import_curl(text: String) -> Result<Request, String> {
 
 /// kind: "curl" | "python"。先变量替换，再构造最终 URL。
 #[tauri::command]
-pub fn export_code(request: Request, env: Option<Environment>, kind: String) -> String {
+pub fn export_code(
+    request: Request,
+    env: Option<Environment>,
+    kind: String,
+    inherited: Option<Vec<Inherited>>,
+) -> String {
+    let request = merge_inherited(&request, &inherited.unwrap_or_default());
     let (req, _) = substitute_request(&request, &vars(&env));
     let url = build_url(&req).unwrap_or_else(|_| req.url.clone());
     match kind.as_str() {

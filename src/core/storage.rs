@@ -1,17 +1,56 @@
-use std::fs;
+use std::collections::HashSet;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use crate::core::models::{Collection, Environment, HistoryEntry};
 
 pub const HISTORY_LIMIT: usize = 500;
 
+/// 数据文件里有 token、密码、API key，以及最近 100 条响应体——默认的 0644
+/// 意味着同机器上任何别的用户都能读。~/Library/Application Support 在 macOS 上
+/// 也不受 TCC 保护，未签名的第三方 app 读它不会弹任何提示。
+#[cfg(unix)]
+fn restrict(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+#[cfg(not(unix))]
+fn restrict(_path: &std::path::Path, _mode: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// 直接以 0600 创建，别先 File::create 出一个 0644 再 chmod —— 中间有个窗口
+#[cfg(unix)]
+fn create_private(path: &std::path::Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+}
+#[cfg(not(unix))]
+fn create_private(path: &std::path::Path) -> std::io::Result<File> {
+    File::create(path)
+}
+
 pub struct Storage {
     dir: PathBuf,
+    /// 启动时读不出来（权限 / IO / 被锁，不含"文件不存在"）的文件。
+    /// 这些文件拒绝写入：前端拿到空数据会立刻存盘，那就把还在磁盘上的
+    /// 集合和凭据原地抹掉了 —— 宁可这次不保存，也不能覆盖。
+    unreadable: Mutex<HashSet<String>>,
 }
 
 impl Storage {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            unreadable: Mutex::default(),
+        }
     }
 
     /// 系统标准数据目录，如 macOS ~/Library/Application Support/firebee
@@ -27,28 +66,92 @@ impl Storage {
 
     fn load<T: serde::de::DeserializeOwned + Default>(&self, name: &str) -> T {
         let path = self.path(name);
-        let Ok(bytes) = fs::read(&path) else {
-            return T::default();
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            // 文件不存在 = 首次启动，正常。其它错误（权限、IO、被锁）不能当成"没数据"：
+            // 前端看到空集合会立刻 dirty() 写回，把还在那儿的数据原地抹掉。
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return T::default(),
+            Err(e) => {
+                tracing::error!("{name} 读不出来（{e}）；本次运行拒绝写入该文件，避免覆盖");
+                self.unreadable.lock().unwrap().insert(name.to_string());
+                return T::default();
+            }
         };
         match serde_json::from_slice(&bytes) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("{name} 解析失败（{e}），备份为 .bak 并以空数据启动");
-                let _ = fs::rename(&path, self.dir.join(name.replace(".json", ".bak")));
+                let bak = self.free_backup_name(name);
+                tracing::warn!("{name} 解析失败（{e}），备份为 {bak} 并以空数据启动");
+                let _ = fs::rename(&path, self.dir.join(&bak));
                 T::default()
             }
         }
     }
 
-    /// 原子写入：先写临时文件再 rename，避免半截文件
-    fn save<T: serde::Serialize>(&self, name: &str, value: &T) -> std::io::Result<()> {
+    /// 损坏文件的备份名：带时间戳，且不覆盖已有的备份——
+    /// 连着坏两次时，把上一份好数据的备份盖掉就等于彻底丢了。
+    fn free_backup_name(&self, name: &str) -> String {
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let base = name.strip_suffix(".json").unwrap_or(name);
+        for n in 1..1000 {
+            let suffix = if n == 1 {
+                String::new()
+            } else {
+                format!("-{n}")
+            };
+            let candidate = format!("{base}.{stamp}{suffix}.bak");
+            if !self.dir.join(&candidate).exists() {
+                return candidate;
+            }
+        }
+        format!("{base}.{stamp}.bak")
+    }
+
+    /// 原子写入：写临时文件 → fsync → rename → fsync 目录。
+    /// 少了文件的 fsync，掉电后可能 rename 已经可见而数据块还没落盘，
+    /// 留下一个 0 字节的 collections.json —— 下次启动解析失败，数据就没了。
+    /// 临时文件名带唯一后缀，两次重叠的保存不会写进同一个 tmp。
+    /// pretty=false 用于 history.json：几 MB 的机器数据，没必要为缩进付序列化开销；
+    /// collections / environments 保持可读，方便出问题时直接看和 diff
+    fn save<T: serde::Serialize>(
+        &self,
+        name: &str,
+        value: &T,
+        pretty: bool,
+    ) -> std::io::Result<()> {
+        if self.unreadable.lock().unwrap().contains(name) {
+            return Err(std::io::Error::other(format!(
+                "{name} couldn't be read at startup, so Firebee won't overwrite it. \
+                 Fix the file's permissions and restart."
+            )));
+        }
         fs::create_dir_all(&self.dir)?;
-        let tmp = self.path(&format!("{name}.tmp"));
-        let data = serde_json::to_vec_pretty(value)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        fs::write(&tmp, data)?;
-        fs::rename(&tmp, self.path(name))?;
-        Ok(())
+        restrict(&self.dir, 0o700)?;
+        let data = if pretty {
+            serde_json::to_vec_pretty(value)
+        } else {
+            serde_json::to_vec(value)
+        }
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let tmp = self.path(&format!("{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+        // 失败时别把 tmp 留在数据目录里
+        let write = || -> std::io::Result<()> {
+            let mut f = create_private(&tmp)?;
+            f.write_all(&data)?;
+            f.sync_all()?;
+            drop(f);
+            fs::rename(&tmp, self.path(name))?;
+            // rename 本身也要落盘，否则掉电后可能回到旧名字。
+            // Windows 上打开目录句柄需要 FILE_FLAG_BACKUP_SEMANTICS，File::open 会直接失败。
+            #[cfg(unix)]
+            {
+                File::open(&self.dir).and_then(|d| d.sync_all())?;
+            }
+            Ok(())
+        };
+        write().inspect_err(|_| {
+            let _ = fs::remove_file(&tmp);
+        })
     }
 
     pub fn load_collections(&self) -> Vec<Collection> {
@@ -56,7 +159,7 @@ impl Storage {
     }
 
     pub fn save_collections(&self, collections: &[Collection]) -> std::io::Result<()> {
-        self.save("collections.json", &collections)
+        self.save("collections.json", &collections, true)
     }
 
     pub fn load_environments(&self) -> Vec<Environment> {
@@ -64,7 +167,7 @@ impl Storage {
     }
 
     pub fn save_environments(&self, envs: &[Environment]) -> std::io::Result<()> {
-        self.save("environments.json", &envs)
+        self.save("environments.json", &envs, true)
     }
 
     pub fn load_history(&self) -> Vec<HistoryEntry> {
@@ -74,7 +177,7 @@ impl Storage {
     /// 只保留最后 HISTORY_LIMIT 条（FIFO 淘汰最旧的）
     pub fn save_history(&self, history: &[HistoryEntry]) -> std::io::Result<()> {
         let start = history.len().saturating_sub(HISTORY_LIMIT);
-        self.save("history.json", &&history[start..])
+        self.save("history.json", &&history[start..], false)
     }
 }
 
@@ -107,9 +210,88 @@ mod tests {
         std::fs::write(tmp.path().join("collections.json"), b"{broken").unwrap();
         let s = Storage::new(tmp.path().to_path_buf());
         assert!(s.load_collections().is_empty());
-        assert!(tmp.path().join("collections.bak").exists());
+        let bak = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                n.starts_with("collections.") && n.ends_with(".bak")
+            });
+        assert!(bak.is_some(), "没有生成备份");
         // 再次加载不 panic、不重复改名失败
         assert!(s.load_collections().is_empty());
+    }
+
+    #[test]
+    fn corrupt_file_twice_keeps_both_backups() {
+        // 第二次损坏不能盖掉第一次的备份
+        let tmp = tempfile::tempdir().unwrap();
+        let s = Storage::new(tmp.path().to_path_buf());
+        let baks = || {
+            std::fs::read_dir(tmp.path())
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".bak"))
+                .count()
+        };
+        std::fs::write(tmp.path().join("collections.json"), b"{broken-1").unwrap();
+        assert!(s.load_collections().is_empty());
+        assert_eq!(baks(), 1);
+        std::fs::write(tmp.path().join("collections.json"), b"{broken-2").unwrap();
+        assert!(s.load_collections().is_empty());
+        assert_eq!(baks(), 2, "第二份备份把第一份盖掉了");
+    }
+
+    #[test]
+    fn save_leaves_no_temp_files_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = Storage::new(tmp.path().to_path_buf());
+        s.save_collections(&[Collection::new("a")]).unwrap();
+        s.save_collections(&[Collection::new("b")]).unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+        assert_eq!(s.load_collections()[0].name, "b");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let s = Storage::new(tmp.path().join("data"));
+        s.save_collections(&[Collection::new("a")]).unwrap();
+        let mode =
+            |p: std::path::PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(tmp.path().join("data/collections.json")), 0o600);
+        assert_eq!(mode(tmp.path().join("data")), 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_file_is_never_overwritten() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("collections.json");
+        let precious = r#"[{"id":"00000000-0000-0000-0000-000000000009","name":"keep-me","folders":[],"requests":[]}]"#;
+        std::fs::write(&path, precious).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let s = Storage::new(tmp.path().to_path_buf());
+        assert!(s.load_collections().is_empty(), "读不出来时返回空");
+        // 前端见到空数据会立刻存盘——必须被拒绝
+        let err = s.save_collections(&[Collection::new("empty")]).unwrap_err();
+        assert!(err.to_string().contains("won't overwrite"), "{err}");
+
+        // 磁盘上的原文件一字未动
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(String::from_utf8(std::fs::read(&path).unwrap())
+            .unwrap()
+            .contains("keep-me"));
     }
 
     #[test]
@@ -122,6 +304,7 @@ mod tests {
                 request: crate::core::models::Request::new("r"),
                 status: Some(200),
                 duration_ms: Some(1),
+                response: None,
             })
             .collect();
         s.save_history(&entries).unwrap();
