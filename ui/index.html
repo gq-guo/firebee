@@ -113,6 +113,12 @@
   <div class="row"><span class="muted">Tip: pasting a curl command into the URL field imports it directly.</span><span class="spacer"></span><button id="import-run" class="primary">Import</button></div>
 </dialog>
 
+<dialog id="update-dialog" class="update-dialog">
+  <div class="dialog-head"><strong id="update-title"></strong><div id="update-sub" class="muted"></div></div>
+  <div id="update-notes"></div>
+  <div id="update-actions" class="row dialog-foot"></div>
+</dialog>
+
 <datalist id="hdr-names">
   <option>Accept</option><option>Accept-Encoding</option><option>Accept-Language</option><option>Authorization</option>
   <option>Cache-Control</option><option>Content-Type</option><option>Cookie</option><option>If-Match</option><option>If-None-Match</option>
@@ -126,6 +132,7 @@
 <div id="ac" class="hidden" role="listbox"></div>
 <div id="menu" class="hidden" role="menu"></div>
 <div id="toast" class="hidden" role="status"></div>
+<div id="update-progress" class="hidden" role="status"></div>
 <script src="app.js"></script>
 </body>
 </html>

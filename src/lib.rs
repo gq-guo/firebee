@@ -1,7 +1,7 @@
 mod commands;
 pub mod core;
 
-use tauri::menu::{Menu, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{Menu, MenuItemBuilder, MenuItemKind, SubmenuBuilder};
 use tauri::Emitter;
 
 use crate::core::storage::Storage;
@@ -9,12 +9,20 @@ use crate::core::storage::Storage;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Storage::new(Storage::default_dir()))
         .manage(commands::Pending::default())
         .manage(commands::Cookies::default())
         .setup(|app| {
             // 默认菜单（App / Edit 的复制粘贴等）+ 我们自己的 Request 菜单，快捷键在菜单栏可见
             let menu = Menu::default(app.handle())?;
+            // 「检查更新…」放进 App 菜单，紧跟 About（macOS 惯例）
+            if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+                app_menu.insert(
+                    &MenuItemBuilder::with_id("check-updates", "Check for Updates…").build(app)?,
+                    1,
+                )?;
+            }
             let request = SubmenuBuilder::new(app, "Request")
                 .item(
                     &MenuItemBuilder::with_id("send", "Send")
@@ -61,6 +69,8 @@ pub fn run() {
             commands::import_file,
             commands::clear_cookies,
             commands::save_file,
+            commands::restart_app,
+            commands::open_releases,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -266,3 +266,19 @@ pub fn export_code(
         _ => to_curl(&req, &url),
     }
 }
+
+/// 更新装好后重启生效
+#[tauri::command]
+pub fn restart_app(app: tauri::AppHandle) {
+    app.restart();
+}
+
+/// 自动更新装不上（比如取消了管理员授权）时，打开 Release 页让用户手动下载
+#[tauri::command]
+pub fn open_releases() -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("https://github.com/gq-guo/firebee/releases/latest")
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}

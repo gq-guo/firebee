@@ -1029,16 +1029,98 @@ function saveHistory() {
       .catch((e) => toast(`Couldn't save history. ${e}`, { error: true, action: ['Retry', saveHistory] }));
   }, 500);
 }
-// 关窗前尽量把两个防抖都冲掉（WKWebView 上 beforeunload 在 ⌘Q 时未必触发，
-// 只是兜底：最坏情况丢最后半秒的改动）
-window.addEventListener('beforeunload', () => {
-  if (histTimer) { clearTimeout(histTimer); histTimer = null; invoke('save_history', { history: data.history }); }
+// 把两个防抖立刻冲掉。关窗前是兜底（WKWebView 上 beforeunload 在 ⌘Q 时未必触发，
+// 最坏情况丢最后半秒的改动）；更新后重启前会等它写完
+function flushSaves() {
+  const jobs = [];
+  if (histTimer) { clearTimeout(histTimer); histTimer = null; jobs.push(invoke('save_history', { history: data.history })); }
   if (saveTimer) {
     clearTimeout(saveTimer); saveTimer = null;
-    invoke('save_collections', { collections: data.collections });
-    invoke('save_environments', { environments: data.environments });
+    jobs.push(invoke('save_collections', { collections: data.collections }),
+      invoke('save_environments', { environments: data.environments }));
   }
-});
+  return Promise.all(jobs);
+}
+window.addEventListener('beforeunload', flushSaves);
+
+// ---------- 自动更新 ----------
+// 启动 3 秒后查一次，之后每 24 小时一次；离线、没发 latest.json 都静默。
+// 下载在后台跑；macOS 上装好就替换磁盘上的 .app，正在跑的进程不受影响，下次打开就是新版。
+// 装进要管理员权限的目录时插件会自己弹系统授权框，用户取消了就引导去 Release 页手动下。
+const updater = window.__TAURI__.updater;
+const SKIP_KEY = 'firebee.update.skip';
+let update = null; // 查到的新版本（插件的 Update 对象）
+let updateState = 'idle'; // idle | downloading | ready
+
+async function checkForUpdates(manual = false) {
+  if (!updater) return;
+  if (updateState === 'downloading') { if (manual) toast('An update is already downloading.'); return; }
+  if (updateState === 'ready') { if (manual) showUpdateReady(); return; }
+  let found;
+  try { found = await updater.check(); }
+  catch (e) { if (manual) toast(`Couldn't check for updates. ${e}`, { error: true }); return; }
+  if (!found) {
+    if (manual) toast(`You're on the latest version (${await window.__TAURI__.app.getVersion()}).`);
+    return;
+  }
+  let skipped = null;
+  try { skipped = localStorage.getItem(SKIP_KEY); } catch { /* private mode */ }
+  // 自动检查不打断正在用的对话框，也不再提跳过的版本；手动检查一律弹
+  if (!manual && (found.version === skipped || document.querySelector('dialog[open]'))) return;
+  update = found;
+  showUpdateDialog(`Firebee ${found.version} is available`, `You have ${found.currentVersion}.`, found.body || '', [
+    btn('Skip This Version', () => {
+      try { localStorage.setItem(SKIP_KEY, found.version); } catch { /* private mode */ }
+      $('#update-dialog').close();
+    }, 'small ghost'),
+    h('span', { class: 'spacer' }),
+    btn('Later', () => $('#update-dialog').close()),
+    btn('Update', () => { $('#update-dialog').close(); downloadUpdate(); }, 'small primary'),
+  ]);
+}
+
+async function downloadUpdate() {
+  updateState = 'downloading';
+  const bar = $('#update-progress');
+  let total = 0, got = 0;
+  bar.textContent = 'Downloading update…';
+  bar.classList.remove('hidden');
+  try {
+    await update.downloadAndInstall((ev) => {
+      if (ev.event === 'Started') total = ev.data.contentLength || 0;
+      else if (ev.event === 'Progress') got += ev.data.chunkLength;
+      bar.textContent = ev.event === 'Finished' ? 'Installing update…'
+        : total ? `Downloading update… ${Math.floor((got / total) * 100)}%` : 'Downloading update…';
+    });
+    updateState = 'ready';
+    showUpdateReady();
+  } catch (e) {
+    updateState = 'idle'; // 24 小时后或下次启动再试
+    toast(`Couldn't install the update. ${e}`, { error: true, action: ['Download', () => invoke('open_releases')] });
+  } finally {
+    bar.classList.add('hidden');
+  }
+}
+
+function showUpdateReady() {
+  showUpdateDialog(`Firebee ${update.version} is ready`, 'It takes effect the next time Firebee starts.', '', [
+    h('span', { class: 'spacer' }),
+    btn('Later', () => $('#update-dialog').close()),
+    btn('Restart Now', async () => {
+      try { await flushSaves(); } catch (e) { toast(`Couldn't save your changes. ${e}`, { error: true }); return; }
+      invoke('restart_app');
+    }, 'small primary'),
+  ]);
+}
+
+function showUpdateDialog(title, sub, notes, actions) {
+  $('#update-title').textContent = title;
+  $('#update-sub').textContent = sub;
+  $('#update-notes').textContent = notes.trim();
+  put($('#update-actions'), ...actions);
+  const dlg = $('#update-dialog');
+  if (!dlg.open) dlg.showModal();
+}
 
 // ---------- 响应面板 ----------
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -1458,6 +1540,7 @@ function bind() {
     else if (payload === 'new') { createRequest(); $('#url').focus(); }
     else if (payload === 'find') { const f = $('#find') || $('#search'); f.focus(); f.select(); }
     else if (payload === 'filter') { $('#search').focus(); $('#search').select(); }
+    else if (payload === 'check-updates') checkForUpdates(true);
   });
   $('#env-close').onclick = () => $('#env-dialog').close();
   $('#env-dialog').addEventListener('close', renderRequestHeader); // 对话框里改过的变量要反映到 URL 预览
@@ -1512,5 +1595,9 @@ async function main() {
   saveTabs();
   renderTopbar(); renderTabs(); renderSidebar(); renderRequest(); renderResponse();
   $('#url').focus();
+  // 开发版（cargo tauri dev）不自动检查，菜单里手动查仍可用
+  const autoCheck = () => { if (!debugBuild) checkForUpdates(); };
+  setTimeout(autoCheck, 3000);
+  setInterval(autoCheck, 24 * 60 * 60 * 1000);
 }
 main();

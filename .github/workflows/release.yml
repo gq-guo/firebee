@@ -18,6 +18,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Tag matches VERSION, Cargo.toml, tauri.conf.json and Cargo.lock
         run: scripts/check-version.sh "${GITHUB_REF_NAME}"
+      - name: Updater public key is set
+        run: |
+          if grep -q REPLACE_WITH_UPDATER_PUBKEY tauri.conf.json; then
+            echo "::error::plugins.updater.pubkey in tauri.conf.json is still the placeholder"
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -29,6 +35,8 @@ jobs:
   build-macos:
     needs: gate
     runs-on: macos-latest
+    # updater 私钥是 firebee 环境的 secret，只有这个 job 拿得到
+    environment: firebee
     permissions:
       contents: write
     steps:
@@ -40,15 +48,35 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      # 开 createUpdaterArtifacts 额外产出 Firebee.app.tar.gz + .sig（用 updater 私钥签名）；
+      # 只在这里开，本地 cargo tauri build 不需要私钥
       - name: Build universal .app
-        run: npx --yes @tauri-apps/cli@2.11.5 build --target universal-apple-darwin
-      - name: Package .dmg and .app.zip
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx --yes @tauri-apps/cli@2.11.5 build --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":true}}'
+      - name: Package .dmg, .app.zip and updater files
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           out=dist && mkdir -p "$out"
           app=target/universal-apple-darwin/release/bundle/macos/Firebee.app
           scripts/make-dmg.sh "$app" "$out/Firebee-${GITHUB_REF_NAME}-macos-universal.dmg"
           ditto -c -k --keepParent "$app" "$out/Firebee-${GITHUB_REF_NAME}-macos-universal.app.zip"
+          # app 内更新：签名过的 tar.gz + latest.json（app 从 releases/latest/download/latest.json 检查新版本）
+          tarball="Firebee-${GITHUB_REF_NAME}-macos-universal.app.tar.gz"
+          cp "$app.tar.gz" "$out/$tarball"
+          notes="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="${GITHUB_REF_NAME}" --jq .body || true)"
+          jq -n \
+            --arg version "${GITHUB_REF_NAME#v}" \
+            --arg notes "$notes" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg sig "$(cat "$app.tar.gz.sig")" \
+            --arg url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$tarball" \
+            '{version: $version, notes: $notes, pub_date: $date, platforms: {
+               "darwin-aarch64": {signature: $sig, url: $url},
+               "darwin-x86_64": {signature: $sig, url: $url}}}' > "$out/latest.json"
           (cd "$out" && shasum -a 256 * > SHA256SUMS.txt)
           ls -la "$out"
       - name: Publish GitHub Release
@@ -60,13 +88,10 @@ jobs:
           body: |
             ## Install (macOS, Intel & Apple Silicon)
 
-            1. Download the `.dmg`, open it and drag **Firebee** to Applications.
-            2. The build is unsigned and not notarized, so on first launch macOS may say the app is damaged or from an unidentified developer. Clear the quarantine flag once:
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/install.sh | sh
+            ```
 
-               ```bash
-               xattr -dr com.apple.quarantine /Applications/Firebee.app
-               ```
-
-               On macOS 15 and later the old Control-click → Open trick no longer works; if you skip the command above, allow the app in System Settings → Privacy & Security → Open Anyway.
+            The script downloads this release, verifies `SHA256SUMS.txt` and installs to `/Applications`. The build is not notarized; files downloaded with curl carry no quarantine flag, so it opens without a Gatekeeper prompt. If you download the `.dmg` in a browser instead, run `xattr -dr com.apple.quarantine /Applications/Firebee.app` once after dragging it to Applications.
 
             Data lives in `~/Library/Application Support/firebee/`. Checksums are in `SHA256SUMS.txt`.

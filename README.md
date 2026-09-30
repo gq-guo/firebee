@@ -1,8 +1,25 @@
 # Firebee
 
-用 Rust + Tauri 编写的轻量桌面 API client（精简版 Postman）。设计目标：快、稳定、克制。
+[![CI](https://github.com/gq-guo/firebee/actions/workflows/ci.yml/badge.svg)](https://github.com/gq-guo/firebee/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/gq-guo/firebee)](https://github.com/gq-guo/firebee/releases/latest)
+[![License: 0BSD](https://img.shields.io/badge/license-0BSD-blue)](LICENSE)
 
-后端是 Rust（存储 / HTTP / 变量替换 / 导出），前端是零依赖的 HTML/CSS/JS（无 npm 工具链）。
+轻量、快速的桌面 API client，一个精简版 Postman。用 Rust + Tauri 编写，不用登录、不上云，数据全部存在本地 JSON。
+
+- **轻**：安装包约 10 MB，启动即用；前端是零依赖的 HTML/CSS/JS，没有 npm 工具链
+- **离线**：没有账号、没有同步、没有遥测，集合和环境都是本机上的普通文件
+- **兼容 Postman**：直接导入 Postman Collection v2.x / Environment，动态变量名字一致
+- **稳**：自动保存采用原子写入，文件损坏时自动备份；core 层有完整单测
+
+> 目前只发布 macOS 版本（Intel + Apple Silicon universal）。Tauri 本身跨平台，欢迎提 PR 补上 Windows / Linux 的打包。
+
+## 安装（macOS）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/install.sh | sh
+```
+
+脚本会下载最新 Release，校验 SHA256 后装到 `/Applications`。包没有经过 Apple 公证，但 curl 下载的文件不带 quarantine 标记，所以打开时不会被 Gatekeeper 拦截。也可以在 [Releases](https://github.com/gq-guo/firebee/releases) 手动下载 `.dmg`，拖进 Applications 后执行一次 `xattr -dr com.apple.quarantine /Applications/Firebee.app`。
 
 ## 功能
 
@@ -43,38 +60,26 @@
 - 三栏布局，分隔条可拖动，双击恢复；快捷键在菜单栏 Request 菜单可见：⌘↩ 发送、⌘N 新请求、⌘F 查找、⇧⌘F 过滤集合
 - 没有手动保存：每个请求都在集合里，任何改动防抖写入本地 JSON（写临时文件 → fsync → rename → fsync 目录，文件权限 0600，解析失败时备份为带时间戳的 .bak 且不覆盖旧备份）
 - 选中的环境记在本机，重启后还在
+- 自动更新：启动时和之后每 24 小时检查一次新版本，可以跳过该版本或稍后提醒；选择更新后在后台下载，下次启动生效（Firebee › Check for Updates… 可手动检查）
 
-## 运行
+## 从源码构建
+
+需要 Rust stable 和 Tauri CLI（`cargo install tauri-cli`）。
 
 ```bash
-cargo tauri dev        # 开发（需要 cargo install tauri-cli）
+git clone https://github.com/gq-guo/firebee.git && cd firebee
+cargo tauri dev        # 开发模式
 cargo run --release    # 直接运行（前端资源已编译进二进制）
+cargo tauri build      # 打包 .app
 ```
 
-## 测试
+## 数据位置
 
-```bash
-cargo test          # 56 个单元/集成测试（core 层全覆盖，http 用 wiremock）
-cargo clippy --all-targets -- -D warnings
-cargo fmt --all -- --check
-```
+macOS: `~/Library/Application Support/firebee/`
+- `collections.json` / `environments.json` / `history.json`（原子写入，损坏时自动备份为 .bak）
+- `firebee.log.*`（运行日志）
 
-## 发布
-
-版本号只维护在 `VERSION`，另外三处必须与之一致：`Cargo.toml` 的 `[package] version`、`tauri.conf.json` 的 `version`、`Cargo.lock` 里 `firebee` 包的 `version`。`scripts/check-version.sh` 会校验这四处（用真正的 JSON/TOML 解析，不是 grep），Release 工作流第一步就跑它。
-
-```bash
-# 1. 升版本：改 VERSION、Cargo.toml、tauri.conf.json，再同步 lock
-vim VERSION Cargo.toml tauri.conf.json
-cargo update -p firebee             # 同步 Cargo.lock
-scripts/check-version.sh            # 本地校验四处一致
-# 2. 提交合并到 master 后打 tag 推送，Release 工作流自动打包
-git tag v0.1.3 && git push origin v0.1.3
-```
-
-Release 工作流（`.github/workflows/release.yml`）的 `gate` 作业先校验版本号，再跑 `fmt` / `clippy` / `test`——tag 推送不触发 `ci.yml`（它只在 push master 和 PR 上跑），所以门禁必须在这里重跑一遍，否则测试挂了照样能发版。通过后才在 macOS runner 上构建 universal（Intel + Apple Silicon）的 `.dmg` / `.app.zip`，附 `SHA256SUMS.txt` 发布到 GitHub Release。tag 与版本号不一致时直接失败，不会产出包。
-
-本地打包：`cargo tauri build --target universal-apple-darwin` 得到 `.app`，再 `scripts/make-dmg.sh target/universal-apple-darwin/release/bundle/macos/Firebee.app Firebee.dmg` 生成 DMG（APFS，避开 macOS 26 上 HFS+ 的 hdiutil 问题）。包未经 Apple 公证，首次打开需 `xattr -dr com.apple.quarantine /Applications/Firebee.app` 或右键 → 打开。
+卸载时删掉 `/Applications/Firebee.app` 和上面这个目录即可。
 
 ## 架构
 
@@ -88,15 +93,21 @@ ui/
 tauri.conf.json · capabilities/ · build.rs · icons/
 ```
 
-前端选中集合中的请求后直接引用该对象，编辑即写回集合并防抖保存（egui 版编辑的是副本，不会回写）。
+前端选中集合中的请求后直接引用该对象，编辑即写回集合并防抖保存。
 
-## 数据位置
+## 参与贡献
 
-macOS: `~/Library/Application Support/firebee/`
-- `collections.json` / `environments.json` / `history.json`（原子写入，损坏自动备份为 .bak）
-- `firebee.log.*`（运行日志）
+欢迎提 Issue 和 PR。提交前请确保以下命令都能通过（CI 也会跑）：
 
-## 设计文档
+```bash
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
 
-- `docs/superpowers/specs/2025-09-16-firebee-api-client-design.md`
-- `docs/superpowers/plans/2025-09-16-firebee-api-client.md`
+- 发布流程见 [docs/RELEASING.md](docs/RELEASING.md)
+- 最初的设计文档在 [docs/superpowers/](docs/superpowers/)
+
+## 许可
+
+[0BSD](LICENSE)：随便用、随便改、随便分发，商用也可以，不需要保留署名。软件按原样提供，不附带任何担保。

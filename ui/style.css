@@ -344,6 +344,11 @@ mark.cur { background: var(--warn); color: var(--primary-fg); }
 #toast { position: fixed; right: 16px; bottom: 16px; z-index: var(--z-toast); display: flex; align-items: center; gap: 12px; background: var(--bg-popover); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; box-shadow: var(--shadow); max-width: 360px; font-size: 13px; animation: toast-in 150ms var(--ease); }
 #toast.error { box-shadow: var(--shadow), inset 3px 0 0 var(--err); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+/* 自动更新：弹窗里的更新说明 + 左下角后台下载进度 */
+.update-dialog { width: min(480px, 90vw); }
+#update-notes { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16rem; overflow: auto; font-size: 13px; color: var(--text-2); }
+#update-notes:empty { display: none; }
+#update-progress { position: fixed; left: 16px; bottom: 16px; z-index: var(--z-toast); background: var(--bg-popover); color: var(--text-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; box-shadow: var(--shadow); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; }
