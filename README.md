@@ -65,6 +65,14 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - 侧栏 + → Open project folder…：clone 下来的目录直接打开；git pull 后重启 Firebee 以目录为准
 - 环境变量不进项目目录（里面有 token）
 
+**命令行（`firebee-cli`，和 GUI 共用同一份请求定义）**
+```bash
+firebee-cli list -p ./api                                   # 列出项目目录里的请求
+firebee-cli send "Auth/Login" -p ./api --env dev --json     # 发一个，--env 用 app 里的环境（含钥匙串里的 secret）
+firebee-cli run -p ./api --env-file ci.env.json --var base=https://staging.x   # 按顺序全跑，Capture 的值传给后面的请求
+```
+不带 `-p` 读 app 自己的集合（`--collection NAME`）。`run` 有一个非 2xx/3xx 退出码 1，适合放 CI；`--json` 给脚本和 AI Agent 用。从源码 `cargo build --release --bin firebee-cli` 得到二进制。
+
 **界面**
 - 标签页：多个请求同时开着来回切，关了重开还在。⌘W 关标签，⌥⌘←/→ 切换，中键点标签也能关
 - 三栏布局，分隔条可拖动，双击恢复；快捷键在菜单栏 Request 菜单可见：⌘↩ 发送、⌘N 新请求、⌘F 查找、⇧⌘F 过滤集合
