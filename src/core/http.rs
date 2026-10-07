@@ -125,7 +125,10 @@ fn apply_net(
         "custom" if !net.proxy_url.trim().is_empty() => {
             let p = reqwest::Proxy::all(net.proxy_url.trim())
                 .map_err(|e| bad("Proxy URL", &e))?
-                .no_proxy(reqwest::NoProxy::from_string(&net.no_proxy));
+                // NoProxy 只认后缀 / CIDR / 裸 *；用户习惯写 *.internal，去掉 "*."
+                .no_proxy(reqwest::NoProxy::from_string(
+                    &net.no_proxy.replace("*.", "."),
+                ));
             b = b.proxy(p);
         }
         _ => {} // system：reqwest 的 system-proxy feature 自己读
@@ -393,36 +396,57 @@ pub async fn fetch_client_credentials(
     if !scope.trim().is_empty() {
         form.push(("scope", scope.trim()));
     }
-    let resp = client
-        .post(token_url.trim())
-        .basic_auth(client_id, Some(client_secret))
-        .form(&form)
-        .send()
-        .await
-        .map_err(|e| HttpError::Network(format!("OAuth2 token request: {e}")))?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-    let token = json.get("access_token").and_then(|v| v.as_str());
-    match token {
-        Some(t) if status.is_success() => Ok((
-            t.to_string(),
-            json.get("expires_in")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(3600),
-        )),
-        _ => {
-            let why = json
-                .get("error_description")
-                .or_else(|| json.get("error"))
-                .and_then(|v| v.as_str())
-                .map(str::to_owned)
-                .unwrap_or_else(|| text.chars().take(200).collect());
-            Err(HttpError::Network(format!(
-                "OAuth2 token request failed ({status}): {why}"
-            )))
+    // RFC 6749 要求服务端支持 Basic；但 Auth0 这类只收 body 里的 client_id/secret。
+    // 先 Basic，被拒（401/400 invalid_client）再用 body 重试一次
+    let mut last = None;
+    for in_body in [false, true] {
+        let mut req = client.post(token_url.trim());
+        let mut f = form.clone();
+        if in_body {
+            f.push(("client_id", client_id));
+            f.push(("client_secret", client_secret));
+        } else {
+            req = req.basic_auth(client_id, Some(client_secret));
+        }
+        let resp = req
+            .form(&f)
+            .send()
+            .await
+            .map_err(|e| HttpError::Network(format!("OAuth2 token request: {e}")))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        if let (true, Some(t)) = (
+            status.is_success(),
+            json.get("access_token").and_then(|v| v.as_str()),
+        ) {
+            // expires_in 规范是整数，实际有发 3599.0 和 "3600" 的
+            let ttl = json
+                .get("expires_in")
+                .and_then(|v| {
+                    v.as_f64()
+                        .map(|f| f as u64)
+                        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+                })
+                .unwrap_or(3600);
+            return Ok((t.to_string(), ttl));
+        }
+        let code = json.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        let why = json
+            .get("error_description")
+            .or_else(|| json.get("error"))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| text.chars().take(200).collect());
+        last = Some(HttpError::Network(format!(
+            "OAuth2 token request failed ({status}): {why}"
+        )));
+        let rejected_creds = status.as_u16() == 401 || code == "invalid_client";
+        if in_body || !rejected_creds {
+            break;
         }
     }
+    Err(last.unwrap())
 }
 
 async fn read_file(path: &str) -> Result<Vec<u8>, HttpError> {
@@ -683,6 +707,41 @@ mod multipart_tests {
     }
 
     #[tokio::test]
+    async fn client_credentials_retries_in_body_and_parses_float_expires() {
+        use wiremock::matchers::{body_string_contains, header_exists};
+        let server = MockServer::start().await;
+        // Basic 被拒
+        Mock::given(method("POST"))
+            .and(header_exists("authorization"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_raw(r#"{"error":"invalid_client"}"#, "application/json"),
+            )
+            .mount(&server)
+            .await;
+        // body 里带凭据才给
+        Mock::given(method("POST"))
+            .and(body_string_contains("client_secret=s3"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                r#"{"access_token":"ok","expires_in":299.0}"#,
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+        let (tok, ttl) = fetch_client_credentials(
+            &server.uri(),
+            "id",
+            "s3",
+            "",
+            Duration::from_secs(5),
+            &Net::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!((tok.as_str(), ttl), ("ok", 299));
+    }
+
+    #[tokio::test]
     async fn client_credentials_error_is_readable() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -936,7 +995,8 @@ mod tests {
             .respond_with(ResponseTemplate::new(200))
             .mount(&server)
             .await;
-        let jar: Arc<dyn reqwest::cookie::CookieStore> = Arc::new(reqwest::cookie::Jar::default());
+        let jar: Arc<dyn reqwest::cookie::CookieStore> =
+            Arc::new(crate::core::cookies::Cookies::default());
         let mut login = Request::new("l");
         login.url = format!("{}/login", server.uri());
         execute(

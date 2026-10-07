@@ -36,6 +36,7 @@ async fn resolve_oauth(
     tokens: &Tokens,
     timeout: Duration,
     net: &Net,
+    mut cancel: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let Auth::OAuth2 {
         token_url,
@@ -46,7 +47,8 @@ async fn resolve_oauth(
     else {
         return Ok(());
     };
-    let key = format!("{token_url}\n{client_id}\n{scope}");
+    // secret 也进 key：换了 secret 不能还拿旧 token；map 只在内存，不怕
+    let key = format!("{token_url}\n{client_id}\n{client_secret}\n{scope}");
     let cached = tokens
         .0
         .lock()
@@ -57,10 +59,12 @@ async fn resolve_oauth(
     let token = match cached {
         Some(t) => t,
         None => {
-            let (t, ttl) =
-                fetch_client_credentials(token_url, client_id, client_secret, scope, timeout, net)
-                    .await
-                    .map_err(|e| e.to_string())?;
+            let fetch =
+                fetch_client_credentials(token_url, client_id, client_secret, scope, timeout, net);
+            let (t, ttl) = tokio::select! {
+                r = fetch => r.map_err(|e| e.to_string())?,
+                _ = cancel.wait_for(|c| *c) => return Err("Request cancelled".into()),
+            };
             // 提前 30 秒当过期，别拿着快过期的 token 去撞 401
             let exp =
                 std::time::Instant::now() + Duration::from_secs(ttl.saturating_sub(30).max(1));
@@ -87,7 +91,7 @@ pub struct ResponseDto {
     body: String,
     body_base64: Option<String>,
     duration_ms: u128,
-    ttfb_ms: u128,
+    ttfb_ms: Option<u128>,
     size_bytes: usize,
     redirects: Vec<String>,
 }
@@ -178,9 +182,13 @@ pub async fn send_request(
     let request = merge_inherited(&request, &inherited.unwrap_or_default());
     let (mut req, _) = substitute_request(&request, &vars(&env));
     let timeout = Duration::from_secs(timeout_secs.max(1));
-    resolve_oauth(&mut req, &tokens, timeout, &net).await?;
     let (tx, rx) = watch::channel(false);
+    // 先登记再取 token：取 token 期间点 Cancel 也要能停
     pending.0.lock().unwrap().insert(job_id, tx);
+    if let Err(e) = resolve_oauth(&mut req, &tokens, timeout, &net, rx.clone()).await {
+        pending.0.lock().unwrap().remove(&job_id);
+        return Err(e);
+    }
     let jar: Arc<dyn reqwest::cookie::CookieStore> = cookies.0.clone();
     // SSE / NDJSON：每个 chunk 立刻推给界面（事件 "stream"），完整响应仍走返回值
     let on_stream = Box::new(move |ev: StreamEvent| {
@@ -220,7 +228,7 @@ pub async fn send_request(
                 body,
                 body_base64,
                 duration_ms: r.duration_ms,
-                ttfb_ms: r.ttfb_ms,
+                ttfb_ms: Some(r.ttfb_ms),
                 size_bytes: r.size_bytes,
                 redirects: r.redirects,
             }
@@ -254,11 +262,11 @@ pub fn final_request(
     if let Auth::OAuth2 {
         token_url,
         client_id,
+        client_secret,
         scope,
-        ..
     } = &req.auth
     {
-        let key = format!("{token_url}\n{client_id}\n{scope}");
+        let key = format!("{token_url}\n{client_id}\n{client_secret}\n{scope}");
         if let Some((t, _)) = tokens.0.lock().unwrap().get(&key) {
             req.auth = Auth::Bearer { token: t.clone() };
         }

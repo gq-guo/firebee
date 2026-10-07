@@ -385,8 +385,9 @@ pub struct StoredResponse {
     pub headers: Vec<(String, String)>,
     pub body: String,
     pub duration_ms: u128,
-    #[serde(default)]
-    pub ttfb_ms: u128,
+    /// 老历史没有这个字段：None，界面不显示 TTFB
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttfb_ms: Option<u128>,
     pub size_bytes: usize,
     #[serde(default)]
     pub truncated: bool,

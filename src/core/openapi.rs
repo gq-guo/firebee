@@ -25,9 +25,23 @@ pub fn to_collection(v: &Value) -> (Collection, Option<Environment>) {
     c.auth = security(v, v3);
 
     let base = if v3 {
+        // server URL 模板 {region} 用 variables 的 default / enum[0] 填上
         v.pointer("/servers/0/url")
             .and_then(Value::as_str)
-            .map(str::to_owned)
+            .map(|u| {
+                let mut url = u.to_string();
+                if let Some(vars) = v.pointer("/servers/0/variables").and_then(Value::as_object) {
+                    for (name, def) in vars {
+                        let val = def
+                            .get("default")
+                            .or_else(|| def.pointer("/enum/0"))
+                            .map(scalar)
+                            .unwrap_or_default();
+                        url = url.replace(&format!("{{{name}}}"), &val);
+                    }
+                }
+                url
+            })
     } else {
         v.get("host").and_then(Value::as_str).map(|h| {
             let scheme = v
@@ -125,8 +139,21 @@ fn request(
         .cloned()
         .unwrap_or_default();
     let mut body_schema: Option<Value> = None;
-    for p in shared.iter().chain(own.iter()) {
-        let p = resolve(root, p);
+    // 同 name+in 的参数，operation 级覆盖 path 级
+    let ident = |p: &Value| {
+        (
+            p.get("name").and_then(Value::as_str).map(str::to_owned),
+            p.get("in").and_then(Value::as_str).map(str::to_owned),
+        )
+    };
+    let own: Vec<Value> = own.iter().map(|p| resolve(root, p)).collect();
+    let mut params: Vec<Value> = shared
+        .iter()
+        .map(|p| resolve(root, p))
+        .filter(|p| !own.iter().any(|o| ident(o) == ident(p)))
+        .collect();
+    params.extend(own);
+    for p in params {
         let (Some(name), Some(loc)) = (
             p.get("name").and_then(Value::as_str),
             p.get("in").and_then(Value::as_str),
@@ -191,11 +218,15 @@ fn request(
                 }
             } else {
                 body_schema = Some(media.get("schema").cloned().unwrap_or(Value::Null));
-                if let Some(ex) = media
-                    .get("example")
-                    .cloned()
-                    .or_else(|| media.pointer("/examples/0/value").cloned())
-                {
+                if let Some(ex) = media.get("example").cloned().or_else(|| {
+                    // examples 是 map，不是数组：拿第一个的 value
+                    media
+                        .get("examples")
+                        .and_then(Value::as_object)
+                        .and_then(|m| m.values().next())
+                        .and_then(|e| e.get("value"))
+                        .cloned()
+                }) {
                     req.body_type = BodyType::Json;
                     req.body = serde_json::to_string_pretty(&ex).unwrap_or_default();
                     body_schema = None;
@@ -228,9 +259,15 @@ fn resolve(root: &Value, v: &Value) -> Value {
 
 /// 按 schema 造一个示例值：example > default > enum[0] > 按 type 给占位。递归封顶 6 层，防止自引用。
 fn example(root: &Value, schema: &Value, depth: usize) -> Value {
-    if depth > 6 {
+    example_budget(root, schema, depth, &mut 2000)
+}
+
+/// budget：总共最多造这么多节点。深度封顶只管深不管宽，10 个属性互相 $ref 就是 10^6 个节点。
+fn example_budget(root: &Value, schema: &Value, depth: usize, budget: &mut usize) -> Value {
+    if depth > 6 || *budget == 0 {
         return Value::Null;
     }
+    *budget -= 1;
     let s = resolve(root, schema);
     for k in ["example", "default"] {
         if let Some(v) = s.get(k) {
@@ -244,7 +281,7 @@ fn example(root: &Value, schema: &Value, depth: usize) -> Value {
     if let Some(parts) = s.get("allOf").and_then(Value::as_array) {
         let mut m = Map::new();
         for p in parts {
-            if let Value::Object(o) = example(root, p, depth + 1) {
+            if let Value::Object(o) = example_budget(root, p, depth + 1, budget) {
                 m.extend(o);
             }
         }
@@ -252,7 +289,7 @@ fn example(root: &Value, schema: &Value, depth: usize) -> Value {
     }
     for k in ["oneOf", "anyOf"] {
         if let Some(first) = s.pointer(&format!("/{k}/0")) {
-            return example(root, first, depth + 1);
+            return example_budget(root, first, depth + 1, budget);
         }
     }
     let ty = s
@@ -268,7 +305,10 @@ fn example(root: &Value, schema: &Value, depth: usize) -> Value {
             let mut m = Map::new();
             if let Some(props) = s.get("properties").and_then(Value::as_object) {
                 for (k, ps) in props {
-                    m.insert(k.clone(), example(root, ps, depth + 1));
+                    if *budget == 0 {
+                        break; // 预算用完就截断，别再往外吐一堆 key: null
+                    }
+                    m.insert(k.clone(), example_budget(root, ps, depth + 1, budget));
                 }
             }
             Value::Object(m)
@@ -467,6 +507,44 @@ paths:
         assert_eq!(r.body_type, BodyType::Json);
         assert_eq!(serde_json::from_str::<Value>(&r.body).unwrap()["id"], 0);
         assert_eq!(r.params[0].value, "false");
+    }
+
+    #[test]
+    fn operation_param_overrides_path_param_and_examples_map_is_used() {
+        let v = json!({ "openapi": "3.0.0",
+            "servers": [{ "url": "https://{region}.api.io/{ver}", "variables": { "region": { "default": "eu" }, "ver": { "enum": ["v2", "v1"] } } }],
+            "paths": { "/x": {
+                "parameters": [{ "name": "limit", "in": "query", "schema": { "default": 20 } }, { "name": "q", "in": "query" }],
+                "post": {
+                    "parameters": [{ "name": "limit", "in": "query", "required": true, "schema": { "default": 100 } }],
+                    "requestBody": { "content": { "application/json": {
+                        "schema": { "type": "object" },
+                        "examples": { "basic": { "value": { "hello": "world" } } } } } }
+                } } } });
+        let (c, env) = to_collection(&v);
+        assert_eq!(env.unwrap().variables[0].value, "https://eu.api.io/v2");
+        let r = &c.requests[0];
+        let limits: Vec<_> = r.params.iter().filter(|p| p.key == "limit").collect();
+        assert_eq!(limits.len(), 1);
+        assert_eq!((limits[0].value.as_str(), limits[0].enabled), ("100", true));
+        assert!(r.params.iter().any(|p| p.key == "q"));
+        assert_eq!(
+            serde_json::from_str::<Value>(&r.body).unwrap()["hello"],
+            "world"
+        );
+    }
+
+    #[test]
+    fn wide_self_reference_is_bounded() {
+        let props: Map<String, Value> = (0..12)
+            .map(|i| (format!("p{i}"), json!({ "$ref": "#/components/schemas/N" })))
+            .collect();
+        let v = json!({ "openapi": "3.0.0", "components": { "schemas": { "N": { "type": "object", "properties": props } } },
+            "paths": { "/n": { "post": { "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/N" } } } } } } } });
+        let t = std::time::Instant::now();
+        let (c, _) = to_collection(&v);
+        assert!(t.elapsed() < std::time::Duration::from_secs(1));
+        assert!(c.requests[0].body.len() < 200_000);
     }
 
     #[test]
