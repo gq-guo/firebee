@@ -264,10 +264,13 @@ fn example(root: &Value, schema: &Value, depth: usize) -> Value {
 
 /// budget：总共最多造这么多节点。深度封顶只管深不管宽，10 个属性互相 $ref 就是 10^6 个节点。
 fn example_budget(root: &Value, schema: &Value, depth: usize, budget: &mut usize) -> Value {
-    if depth > 6 || *budget == 0 {
+    if *budget == 0 {
         return Value::Null;
     }
-    *budget -= 1;
+    *budget -= 1; // 深度截断出来的 null 也算一个节点，不然宽对象在第 7 层还是会吐一堆 key
+    if depth > 6 {
+        return Value::Null;
+    }
     let s = resolve(root, schema);
     for k in ["example", "default"] {
         if let Some(v) = s.get(k) {
@@ -544,7 +547,11 @@ paths:
         let t = std::time::Instant::now();
         let (c, _) = to_collection(&v);
         assert!(t.elapsed() < std::time::Duration::from_secs(1));
-        assert!(c.requests[0].body.len() < 200_000);
+        assert!(
+            c.requests[0].body.len() < 200_000,
+            "len={}",
+            c.requests[0].body.len()
+        );
     }
 
     #[test]
