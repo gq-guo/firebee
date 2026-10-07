@@ -699,6 +699,10 @@ function inheritedHeaders(r) {
 /** 链上生效的 auth（最内层非 None）；请求自己设了就返回 null */
 function inheritedAuth(r) {
   if (r.auth !== 'None' && r.auth !== 'Off') return null; // 自己设了具体认证
+  return chainAuth(r);
+}
+/** 链上最内层的 auth，不管请求自己有没有覆盖——Auth 标签的选项要按它定（Inherit / No auth 是否出现） */
+function chainAuth(r) {
   return [...(chainFor(r) || [])].reverse().find((l) => l.auth !== 'None')?.auth || null;
 }
 
@@ -938,6 +942,7 @@ function renderRequest() {
       ? `${authKind(ia)} auth from the collection or folder is turned off for this request. Inherited Authorization, Cookie and Proxy-Authorization headers are dropped too; other inherited headers still apply.`
       : 'No credentials are sent. Inherited Authorization, Cookie and Proxy-Authorization headers are dropped; other inherited headers still apply.'));
     else if (ia) body.append(h('div', { class: 'helper' }, `Inheriting ${authKind(ia)} auth from the collection or folder. Pick another option to override it, or “No auth” to send nothing.`));
+    else if (chainAuth(current)) body.append(h('div', { class: 'helper' }, `Overriding the ${authKind(chainAuth(current))} auth from the collection or folder. Pick “Inherit” to use that instead.`));
     body.append(authEditor());
   }
 }
@@ -1088,7 +1093,7 @@ const authKind = (a) => (typeof a === 'string' ? a : Object.keys(a)[0]); // 'Non
 /** container=true 时是集合 / 文件夹的编辑器：那里没有"继承"，也就没有 Off */
 function authEditor(obj = current, rerender = renderRequest, container = false) {
   const kind = authKind(obj.auth);
-  const inh = container ? null : inheritedAuth(obj);
+  const inh = container ? null : chainAuth(obj); // 自己设了 Basic 时也要知道上层有东西，选项才不会来回变
   // 有东西可继承时，None 的语义就是"跟随上层"，标签跟着变；并多给一个明确不带凭据的选项
   const opts = [['None', inh ? 'Inherit' : 'None'],
     ...(inh || kind === 'Off' ? [['Off', 'No auth']] : []), // 已经是 Off 就一直显示，否则会四个都不选中
