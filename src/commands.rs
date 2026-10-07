@@ -112,6 +112,8 @@ pub struct SendOptions {
     pub inherited: Option<Vec<Inherited>>,
     #[serde(default)]
     pub follow_redirects: Option<bool>,
+    #[serde(default)]
+    pub insecure: bool,
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -127,6 +129,7 @@ pub async fn send_request(
         timeout_secs,
         inherited,
         follow_redirects,
+        insecure,
     } = options;
     let request = merge_inherited(&request, &inherited.unwrap_or_default());
     let (req, _) = substitute_request(&request, &vars(&env));
@@ -139,6 +142,7 @@ pub async fn send_request(
         rx,
         Some(jar),
         follow_redirects.unwrap_or(true),
+        insecure,
     )
     .await;
     pending.0.lock().unwrap().remove(&job_id);

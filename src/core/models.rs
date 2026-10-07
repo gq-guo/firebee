@@ -41,6 +41,9 @@ pub struct KeyValue {
     pub enabled: bool,
     pub key: String,
     pub value: String,
+    /// 仅 Multipart body 用：true 时 value 是本机文件路径，作为文件 part 发送
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_file: bool,
 }
 
 impl KeyValue {
@@ -49,6 +52,7 @@ impl KeyValue {
             enabled: true,
             key: key.into(),
             value: value.into(),
+            is_file: false,
         }
     }
 }
@@ -59,6 +63,10 @@ pub enum BodyType {
     Json,
     Text,
     Form,
+    /// multipart/form-data：form 里 is_file 的行按文件发
+    Multipart,
+    /// body 是本机文件路径，整个文件作为 body 原样发送
+    Binary,
     /// body 是 GraphQL query，变量在 graphql_variables；发送时组装成 JSON
     GraphQL,
 }
@@ -268,6 +276,7 @@ pub fn merge_inherited(req: &Request, chain: &[Inherited]) -> Request {
                 enabled: true,
                 key: h.key.trim().to_string(),
                 value: h.value.clone(),
+                is_file: false,
             })
             .collect();
         headers.retain(|kept| {
@@ -486,6 +495,7 @@ mod tests {
                     enabled: false,
                     key: "X-Off".into(),
                     value: "x".into(),
+                    is_file: false,
                 },
             ],
             auth: Auth::None,
@@ -728,6 +738,7 @@ mod tests {
                     enabled: false,
                     key: "skip".into(),
                     value: "x".into(),
+                    is_file: false,
                 },
                 KeyValue::new("", "no-key"),
             ],

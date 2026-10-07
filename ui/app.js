@@ -27,6 +27,7 @@ function setActiveEnv(id) {
 }
 const pref = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch { return d; } };
 let followRedirects = pref('firebee.follow', true);
+let insecure = pref('firebee.insecure', false);
 // 主题：'light' | 'dark' | 'system'。<html data-theme> 永远是解析后的 light / dark
 let theme = (() => { try { return localStorage.getItem('firebee.theme') || 'system'; } catch { return 'system'; } })();
 const lightMq = matchMedia('(prefers-color-scheme: light)');
@@ -195,7 +196,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 /** 通用 key-value 表格；增删行时调 rerender 重建，输入只写模型不重绘（保焦点）。 */
-function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = null } = {}) {
+function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = null, files = false } = {}) {
   const table = h('table', { class: 'kv' });
   const listFor = (key) => (valList && /^(content-type|accept)$/i.test(key.trim()) ? valList : null);
   // 最后一行永远是空白"幽灵行"：一敲字就变成真实行并追加新的幽灵行，不用点 Add
@@ -212,12 +213,23 @@ function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = n
     };
     const val = h('input', { placeholder: valHint, value: ghost ? '' : r.value, 'aria-label': valHint, spellcheck: 'false', list: ghost ? null : listFor(r.key),
       oninput: (e) => { if (ghost) return promote('value', e.target.value); r.value = e.target.value; dirty(); } });
+    // 文件行：值是本机路径，用系统文件框选；Text/File 按钮切换
+    const fileCell = () => h('span', { class: 'row' },
+      btn(r.value ? r.value.split('/').pop() : 'Choose file…', async () => {
+        const path = await dialog.open({ multiple: false });
+        if (path) { r.value = path; dirty(); rerender(); }
+      }, 'small').withAttr('title', r.value || ''),
+      r.value ? h('span', { class: 'muted' }, r.value) : null);
+    const typeBtn = !files || ghost ? null : btn(r.is_file ? 'File' : 'Text', () => {
+      r.is_file = !r.is_file; r.value = ''; dirty(); rerender();
+    }, 'small ghost').withAttr('aria-label', 'Field type');
     const tr = h('tr', { class: ghost ? 'ghost' : (r.enabled ? '' : 'off') },
       h('td', { class: 'ctl' }, h('input', { type: 'checkbox', checked: ghost ? false : r.enabled, 'aria-label': 'Enabled', tabindex: ghost ? -1 : null,
         onchange: (e) => { if (ghost) return; r.enabled = e.target.checked; tr.classList.toggle('off', !r.enabled); dirty(); renderTabCounts(); } })),
       h('td', { class: 'key' }, h('input', { placeholder: keyHint, value: ghost ? '' : r.key, 'aria-label': keyHint, spellcheck: 'false', list: keyList,
         oninput: (e) => { if (ghost) return promote('key', e.target.value); r.key = e.target.value; const l = listFor(r.key); l ? val.setAttribute('list', l) : val.removeAttribute('list'); dirty(); renderTabCounts(); } })),
-      h('td', { class: 'val' }, val),
+      files ? h('td', { class: 'ctl type' }, typeBtn) : null,
+      h('td', { class: 'val' }, !ghost && r.is_file ? fileCell() : val),
       h('td', { class: 'ctl' }, ghost ? null : btn('×', () => { rows.splice(i, 1); dirty(); rerender(); renderTabCounts(); }, 'small ghost').withAttr('aria-label', 'Remove row')),
     );
     table.append(tr);
@@ -805,10 +817,10 @@ function renderRequestHeader() {
 function renderTabCounts() {
   const count = (rows) => rows.filter((r) => r.enabled && r.key).length;
   const n = { params: count(current.params), headers: count(current.headers),
-    body: current.body_type === 'None' ? 0 : current.body_type === 'Form' ? count(current.form) : (current.body.trim() ? 1 : 0),
+    body: current.body_type === 'None' ? 0 : ['Form', 'Multipart'].includes(current.body_type) ? count(current.form) : (current.body.trim() ? 1 : 0),
     auth: current.auth === 'None' ? 0 : 1, capture: count(current.captures || []) };
   document.querySelectorAll('[data-req]').forEach((b) => {
-    const key = b.dataset.req, countable = key === 'params' || key === 'headers' || key === 'capture' || (key === 'body' && current.body_type === 'Form');
+    const key = b.dataset.req, countable = key === 'params' || key === 'headers' || key === 'capture' || (key === 'body' && ['Form', 'Multipart'].includes(current.body_type));
     const label = key === 'body' && isGql(current) ? 'Query' : key[0].toUpperCase() + key.slice(1);
     put(b, label, n[key] ? h('span', { class: countable ? 'n' : 'n dot' }, countable ? n[key] : '•') : null);
     if (key === 'capture') b.classList.toggle('hidden', !n.capture && reqTab !== 'capture');
@@ -864,7 +876,7 @@ function graphqlEditor() {
 
 function bodyEditor() {
   if (isGql(current)) return graphqlEditor();
-  const wrap = h('div', { class: 'fill' }, radios('body_type', [['None', 'None'], ['Json', 'JSON'], ['Text', 'Text'], ['Form', 'Form']],
+  const wrap = h('div', { class: 'fill' }, radios('body_type', [['None', 'None'], ['Json', 'JSON'], ['Text', 'Text'], ['Form', 'Form'], ['Multipart', 'Multipart'], ['Binary', 'Binary']],
     current.body_type, (v) => { current.body_type = v; dirty(); renderRequest(); }));
   if (current.body_type === 'Json' || current.body_type === 'Text') {
     const helper = h('div', { class: 'helper' });
@@ -879,6 +891,19 @@ function bodyEditor() {
     }
   } else if (current.body_type === 'Form') {
     wrap.append(kvTable(current.form, 'Field', 'Value', renderRequest));
+  } else if (current.body_type === 'Multipart') {
+    wrap.append(h('div', { class: 'helper' }, 'Sent as multipart/form-data. Switch a field to File to attach a file from disk.'),
+      kvTable(current.form, 'Field', 'Value', renderRequest, { files: true }));
+  } else if (current.body_type === 'Binary') {
+    const name = current.body.trim();
+    wrap.append(h('div', { class: 'row' },
+      btn(name ? name.split('/').pop() : 'Choose file…', async () => {
+        const path = await dialog.open({ multiple: false });
+        if (path) { current.body = path; dirty(); renderRequest(); renderTabCounts(); }
+      }, 'small'),
+      name ? h('span', { class: 'muted' }, name) : null,
+      name ? btn('×', () => { current.body = ''; dirty(); renderRequest(); renderTabCounts(); }, 'small ghost').withAttr('aria-label', 'Clear file') : null),
+      h('div', { class: 'helper' }, 'The whole file is sent as the request body. Set Content-Type in Headers if the server needs it.'));
   }
   return wrap;
 }
@@ -969,7 +994,7 @@ async function send() {
   let status = null, duration_ms = null, result;
   try {
     const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(),
-      options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, follow_redirects: followRedirects } });
+      options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, follow_redirects: followRedirects, insecure } });
     result = { ok: r }; status = r.status; duration_ms = r.duration_ms;
   } catch (e) {
     result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
@@ -1527,6 +1552,11 @@ function bind() {
   for (const ev of ['input', 'change']) $('#req-body').addEventListener(ev, () => { if (reqTab === 'params' || reqTab === 'auth') renderResolved(); });
   $('#theme-btn').onclick = (e) => openMenu(e, [['Light', 'light'], ['Dark', 'dark'], ['System', 'system']].map(([label, v]) =>
     [label, () => setTheme(v), { kbd: theme === v ? '✓' : '' }]));
+  $('#insecure').checked = insecure;
+  $('#insecure').onchange = (e) => {
+    insecure = e.target.checked;
+    try { localStorage.setItem('firebee.insecure', insecure ? '1' : '0'); } catch { /* private mode */ }
+  };
   $('#follow').checked = followRedirects;
   $('#follow').onchange = (e) => {
     followRedirects = e.target.checked;

@@ -56,6 +56,7 @@ pub async fn execute(
     cancel: tokio::sync::watch::Receiver<bool>,
     jar: Option<Arc<reqwest::cookie::Jar>>,
     follow_redirects: bool,
+    insecure: bool,
 ) -> Result<ResponseMeta, HttpError> {
     let url = build_url(req)?;
     // 跟过的重定向记下来给界面显示 —— 否则"到底跳去哪了"完全看不见
@@ -68,8 +69,10 @@ pub async fn execute(
     // X-API-Key 这类自定义鉴权头会原样发给新 host；一个被控制的接口用 302
     // 就能把密钥取走。跨 host 时停下来，把 3xx 和 Location 交给用户自己看。
     let rec = trail.clone();
+    // insecure：跳过证书校验，自签名 / 内网测试环境用；默认关
     let mut builder = reqwest::Client::builder()
         .timeout(timeout)
+        .danger_accept_invalid_certs(insecure)
         .referer(false)
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if !follow_redirects {
@@ -141,6 +144,22 @@ pub async fn execute(
                 .collect();
             builder = builder.form(&form);
         }
+        BodyType::Multipart => {
+            let mut form = reqwest::multipart::Form::new();
+            for f in req.form.iter().filter(|f| f.enabled && !f.key.is_empty()) {
+                form = if f.is_file {
+                    form.part(f.key.clone(), file_part(&f.value).await?)
+                } else {
+                    form.text(f.key.clone(), f.value.clone())
+                };
+            }
+            builder = builder.multipart(form);
+        }
+        BodyType::Binary => {
+            if !req.body.trim().is_empty() {
+                builder = builder.body(read_file(req.body.trim()).await?);
+            }
+        }
         BodyType::GraphQL => {
             builder = builder.body(req.graphql_payload().map_err(HttpError::InvalidBody)?);
         }
@@ -180,6 +199,82 @@ pub async fn execute(
         duration_ms,
         redirects,
     })
+}
+
+async fn read_file(path: &str) -> Result<Vec<u8>, HttpError> {
+    tokio::fs::read(path)
+        .await
+        .map_err(|e| HttpError::InvalidBody(format!("{path}: {e}")))
+}
+
+/// 文件 part：文件名取路径最后一段，MIME 按扩展名猜（猜不到就 application/octet-stream）
+async fn file_part(path: &str) -> Result<reqwest::multipart::Part, HttpError> {
+    let bytes = read_file(path).await?;
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    Ok(reqwest::multipart::Part::bytes(bytes).file_name(name))
+}
+
+#[cfg(test)]
+mod multipart_tests {
+    use super::*;
+    use crate::core::models::{HttpMethod, KeyValue};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn multipart_sends_text_and_file_parts() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/up"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let fp = dir.path().join("hello.txt");
+        std::fs::write(&fp, b"hi there").unwrap();
+        let mut r = Request::new("up");
+        r.method = HttpMethod::Post;
+        r.url = format!("{}/up", server.uri());
+        r.body_type = BodyType::Multipart;
+        r.form = vec![KeyValue::new("name", "bob"), {
+            let mut f = KeyValue::new("doc", fp.to_string_lossy());
+            f.is_file = true;
+            f
+        }];
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        drop(tx);
+        execute(&r, Duration::from_secs(5), rx, None, true, false)
+            .await
+            .unwrap();
+        let req = &server.received_requests().await.unwrap()[0];
+        let ct = req.headers.get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.starts_with("multipart/form-data; boundary="), "{ct}");
+        let body = String::from_utf8_lossy(&req.body);
+        assert!(body.contains("name=\"name\"\r\n\r\nbob"), "{body}");
+        assert!(
+            body.contains("name=\"doc\"; filename=\"hello.txt\""),
+            "{body}"
+        );
+        assert!(body.contains("hi there"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn binary_missing_file_is_invalid_body() {
+        let mut r = Request::new("b");
+        r.method = HttpMethod::Post;
+        r.url = "http://127.0.0.1:1/x".into();
+        r.body_type = BodyType::Binary;
+        r.body = "/nonexistent/file.bin".into();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        drop(tx);
+        let err = execute(&r, Duration::from_secs(5), rx, None, true, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, HttpError::InvalidBody(_)), "{err:?}");
+    }
 }
 
 async fn wait_cancelled(mut rx: tokio::sync::watch::Receiver<bool>) {
@@ -234,7 +329,7 @@ mod tests {
         req.url = format!("{}/users", server.uri());
         req.params = vec![KeyValue::new("page", "1")];
         req.headers = vec![KeyValue::new("x-token", "abc")];
-        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None, true)
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None, true, false)
             .await
             .unwrap();
         assert_eq!(resp.status, 200);
@@ -264,7 +359,7 @@ mod tests {
         req.auth = Auth::Bearer {
             token: "t123".into(),
         };
-        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None, true)
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None, true, false)
             .await
             .unwrap();
         assert_eq!(resp.status, 201);
@@ -290,7 +385,7 @@ mod tests {
         req.headers = vec![KeyValue::new("Content-Type", "application/json")];
         req.body = "{ me { id } }".into();
         req.graphql_variables = r#"{"a": 1}"#.into();
-        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None, true)
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None, true, false)
             .await
             .unwrap();
         assert_eq!(resp.status, 200);
@@ -313,7 +408,7 @@ mod tests {
             value: "k9".into(),
             in_query: true,
         };
-        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None, true)
+        let resp = execute(&req, Duration::from_secs(5), no_cancel(), None, true, false)
             .await
             .unwrap();
         assert_eq!(resp.status, 200);
@@ -329,9 +424,16 @@ mod tests {
 
         let mut req = Request::new("t");
         req.url = server.uri();
-        let err = execute(&req, Duration::from_millis(100), no_cancel(), None, true)
-            .await
-            .unwrap_err();
+        let err = execute(
+            &req,
+            Duration::from_millis(100),
+            no_cancel(),
+            None,
+            true,
+            false,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, HttpError::Timeout(_)));
     }
 
@@ -346,10 +448,9 @@ mod tests {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let mut req = Request::new("t");
         req.url = server.uri();
-        let handle =
-            tokio::spawn(
-                async move { execute(&req, Duration::from_secs(10), rx, None, true).await },
-            );
+        let handle = tokio::spawn(async move {
+            execute(&req, Duration::from_secs(10), rx, None, true, false).await
+        });
         tokio::time::sleep(Duration::from_millis(50)).await;
         tx.send(true).unwrap();
         let err = handle.await.unwrap().unwrap_err();
@@ -360,7 +461,7 @@ mod tests {
     async fn invalid_url_error() {
         let mut req = Request::new("t");
         req.url = "not a url".into();
-        let err = execute(&req, Duration::from_secs(5), no_cancel(), None, true)
+        let err = execute(&req, Duration::from_secs(5), no_cancel(), None, true, false)
             .await
             .unwrap_err();
         assert!(matches!(err, HttpError::InvalidUrl(_)));
@@ -370,7 +471,7 @@ mod tests {
     async fn connection_refused_is_network_error() {
         let mut req = Request::new("t");
         req.url = "http://127.0.0.1:1/".into();
-        let err = execute(&req, Duration::from_secs(2), no_cancel(), None, true)
+        let err = execute(&req, Duration::from_secs(2), no_cancel(), None, true, false)
             .await
             .unwrap_err();
         assert!(matches!(err, HttpError::Network(_)));
@@ -399,14 +500,22 @@ mod tests {
             no_cancel(),
             Some(jar.clone()),
             true,
+            false,
         )
         .await
         .unwrap();
         let mut me = Request::new("m");
         me.url = format!("{}/me", server.uri());
-        let resp = execute(&me, Duration::from_secs(5), no_cancel(), Some(jar), true)
-            .await
-            .unwrap();
+        let resp = execute(
+            &me,
+            Duration::from_secs(5),
+            no_cancel(),
+            Some(jar),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(resp.status, 200);
     }
 
@@ -425,7 +534,7 @@ mod tests {
             .await;
         let mut r = Request::new("r");
         r.url = format!("{}/old", server.uri());
-        let resp = execute(&r, Duration::from_secs(5), no_cancel(), None, true)
+        let resp = execute(&r, Duration::from_secs(5), no_cancel(), None, true, false)
             .await
             .unwrap();
         assert_eq!(resp.status, 200);
@@ -453,7 +562,7 @@ mod tests {
         let mut r = Request::new("r");
         r.url = format!("{}/a", server.uri());
 
-        let followed = execute(&r, Duration::from_secs(5), no_cancel(), None, true)
+        let followed = execute(&r, Duration::from_secs(5), no_cancel(), None, true, false)
             .await
             .unwrap();
         assert_eq!(followed.status, 200);
@@ -462,7 +571,7 @@ mod tests {
         assert!(followed.redirects[1].ends_with("/c"));
 
         // 关掉之后停在第一个 3xx，界面自己显示 Location
-        let stopped = execute(&r, Duration::from_secs(5), no_cancel(), None, false)
+        let stopped = execute(&r, Duration::from_secs(5), no_cancel(), None, false, false)
             .await
             .unwrap();
         assert_eq!(stopped.status, 302);
@@ -483,7 +592,7 @@ mod tests {
         let mut r = Request::new("r");
         r.url = api.uri();
         r.headers = vec![KeyValue::new("X-API-Key", "super-secret")];
-        let resp = execute(&r, Duration::from_secs(5), no_cancel(), None, true)
+        let resp = execute(&r, Duration::from_secs(5), no_cancel(), None, true, false)
             .await
             .unwrap();
         assert_eq!(resp.status, 302, "跨 host 的重定向不应该被跟随");
@@ -503,6 +612,7 @@ mod tests {
                 enabled: false,
                 key: "b".into(),
                 value: "2".into(),
+                is_file: false,
             },
             KeyValue::new("", "skip"),
         ];

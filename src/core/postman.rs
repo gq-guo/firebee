@@ -24,6 +24,7 @@ fn kvs(v: Option<&Value>) -> Vec<KeyValue> {
                     enabled: !x.get("disabled").and_then(Value::as_bool).unwrap_or(false),
                     key: s(&x["key"]),
                     value: s(&x["value"]),
+                    is_file: false,
                 })
                 .collect()
         })
@@ -115,9 +116,25 @@ fn request(item: &Value) -> Request {
                 req.form = kvs(body.get("urlencoded"));
             }
             "formdata" => {
-                // 文件字段不支持，只保留文本字段
-                req.body_type = BodyType::Form;
+                req.body_type = BodyType::Multipart;
                 req.form = kvs(body.get("formdata"));
+                // Postman 文件字段：{type:"file", src:"/path"}，src 可能是数组（多文件）
+                if let Some(a) = body.get("formdata").and_then(Value::as_array) {
+                    for (f, x) in req
+                        .form
+                        .iter_mut()
+                        .zip(a.iter().filter(|x| x.get("key").is_some()))
+                    {
+                        if x.get("type").and_then(Value::as_str) == Some("file") {
+                            f.is_file = true;
+                            f.value = match x.get("src") {
+                                Some(Value::Array(v)) => v.first().map(s).unwrap_or_default(),
+                                Some(v) => s(v),
+                                None => String::new(),
+                            };
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -188,6 +205,7 @@ pub fn to_environment(v: &Value) -> Environment {
                         enabled: x.get("enabled").and_then(Value::as_bool).unwrap_or(true),
                         key: s(&x["key"]),
                         value: s(&x["value"]),
+                        is_file: false,
                     })
                     .collect()
             })
