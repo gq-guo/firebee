@@ -326,6 +326,35 @@ pub fn final_request(
     })
 }
 
+/// 打开一个项目目录（含 firebee.json）读成集合；前端负责去重并加进列表
+#[tauri::command]
+pub fn open_project(dir: String) -> Result<Collection, String> {
+    let p = std::path::Path::new(&dir);
+    if !crate::core::project::is_project_dir(p) {
+        return Err(format!("No {} in {dir}", crate::core::project::MANIFEST));
+    }
+    crate::core::project::read(p).map_err(|e| e.to_string())
+}
+
+/// 把集合关联到目录并立刻写一次。目录里已有别的项目就拒绝，免得覆盖
+#[tauri::command(rename_all = "snake_case")]
+pub fn link_project(collection: Collection, dir: String) -> Result<Collection, String> {
+    let p = std::path::Path::new(&dir);
+    if crate::core::project::is_project_dir(p) {
+        let existing = crate::core::project::read(p).map_err(|e| e.to_string())?;
+        if existing.id != collection.id {
+            return Err(format!(
+                "{dir} already holds project “{}” — open it instead, or pick an empty folder",
+                existing.name
+            ));
+        }
+    }
+    let mut c = collection;
+    crate::core::project::write(p, &c).map_err(|e| e.to_string())?;
+    c.project_dir = Some(dir);
+    Ok(c)
+}
+
 #[tauri::command]
 pub fn clear_cookies(cookies: State<Cookies>, tokens: State<Tokens>) {
     cookies.0.clear();

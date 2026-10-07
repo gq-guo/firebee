@@ -457,6 +457,9 @@ function containerNode(c, parentArr, isFolder = false) {
     ['Shared headers & auth…', () => openSettings(c, isFolder)],
     ['Import from curl…', () => openImport(c)],
     !isFolder && ['Export collection…', () => exportCollection(c)],
+    !isFolder && (c.project_dir
+      ? ['Unlink project folder', () => { delete c.project_dir; dirty(); renderSidebar(); toast(`“${c.name}” is no longer synced to a folder. The files there are untouched.`); }]
+      : ['Save as project folder…', () => linkProject(c)]),
     ['Rename', startRename(c)],
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
@@ -467,7 +470,7 @@ function containerNode(c, parentArr, isFolder = false) {
     h('summary', { oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
       ondragover: (e) => { if (dragging) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
       ondragleave: (e) => e.currentTarget.classList.remove('dropping'), ondrop: dropOnContainer },
-      nameNode(c), btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
+      nameNode(c), c.project_dir ? h('span', { class: 'proj', title: `Synced to ${c.project_dir}` }, '⎇') : null, btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
     !q() && !c.folders.length && !c.requests.length && h('div', { class: 'empty-hint' }, 'Empty — right-click to add a request, or paste a curl into the URL field'),
     ...view.folders.map((f) => containerNode(f, c.folders, true)),
     ...view.requests.map((r) => requestRow(r, c.requests)),
@@ -757,6 +760,28 @@ function openImport(into = null) {
 }
 
 /** 集合导出为 Firebee JSON 文件 */
+/** 项目目录：集合与目录双向同步（见 core/project.rs），目录可以进 git */
+async function linkProject(c) {
+  const dir = await dialog.open({ directory: true, title: 'Choose an empty folder (or the project folder of this collection)' });
+  if (!dir) return;
+  try {
+    const linked = await invoke('link_project', { collection: c, dir });
+    Object.assign(c, linked); dirty(); renderSidebar();
+    toast(`“${c.name}” now lives in ${dir}. Commit that folder; teammates open it with Open project folder…`);
+  } catch (e) { toast(String(e), { error: true }); }
+}
+async function openProject() {
+  const dir = await dialog.open({ directory: true, title: 'Open a folder containing firebee.json' });
+  if (!dir) return;
+  try {
+    const c = await invoke('open_project', { dir });
+    const existing = data.collections.find((x) => x.id === c.id);
+    if (existing) { Object.assign(existing, c); dirty(); renderSidebar(); toast(`Reloaded “${c.name}” from ${dir}.`); return; }
+    data.collections.push(c); dirty(); renderSidebar();
+    toast(`Opened “${c.name}”. Changes you make are written back to ${dir}.`);
+  } catch (e) { toast(String(e), { error: true }); }
+}
+
 async function exportCollection(c) {
   const path = await dialog.save({ defaultPath: `${c.name}.firebee.json`, filters: [{ name: 'JSON', extensions: ['json'] }] });
   if (!path) return;
@@ -1592,6 +1617,7 @@ function bind() {
     ['New request', () => { createRequest(); $('#url').focus(); }, { kbd: `${MOD}N` }],
     ['New collection', addCollection],
     ['Import file…', importFile],
+    ['Open project folder…', openProject],
     ['Import from curl…', () => openImport()],
   ]);
   // Capture 有规则时本身就是一个标签；只有标签藏起来时，菜单里才放入口

@@ -154,12 +154,31 @@ impl Storage {
         })
     }
 
+    /// 关联了项目目录的集合以目录为准（git pull 的改动要能看到）；目录读不到就用本地副本
     pub fn load_collections(&self) -> Vec<Collection> {
-        self.load("collections.json")
+        let mut cs: Vec<Collection> = self.load("collections.json");
+        for c in cs.iter_mut() {
+            if let Some(dir) = crate::core::project::dir_of(c) {
+                match crate::core::project::read(&dir) {
+                    Ok(fresh) => *c = fresh,
+                    Err(e) => tracing::warn!("project {}: {e}; using local copy", dir.display()),
+                }
+            }
+        }
+        cs
     }
 
+    /// 本地副本先落盘，再同步到各自的项目目录；目录写失败只报错不回滚（本地已经是对的）
     pub fn save_collections(&self, collections: &[Collection]) -> std::io::Result<()> {
-        self.save("collections.json", &collections, true)
+        self.save("collections.json", &collections, true)?;
+        for c in collections {
+            if let Some(dir) = crate::core::project::dir_of(c) {
+                crate::core::project::write(&dir, c).map_err(|e| {
+                    std::io::Error::other(format!("Couldn't write project {}: {e}", dir.display()))
+                })?;
+            }
+        }
+        Ok(())
     }
 
     pub fn load_environments(&self) -> Vec<Environment> {

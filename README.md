@@ -59,6 +59,11 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - 导入：把 curl 粘贴到 URL 框即覆盖到当前请求（保留名字）；集合菜单可导入为新请求；文件导入 Firebee 导出 / Postman Collection v2.x / Postman Environment / OpenAPI 3.x 与 Swagger 2.0（JSON 或 YAML：按 tag 分文件夹，path 参数变 `{{var}}`，body 按 schema 生成示例，servers[0] 落到环境变量 `baseUrl`，安全方案落到集合级 auth）
 - 导出：curl（JSON 压成一行，方便粘贴终端）、Python (requests)；集合导出为 Firebee JSON
 
+**项目目录（可进 Git）**
+- 集合右键 → Save as project folder…：集合写成一个目录——`firebee.json` 放树的骨架和共享 header / auth，`requests/` 下每个请求一个文件，diff 一眼能看、多人改不同请求不冲突；之后每次改动自动同步进去
+- 侧栏 + → Open project folder…：clone 下来的目录直接打开；git pull 后重启 Firebee 以目录为准
+- 环境变量不进项目目录（里面有 token）
+
 **界面**
 - 标签页：多个请求同时开着来回切，关了重开还在。⌘W 关标签，⌥⌘←/→ 切换，中键点标签也能关
 - 三栏布局，分隔条可拖动，双击恢复；快捷键在菜单栏 Request 菜单可见：⌘↩ 发送、⌘N 新请求、⌘F 查找、⇧⌘F 过滤集合

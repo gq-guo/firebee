@@ -392,3 +392,6 @@ pre.stream { max-height: 100%; overflow: auto; }
 #cookie-dialog { width: min(820px, 90vw); }
 table.kv.cookies th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 4px 6px; }
 table.kv.cookies td.val code { display: inline-block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+
+/* 关联了项目目录的集合 */
+summary .proj { flex: none; margin-left: 4px; font-size: 11px; color: var(--muted); }

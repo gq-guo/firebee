@@ -212,6 +212,9 @@ pub struct Collection {
     /// 下属请求的默认认证；请求自己设了非 None 就用自己的
     #[serde(default)]
     pub auth: Auth,
+    /// 关联的项目目录（见 core::project）：保存时同步写进去，启动时从那里读回来
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_dir: Option<String>,
 }
 
 impl Collection {
@@ -241,6 +244,7 @@ impl Collection {
             requests: vec![],
             headers: vec![],
             auth: Auth::None,
+            project_dir: None,
         }
     }
 }
