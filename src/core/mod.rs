@@ -1,3 +1,4 @@
+pub mod assert;
 pub mod cookies;
 pub mod export;
 pub mod http;

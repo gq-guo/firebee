@@ -64,6 +64,7 @@ pub fn run() {
             commands::missing_vars,
             commands::send_request,
             commands::final_request,
+            commands::check_asserts,
             commands::open_project,
             commands::link_project,
             commands::list_cookies,

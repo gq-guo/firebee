@@ -395,3 +395,11 @@ table.kv.cookies td.val code { display: inline-block; max-width: 280px; overflow
 
 /* 关联了项目目录的集合 */
 summary .proj { flex: none; margin-left: 4px; font-size: 11px; color: var(--muted); }
+
+/* 断言结果 */
+.asserts { margin: 0 0 8px; padding: 8px 10px; border-radius: 6px; font-size: 12px; border: 1px solid var(--border); }
+.asserts.good strong { color: var(--ok, #2e9e5b); }
+.asserts.bad strong { color: var(--err); }
+.asserts div { display: flex; gap: 6px; align-items: baseline; margin-top: 4px; }
+.asserts .fail > span:first-child { color: var(--err); }
+.asserts .ok > span:first-child { color: var(--ok, #2e9e5b); }

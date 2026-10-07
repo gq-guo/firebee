@@ -285,9 +285,23 @@ async fn run(o: Opts) -> Result<bool, String> {
         let r = execute_streaming(&req, timeout, rx, Some(jar.clone()), &net, None).await;
         match r {
             Ok(resp) => {
-                let ok = resp.status < 400;
-                all_ok &= ok;
                 let body = String::from_utf8_lossy(&resp.body).into_owned();
+                // 有断言按断言算；没有就看状态码
+                let outcomes = firebee_lib::core::assert::check_all(
+                    &it.req.asserts,
+                    &firebee_lib::core::assert::Resp {
+                        status: resp.status,
+                        headers: &resp.headers,
+                        body: &body,
+                        duration_ms: resp.duration_ms,
+                    },
+                );
+                let ok = if outcomes.is_empty() {
+                    resp.status < 400
+                } else {
+                    outcomes.iter().all(|o| o.ok)
+                };
+                all_ok &= ok;
                 // Capture → 后面的请求能用
                 let mut captured = vec![];
                 if resp.status < 300 {
@@ -309,7 +323,7 @@ async fn run(o: Opts) -> Result<bool, String> {
                     results.push(serde_json::json!({
                         "request": it.path, "method": req.effective_method().as_str(), "url": firebee_lib::core::http::build_url(&req).unwrap_or_default(),
                         "status": resp.status, "duration_ms": resp.duration_ms, "ttfb_ms": resp.ttfb_ms, "size_bytes": resp.size_bytes,
-                        "headers": resp.headers, "body": body, "captured": captured, "ok": ok,
+                        "headers": resp.headers, "body": body, "captured": captured, "ok": ok, "asserts": outcomes,
                     }));
                 } else if o.cmd == "send" {
                     eprintln!(

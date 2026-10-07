@@ -355,6 +355,26 @@ pub fn link_project(collection: Collection, dir: String) -> Result<Collection, S
     Ok(c)
 }
 
+/// 响应回来后跑请求上的断言；body 在前端手里，所以由前端传进来
+#[tauri::command(rename_all = "snake_case")]
+pub fn check_asserts(
+    rules: Vec<crate::core::models::KeyValue>,
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: String,
+    duration_ms: u64,
+) -> Vec<crate::core::assert::Outcome> {
+    crate::core::assert::check_all(
+        &rules,
+        &crate::core::assert::Resp {
+            status,
+            headers: &headers,
+            body: &body,
+            duration_ms: duration_ms as u128,
+        },
+    )
+}
+
 #[tauri::command]
 pub fn clear_cookies(cookies: State<Cookies>, tokens: State<Tokens>) {
     cookies.0.clear();

@@ -125,6 +125,9 @@ pub struct Request {
     /// 响应后把值提取到环境变量：key = 变量名，value = JSONPath（复用 KeyValue，前端表格直接沿用）
     #[serde(default)]
     pub captures: Vec<KeyValue>,
+    /// 响应断言：key = subject（status / time / header x / $.path），value = "op expected"，见 core::assert
+    #[serde(default)]
+    pub asserts: Vec<KeyValue>,
     /// GraphQL 变量（JSON 文本），仅 body_type == GraphQL 时使用
     #[serde(default)]
     pub graphql_variables: String,
@@ -146,6 +149,7 @@ impl Request {
             pinned: false,
             graphql_variables: String::new(),
             captures: vec![],
+            asserts: vec![],
         }
     }
 

@@ -75,7 +75,7 @@ const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘
 function newRequest(name = 'Untitled request', kind = 'http') {
   const gql = kind === 'graphql';
   return { id: crypto.randomUUID(), name, method: gql ? 'Post' : 'Get', url: '', params: [], headers: [],
-           body_type: gql ? 'GraphQL' : 'None', body: '', form: [], auth: 'None', pinned: false, graphql_variables: '', captures: [] };
+           body_type: gql ? 'GraphQL' : 'None', body: '', form: [], auth: 'None', pinned: false, graphql_variables: '', captures: [], asserts: [] };
 }
 const isGql = (r) => r.body_type === 'GraphQL';
 const newContainer = (name) => ({ id: crypto.randomUUID(), name, folders: [], requests: [], headers: [], auth: 'None' });
@@ -853,12 +853,13 @@ function renderTabCounts() {
   const count = (rows) => rows.filter((r) => r.enabled && r.key).length;
   const n = { params: count(current.params), headers: count(current.headers),
     body: current.body_type === 'None' ? 0 : ['Form', 'Multipart'].includes(current.body_type) ? count(current.form) : (current.body.trim() ? 1 : 0),
-    auth: current.auth === 'None' ? 0 : 1, capture: count(current.captures || []) };
+    auth: current.auth === 'None' ? 0 : 1, capture: count(current.captures || []), tests: count(current.asserts || []) };
   document.querySelectorAll('[data-req]').forEach((b) => {
-    const key = b.dataset.req, countable = key === 'params' || key === 'headers' || key === 'capture' || (key === 'body' && ['Form', 'Multipart'].includes(current.body_type));
+    const key = b.dataset.req, countable = key === 'params' || key === 'headers' || key === 'capture' || key === 'tests' || (key === 'body' && ['Form', 'Multipart'].includes(current.body_type));
     const label = key === 'body' && isGql(current) ? 'Query' : key[0].toUpperCase() + key.slice(1);
     put(b, label, n[key] ? h('span', { class: countable ? 'n' : 'n dot' }, countable ? n[key] : '•') : null);
     if (key === 'capture') b.classList.toggle('hidden', !n.capture && reqTab !== 'capture');
+    if (key === 'tests') b.classList.toggle('hidden', !n.tests && reqTab !== 'tests');
   });
 }
 
@@ -881,6 +882,7 @@ function renderRequest() {
   }
   else if (reqTab === 'body') body.append(bodyEditor());
   else if (reqTab === 'capture') body.append(captureEditor());
+  else if (reqTab === 'tests') body.append(testsEditor());
   else if (reqTab === 'preview') body.append(previewEditor());
   else {
     const ia = inheritedAuth(current);
@@ -985,6 +987,23 @@ function captureEditor() {
     kvTable(current.captures, 'Variable', 'JSONPath, e.g. $.data.token', renderRequest));
 }
 
+/** 声明式断言：一行一条，subject + 条件；发送后在响应区显示通过 / 失败 */
+function testsEditor() {
+  current.asserts ||= [];
+  return h('div', {},
+    h('div', { class: 'helper' }, 'Checked after every send. Subject: status · time · body · header <name> · $.json.path. Condition: = != < <= > >= contains !contains exists !exists matches (with * wildcards).'),
+    kvTable(current.asserts, 'status  /  $.data.id', '= 200  /  exists  /  < 500 ms', renderRequest),
+    h('div', { class: 'helper' }, h('code', {}, 'status = 200'), ' · ', h('code', {}, '$.success = true'), ' · ', h('code', {}, '$.data.id exists'), ' · ', h('code', {}, 'time < 1000 ms'), ' · ', h('code', {}, 'header content-type contains json')));
+}
+
+/** 跑一个请求的 asserts；没有规则返回 null */
+async function runAsserts(req, dto) {
+  const rules = (req.asserts || []).filter((a) => a.enabled && a.key.trim());
+  if (!rules.length) return null;
+  try { return await invoke('check_asserts', { rules, status: dto.status, headers: dto.headers, body: dto.body || '', duration_ms: dto.duration_ms }); }
+  catch (e) { return [{ rule: 'tests', ok: false, message: String(e) }]; }
+}
+
 /** 跑一个请求的 captures；没有可跑的规则返回 null */
 function runCaptures(req, dto, env) {
   const rules = (req.captures || []).filter((c) => c.enabled && c.key.trim() && c.value.trim());
@@ -1072,6 +1091,7 @@ async function send() {
     result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
   }
   pendings.delete(rid); streams.delete(rid); setResponse(rid, result);
+  if (result.ok) result.ok.asserts = await runAsserts(req, result.ok);
   if (result.ok && result.ok.status < 300) {
     const cap = runCaptures(req, result.ok, capEnv);
     if (cap) toast(cap.ok || cap.error, { error: !cap.ok });
@@ -1306,6 +1326,12 @@ function renderResponse() {
     h('span', { class: 'spacer' }), r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost'),
   );
   // 跟过的每一跳都列出来；3xx 说明停下了，说清为什么并给一键跟进
+  if (r.asserts?.length) {
+    const failed = r.asserts.filter((a) => !a.ok).length;
+    body.append(h('div', { class: 'asserts ' + (failed ? 'bad' : 'good') },
+      h('strong', {}, failed ? `${failed} of ${r.asserts.length} test${r.asserts.length > 1 ? 's' : ''} failed` : `${r.asserts.length} test${r.asserts.length > 1 ? 's' : ''} passed`),
+      ...r.asserts.map((a) => h('div', { class: a.ok ? 'ok' : 'fail' }, h('span', {}, a.ok ? '✓' : '✗'), h('code', {}, a.rule), a.ok ? null : h('span', { class: 'muted' }, ` — ${a.message}`)))));
+  }
   if (r.redirects?.length) body.append(h('div', { class: 'helper redirects' },
     h('span', {}, `Followed ${r.redirects.length} redirect${r.redirects.length > 1 ? 's' : ''}: `),
     ...r.redirects.flatMap((u, i) => [i ? h('span', { class: 'muted' }, ' → ') : null, h('code', {}, u)])));
@@ -1630,8 +1656,10 @@ function bind() {
   // Capture 有规则时本身就是一个标签；只有标签藏起来时，菜单里才放入口
   $('#req-more').onclick = (e) => {
     const tabHidden = document.querySelector('[data-req=capture]').classList.contains('hidden');
+    const testsHidden = document.querySelector('[data-req=tests]').classList.contains('hidden');
     openMenu(e, [
       tabHidden && ['Capture', () => { reqTab = 'capture'; renderRequest(); }],
+      testsHidden && ['Tests', () => { reqTab = 'tests'; renderRequest(); }],
       ['Request settings…', () => toggleSettings(true)],
       ...exportItems(current),
     ]);
