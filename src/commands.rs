@@ -163,6 +163,7 @@ pub struct SendOptions {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+#[allow(clippy::too_many_arguments)] // Tauri 注入的 State 也算参数
 pub async fn send_request(
     app: tauri::AppHandle,
     pending: State<'_, Pending>,
