@@ -20,6 +20,13 @@
     <label class="setting" title="Off: stop at the first 3xx and show its Location. Redirects to a different host are never followed.">Follow redirects <input id="follow" type="checkbox" class="switch" checked></label>
     <label class="setting" title="Skip TLS certificate verification. For self-signed or internal test servers only.">Allow invalid certificates <input id="insecure" type="checkbox" class="switch"></label>
     <label class="setting">Timeout <span><input id="timeout" type="number" min="1" max="300" value="30" aria-label="Request timeout in seconds"> <span class="muted">s</span></span></label>
+    <label class="setting" title="System: the proxy from macOS network settings. Custom: Charles, mitmproxy, a corporate proxy…">Proxy <select id="proxy-mode" aria-label="Proxy mode"><option value="system">System</option><option value="none">None</option><option value="custom">Custom</option></select></label>
+    <div id="proxy-custom" class="hidden stack">
+      <input id="proxy-url" placeholder="http://127.0.0.1:8888" aria-label="Proxy URL" spellcheck="false">
+      <input id="no-proxy" placeholder="Bypass: localhost, *.internal" aria-label="Hosts that bypass the proxy" spellcheck="false">
+    </div>
+    <label class="setting" title="Extra CA certificates to trust (PEM, can hold several). The macOS keychain is already trusted.">Custom CA <span id="ca-file" class="file-pick"></span></label>
+    <label class="setting" title="mTLS: one PEM file containing the client certificate and its private key.">Client certificate <span id="cert-file" class="file-pick"></span></label>
   </div>
 </header>
 

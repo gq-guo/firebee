@@ -362,6 +362,8 @@ pub struct ResponseMeta {
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     pub duration_ms: u128,
+    /// 发出到收到响应头的时间；和 duration_ms 的差就是下载时间
+    pub ttfb_ms: u128,
     pub size_bytes: usize,
     /// 实际跟过的重定向目标，按顺序；没有重定向就是空的
     pub redirects: Vec<String>,
@@ -375,6 +377,8 @@ pub struct StoredResponse {
     pub headers: Vec<(String, String)>,
     pub body: String,
     pub duration_ms: u128,
+    #[serde(default)]
+    pub ttfb_ms: u128,
     pub size_bytes: usize,
     #[serde(default)]
     pub truncated: bool,

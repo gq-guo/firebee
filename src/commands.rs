@@ -10,7 +10,7 @@ use tauri::{Emitter, State};
 use tokio::sync::watch;
 
 use crate::core::export::{effective_headers, to_curl, to_python};
-use crate::core::http::{build_url, execute_streaming, StreamEvent};
+use crate::core::http::{build_url, execute_streaming, Net, StreamEvent};
 use crate::core::models::{
     merge_inherited, Collection, Environment, HistoryEntry, Inherited, Request,
 };
@@ -44,6 +44,7 @@ pub struct ResponseDto {
     body: String,
     body_base64: Option<String>,
     duration_ms: u128,
+    ttfb_ms: u128,
     size_bytes: usize,
     redirects: Vec<String>,
 }
@@ -111,9 +112,7 @@ pub struct SendOptions {
     #[serde(default)]
     pub inherited: Option<Vec<Inherited>>,
     #[serde(default)]
-    pub follow_redirects: Option<bool>,
-    #[serde(default)]
-    pub insecure: bool,
+    pub net: Net,
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -129,8 +128,7 @@ pub async fn send_request(
     let SendOptions {
         timeout_secs,
         inherited,
-        follow_redirects,
-        insecure,
+        net,
     } = options;
     let request = merge_inherited(&request, &inherited.unwrap_or_default());
     let (req, _) = substitute_request(&request, &vars(&env));
@@ -155,8 +153,7 @@ pub async fn send_request(
         Duration::from_secs(timeout_secs.max(1)),
         rx,
         Some(jar),
-        follow_redirects.unwrap_or(true),
-        insecure,
+        &net,
         Some(on_stream),
     )
     .await;
@@ -184,6 +181,7 @@ pub async fn send_request(
                 body,
                 body_base64,
                 duration_ms: r.duration_ms,
+                ttfb_ms: r.ttfb_ms,
                 size_bytes: r.size_bytes,
                 redirects: r.redirects,
             }

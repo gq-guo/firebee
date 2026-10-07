@@ -28,6 +28,10 @@ function setActiveEnv(id) {
 const pref = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch { return d; } };
 let followRedirects = pref('firebee.follow', true);
 let insecure = pref('firebee.insecure', false);
+// 网络层设置（代理 / CA / 客户端证书）：一份 JSON 存本机，和 follow / insecure 一起随每次发送传给后端
+const NET_DEFAULT = { proxy: 'system', proxy_url: '', no_proxy: '', ca_path: '', cert_path: '' };
+let net = (() => { try { return { ...NET_DEFAULT, ...JSON.parse(localStorage.getItem('firebee.net') || '{}') }; } catch { return { ...NET_DEFAULT }; } })();
+const saveNet = () => { try { localStorage.setItem('firebee.net', JSON.stringify(net)); } catch { /* private mode */ } };
 // 主题：'light' | 'dark' | 'system'。<html data-theme> 永远是解析后的 light / dark
 let theme = (() => { try { return localStorage.getItem('firebee.theme') || 'system'; } catch { return 'system'; } })();
 const lightMq = matchMedia('(prefers-color-scheme: light)');
@@ -1011,7 +1015,7 @@ async function send() {
   let status = null, duration_ms = null, result;
   try {
     const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(),
-      options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, follow_redirects: followRedirects, insecure } });
+      options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
     result = { ok: r }; status = r.status; duration_ms = r.duration_ms;
   } catch (e) {
     result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
@@ -1076,7 +1080,7 @@ function storedResponse(dto) {
   if (!dto) return null;
   const [body, truncated] = clipBytes(dto.body_base64 ? '' : dto.body || '', HISTORY_BODY_MAX);
   return { status: dto.status, headers: dto.headers.filter(([k]) => !SECRET_RESP_HEADERS.has(k.toLowerCase())),
-    body, duration_ms: dto.duration_ms, size_bytes: dto.size_bytes, truncated };
+    body, duration_ms: dto.duration_ms, ttfb_ms: dto.ttfb_ms, size_bytes: dto.size_bytes, truncated };
 }
 
 // 历史现在带响应体（最多 100 条 × 64KB），每次发送都全量序列化 + 重写整个文件太贵。
@@ -1243,7 +1247,8 @@ function renderResponse() {
   // put 会过滤掉 null/undefined/false；append 不会——它会把 null 当文本渲染成 "null"
   put(meta,
     h('span', { class: `status s${Math.floor(r.status / 100)}` }, r.status), REASON[r.status] && h('span', { class: 'reason' }, REASON[r.status]),
-    h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: 'Time from request start to last byte received' }, `${r.duration_ms} ms`),
+    h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: r.ttfb_ms != null ? `Time to first byte ${r.ttfb_ms} ms (connect + server), then ${r.duration_ms - r.ttfb_ms} ms downloading` : 'Time from request start to last byte received' }, `${r.duration_ms} ms`),
+    r.ttfb_ms != null && r.duration_ms - r.ttfb_ms >= 50 ? h('span', { class: 'meta muted', title: 'Time to first byte' }, `TTFB ${r.ttfb_ms} ms`) : null,
     h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: 'Body size' }, fmtSize(r.size_bytes)),
     r.from_history ? h('span', { class: 'meta from-history', title: `Kept from ${new Date(r.from_history).toLocaleString()} — press Send for a fresh one` },
       r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null,
@@ -1595,6 +1600,22 @@ function bind() {
   for (const ev of ['input', 'change']) $('#req-body').addEventListener(ev, () => { if (reqTab === 'params' || reqTab === 'auth') renderResolved(); });
   $('#theme-btn').onclick = (e) => openMenu(e, [['Light', 'light'], ['Dark', 'dark'], ['System', 'system']].map(([label, v]) =>
     [label, () => setTheme(v), { kbd: theme === v ? '✓' : '' }]));
+  // 代理 / CA / 客户端证书
+  const pick = async (key, filters) => { const p = await dialog.open({ multiple: false, filters }); if (p) { net[key] = p; saveNet(); renderNet(); } };
+  const renderNet = () => {
+    $('#proxy-mode').value = net.proxy;
+    $('#proxy-custom').classList.toggle('hidden', net.proxy !== 'custom');
+    $('#proxy-url').value = net.proxy_url; $('#no-proxy').value = net.no_proxy;
+    for (const [key, id] of [['ca_path', 'ca-file'], ['cert_path', 'cert-file']]) {
+      const el = $(`#${id}`);
+      put(el, net[key] ? h('span', { class: 'file', title: net[key] }, net[key].split('/').pop()) : null,
+        btn(net[key] ? '×' : 'Choose…', () => { if (net[key]) { net[key] = ''; saveNet(); renderNet(); } else pick(key, [{ name: 'PEM', extensions: ['pem', 'crt', 'cer', 'key'] }]); }, 'small ghost'));
+    }
+  };
+  $('#proxy-mode').onchange = (e) => { net.proxy = e.target.value; saveNet(); renderNet(); };
+  $('#proxy-url').oninput = (e) => { net.proxy_url = e.target.value; saveNet(); };
+  $('#no-proxy').oninput = (e) => { net.no_proxy = e.target.value; saveNet(); };
+  renderNet();
   $('#insecure').checked = insecure;
   $('#insecure').onchange = (e) => {
     insecure = e.target.checked;

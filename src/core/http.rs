@@ -58,7 +58,75 @@ pub async fn execute(
     follow_redirects: bool,
     insecure: bool,
 ) -> Result<ResponseMeta, HttpError> {
-    execute_streaming(req, timeout, cancel, jar, follow_redirects, insecure, None).await
+    let net = Net {
+        follow_redirects,
+        insecure,
+        ..Net::default()
+    };
+    execute_streaming(req, timeout, cancel, jar, &net, None).await
+}
+
+/// 网络层设置：全局，前端存本机，每次发送随 options 传来
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(default)]
+pub struct Net {
+    pub follow_redirects: bool,
+    /// 跳过证书校验（自签名测试环境）
+    pub insecure: bool,
+    /// "system"（默认，读 macOS 网络设置）| "none" | "custom"
+    pub proxy: String,
+    /// proxy == custom 时用：http(s)://host:port，可带用户名密码
+    pub proxy_url: String,
+    /// 不走代理的 host 列表，逗号分隔，同 NO_PROXY 语法
+    pub no_proxy: String,
+    /// 额外信任的 CA（PEM，可多张）
+    pub ca_path: String,
+    /// mTLS 客户端证书：一个 PEM 文件里放证书 + 私钥
+    pub cert_path: String,
+}
+
+impl Default for Net {
+    fn default() -> Self {
+        Self {
+            follow_redirects: true,
+            insecure: false,
+            proxy: "system".into(),
+            proxy_url: String::new(),
+            no_proxy: String::new(),
+            ca_path: String::new(),
+            cert_path: String::new(),
+        }
+    }
+}
+
+fn apply_net(
+    mut b: reqwest::ClientBuilder,
+    net: &Net,
+) -> Result<reqwest::ClientBuilder, HttpError> {
+    let bad = |what: &str, e: &dyn std::fmt::Display| HttpError::Network(format!("{what}: {e}"));
+    b = b.danger_accept_invalid_certs(net.insecure);
+    match net.proxy.as_str() {
+        "none" => b = b.no_proxy(),
+        "custom" if !net.proxy_url.trim().is_empty() => {
+            let p = reqwest::Proxy::all(net.proxy_url.trim())
+                .map_err(|e| bad("Proxy URL", &e))?
+                .no_proxy(reqwest::NoProxy::from_string(&net.no_proxy));
+            b = b.proxy(p);
+        }
+        _ => {} // system：reqwest 的 system-proxy feature 自己读
+    }
+    if !net.ca_path.trim().is_empty() {
+        let pem = std::fs::read(net.ca_path.trim()).map_err(|e| bad("CA file", &e))?;
+        for c in reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| bad("CA file", &e))? {
+            b = b.add_root_certificate(c);
+        }
+    }
+    if !net.cert_path.trim().is_empty() {
+        let pem = std::fs::read(net.cert_path.trim()).map_err(|e| bad("Client certificate", &e))?;
+        let id = reqwest::Identity::from_pem(&pem).map_err(|e| bad("Client certificate", &e))?;
+        b = b.identity(id);
+    }
+    Ok(b)
 }
 
 /// 流式响应（SSE / NDJSON）边收边推给界面的事件
@@ -80,17 +148,16 @@ fn is_streaming(headers: &[(String, String)]) -> bool {
 
 /// execute 的完整版：on_stream 给了且响应是 text/event-stream / x-ndjson 时，
 /// 每个 chunk 到达即回调；最终返回值仍是完整响应（历史、Capture 不用改）。
-#[allow(clippy::too_many_arguments)]
 pub async fn execute_streaming(
     req: &Request,
     timeout: Duration,
     cancel: tokio::sync::watch::Receiver<bool>,
     jar: Option<Arc<reqwest::cookie::Jar>>,
-    follow_redirects: bool,
-    insecure: bool,
+    net: &Net,
     on_stream: Option<OnStream>,
 ) -> Result<ResponseMeta, HttpError> {
     let url = build_url(req)?;
+    let follow_redirects = net.follow_redirects;
     // 跟过的重定向记下来给界面显示 —— 否则"到底跳去哪了"完全看不见
     let trail: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
     // referer(false)：reqwest 默认在重定向时带上 Referer，且只剥掉用户名/密码/fragment，
@@ -101,10 +168,8 @@ pub async fn execute_streaming(
     // X-API-Key 这类自定义鉴权头会原样发给新 host；一个被控制的接口用 302
     // 就能把密钥取走。跨 host 时停下来，把 3xx 和 Location 交给用户自己看。
     let rec = trail.clone();
-    // insecure：跳过证书校验，自签名 / 内网测试环境用；默认关
     let mut builder = reqwest::Client::builder()
         .timeout(timeout)
-        .danger_accept_invalid_certs(insecure)
         .referer(false)
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if !follow_redirects {
@@ -129,6 +194,7 @@ pub async fn execute_streaming(
     if let Some(jar) = jar {
         builder = builder.cookie_provider(jar);
     }
+    builder = apply_net(builder, net)?;
     let client = builder
         .build()
         .map_err(|e| HttpError::Network(e.to_string()))?;
@@ -234,6 +300,7 @@ pub async fn execute_streaming(
         r = &mut send => r.map_err(|e| map_reqwest_err(&e, timeout))?,
         _ = wait_cancelled(cancel.clone()) => return Err(HttpError::Cancelled),
     };
+    let ttfb_ms = start.elapsed().as_millis();
     let status = resp.status().as_u16();
     let headers: Vec<(String, String)> = resp
         .headers()
@@ -290,6 +357,7 @@ pub async fn execute_streaming(
         size_bytes: bytes.len(),
         body: bytes,
         duration_ms,
+        ttfb_ms,
         redirects,
     })
 }
@@ -381,9 +449,16 @@ mod multipart_tests {
         });
         let (tx, rx) = tokio::sync::watch::channel(false);
         drop(tx);
-        let resp = execute_streaming(&r, Duration::from_secs(5), rx, None, true, false, Some(cb))
-            .await
-            .unwrap();
+        let resp = execute_streaming(
+            &r,
+            Duration::from_secs(5),
+            rx,
+            None,
+            &Net::default(),
+            Some(cb),
+        )
+        .await
+        .unwrap();
         let seen = seen.lock().unwrap();
         assert_eq!(
             seen.first().map(String::as_str),
@@ -447,6 +522,68 @@ mod multipart_tests {
         let cts: Vec<_> = req.headers.get_all("content-type").iter().collect();
         assert_eq!(cts.len(), 1, "{cts:?}");
         assert_eq!(cts[0], "application/x-www-form-urlencoded; charset=utf-8");
+    }
+
+    #[test]
+    fn net_errors_name_the_setting() {
+        let bad_proxy = Net {
+            proxy: "custom".into(),
+            proxy_url: "not a url".into(),
+            ..Net::default()
+        };
+        let e = apply_net(reqwest::Client::builder(), &bad_proxy)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(e.contains("Proxy URL"), "{e}");
+        let bad_ca = Net {
+            ca_path: "/nonexistent/ca.pem".into(),
+            ..Net::default()
+        };
+        let e = apply_net(reqwest::Client::builder(), &bad_ca)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(e.contains("CA file"), "{e}");
+        let bad_cert = Net {
+            cert_path: "/nonexistent/c.pem".into(),
+            ..Net::default()
+        };
+        let e = apply_net(reqwest::Client::builder(), &bad_cert)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(e.contains("Client certificate"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn proxy_none_and_custom_build() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let mut r = Request::new("p");
+        r.url = format!("{}/p", server.uri());
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        drop(tx);
+        let none = Net {
+            proxy: "none".into(),
+            ..Net::default()
+        };
+        execute_streaming(&r, Duration::from_secs(5), rx.clone(), None, &none, None)
+            .await
+            .unwrap();
+        // custom 代理指向 mock server 本身：请求经代理语义发出，mock 收到的是绝对 URL 形式
+        let custom = Net {
+            proxy: "custom".into(),
+            proxy_url: server.uri(),
+            ..Net::default()
+        };
+        execute_streaming(&r, Duration::from_secs(5), rx, None, &custom, None)
+            .await
+            .unwrap();
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
     #[tokio::test]

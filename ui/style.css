@@ -380,3 +380,10 @@ label.check input { flex: none; }
 table.kv.ro td { padding: 4px 6px; vertical-align: top; }
 table.kv.ro td.val code { word-break: break-all; }
 pre.stream { max-height: 100%; overflow: auto; }
+
+/* Request settings：代理 / 证书 */
+.popover .stack { display: flex; flex-direction: column; gap: 6px; margin-top: -8px; }
+.popover .stack input { width: 100%; font: 12px var(--font-mono); }
+.popover select { font: 12px var(--font); }
+.file-pick { display: inline-flex; align-items: center; gap: 6px; max-width: 170px; }
+.file-pick .file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--font-mono); }
