@@ -417,6 +417,9 @@ pub fn cancel_request(pending: State<Pending>, job_id: u64) {
 /// 导出单个集合到文件（Firebee 原生格式，带版本号便于以后迁移）
 #[tauri::command]
 pub fn export_collection(collection: Collection, path: String) -> Result<(), String> {
+    // 导出不带本机目录：导回来 / 给别人会变成两个集合写同一个目录，互相清掉对方的文件
+    let mut collection = collection;
+    collection.project_dir = None;
     let doc = serde_json::json!({ "firebee": 1, "collection": collection });
     let data = serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?;
     std::fs::write(&path, data).map_err(|e| format!("Couldn't write {path}: {e}"))

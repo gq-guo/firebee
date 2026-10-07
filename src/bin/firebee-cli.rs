@@ -205,12 +205,27 @@ fn load_vars(o: &Opts, storage: &Storage) -> Result<HashMap<String, String>, Str
         };
         env.var_map()
     } else if let Some(name) = &o.env {
-        storage
-            .load_environments()
+        let mut env = storage
+            .load_environments_without_secrets()
             .into_iter()
             .find(|e| e.name.eq_ignore_ascii_case(name))
-            .ok_or_else(|| format!("No environment named “{name}” in Firebee"))?
-            .var_map()
+            .ok_or_else(|| format!("No environment named “{name}” in Firebee"))?;
+        // 只给选中的环境填 secret：每个条目都会弹一次钥匙串授权（CLI 和 app 是两个二进制）
+        let failed = storage.fill_secrets(&mut env);
+        if !failed.is_empty() {
+            eprintln!(
+                "warning: keychain refused {}; those variables are empty. In CI use --env-file.",
+                failed.join(", ")
+            );
+        }
+        for v in env
+            .variables
+            .iter()
+            .filter(|v| v.secret && v.enabled && v.value.is_empty() && !failed.contains(&v.key))
+        {
+            eprintln!("warning: secret {} has no value in the keychain", v.key);
+        }
+        env.var_map()
     } else {
         HashMap::new()
     };
@@ -221,7 +236,8 @@ fn load_vars(o: &Opts, storage: &Storage) -> Result<HashMap<String, String>, Str
 }
 
 async fn run(o: Opts) -> Result<bool, String> {
-    let storage = Storage::new(Storage::default_dir());
+    // 只读：旧 CLI 认不得新 GUI 写的字段时，不能把用户的 collections.json 挪成 .bak
+    let storage = Storage::read_only(Storage::default_dir());
     let c = load_collection(&o, &storage)?;
     let items = flatten(&c);
     if o.cmd == "list" {

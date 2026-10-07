@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub trait SecretStore: Send + Sync {
-    fn get(&self, account: &str) -> Option<String>;
+    /// Ok(None) = 钥匙串里没有；Err = 钥匙串读不了（锁着 / 用户拒绝），这时绝不能拿空值去覆盖
+    fn get(&self, account: &str) -> Result<Option<String>, String>;
     fn set(&self, account: &str, value: &str) -> Result<(), String>;
     fn delete(&self, account: &str);
 }
@@ -17,10 +18,13 @@ pub struct Keychain;
 
 #[cfg(target_os = "macos")]
 impl SecretStore for Keychain {
-    fn get(&self, account: &str) -> Option<String> {
-        security_framework::passwords::get_generic_password(SERVICE, account)
-            .ok()
-            .and_then(|b| String::from_utf8(b).ok())
+    fn get(&self, account: &str) -> Result<Option<String>, String> {
+        match security_framework::passwords::get_generic_password(SERVICE, account) {
+            Ok(b) => Ok(Some(String::from_utf8_lossy(&b).into_owned())),
+            // errSecItemNotFound
+            Err(e) if e.code() == -25300 => Ok(None),
+            Err(e) => Err(format!("Keychain: {e}")),
+        }
     }
     fn set(&self, account: &str, value: &str) -> Result<(), String> {
         security_framework::passwords::set_generic_password(SERVICE, account, value.as_bytes())
@@ -36,8 +40,8 @@ impl SecretStore for Keychain {
 pub struct Memory(Mutex<HashMap<String, String>>);
 
 impl SecretStore for Memory {
-    fn get(&self, account: &str) -> Option<String> {
-        self.0.lock().unwrap().get(account).cloned()
+    fn get(&self, account: &str) -> Result<Option<String>, String> {
+        Ok(self.0.lock().unwrap().get(account).cloned())
     }
     fn set(&self, account: &str, value: &str) -> Result<(), String> {
         self.0.lock().unwrap().insert(account.into(), value.into());

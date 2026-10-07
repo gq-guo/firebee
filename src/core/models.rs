@@ -241,6 +241,8 @@ impl Collection {
             }
         }
         self.id = Uuid::new_v4();
+        // 副本不能继承目录关联，否则和原件轮流改写同一个目录
+        self.project_dir = None;
         walk(&mut self.folders, &mut self.requests);
     }
 

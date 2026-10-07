@@ -87,10 +87,11 @@ function dirty() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    saving = (async () => {
-      await invoke('save_collections', { collections: data.collections });
-      await invoke('save_environments', { environments: data.environments });
-    })();
+    // 两个文件各存各的：项目目录写不进去不能连带着让环境（含刚抓到的 token）也存不上
+    saving = Promise.all([
+      invoke('save_collections', { collections: data.collections }),
+      invoke('save_environments', { environments: data.environments }),
+    ]);
     saving.catch((e) => toast(`Couldn't save your changes. ${e}`, { error: true, action: ['Retry', dirty] }));
   }, 500);
 }
@@ -768,14 +769,15 @@ function openImport(into = null) {
 
 /** 集合导出为 Firebee JSON 文件 */
 /** Runner：按顺序发送容器里的所有请求（含子文件夹），Capture 传给后面的，Tests 决定 PASS/FAIL */
-let runAbort = false;
+let runAbort = false, running = false;
 async function runCollection(container) {
+  if (running) { toast('A run is already in progress — stop it first.'); return; }
   const flat = [];
   (function walk(n, path) { for (const r of n.requests) flat.push({ r, path: path ? `${path}/${r.name}` : r.name }); for (const f of n.folders) walk(f, path ? `${path}/${f.name}` : f.name); })(container, '');
   if (!flat.length) { toast('Nothing to run — the container is empty.'); return; }
   const dlg = $('#run-dialog'), list = $('#run-list'), summary = $('#run-summary');
   $('#run-title').textContent = `Run “${container.name}”`;
-  runAbort = false; $('#run-stop').classList.remove('hidden');
+  runAbort = false; running = true; $('#run-stop').classList.remove('hidden');
   const rows = flat.map(({ path }) => h('div', { class: 'run-row' }, h('span', { class: 'st muted' }, '·'), h('span', { class: 'name' }, path), h('span', { class: 'meta muted' }, '')));
   put(list, ...rows); summary.textContent = `0 / ${flat.length}`; dlg.showModal();
   const env = activeEnv();
@@ -785,6 +787,7 @@ async function runCollection(container) {
     const { r, path } = flat[i], row = rows[i];
     row.firstChild.textContent = '…'; row.firstChild.className = 'st';
     const req = structuredClone(r), chain = chainFor(r) || [];
+    const unresolved = unresolvedVars(r);
     let ok, meta;
     try {
       const dto = await invoke('send_request', { job_id: ++jobSeq, request: req, env: activeEnv(),
@@ -792,7 +795,8 @@ async function runCollection(container) {
       const asserts = await runAsserts(req, dto);
       ok = asserts ? asserts.every((a) => a.ok) : dto.status < 400;
       const cap = dto.status < 300 ? runCaptures(req, dto, env) : null;
-      meta = `${dto.status} · ${dto.duration_ms} ms` + (cap?.ok ? ' · captured' : '') + (asserts ? ` · ${asserts.filter((a) => a.ok).length}/${asserts.length} tests` : '');
+      meta = `${dto.status} · ${dto.duration_ms} ms` + (cap?.ok ? ' · captured' : '') + (asserts ? ` · ${asserts.filter((a) => a.ok).length}/${asserts.length} tests` : '')
+        + (unresolved.length ? ` · unresolved {{${unresolved.join('}}, {{')}}}` : '');
       const failed = (asserts || []).filter((a) => !a.ok);
       if (failed.length) row.append(...failed.map((a) => h('div', { class: 'fail' }, `✗ ${a.rule} — ${a.message}`)));
       setResponse(r.id, { ok: { ...dto, asserts } });
@@ -802,7 +806,7 @@ async function runCollection(container) {
     row.querySelector('.meta').textContent = meta; row.classList.add(ok ? 'pass' : 'fail');
     summary.textContent = `${pass + fail} / ${flat.length} · ${pass} passed${fail ? ` · ${fail} failed` : ''}`;
   }
-  $('#run-stop').classList.add('hidden');
+  $('#run-stop').classList.add('hidden'); running = false;
   if (runAbort) summary.textContent += ' · stopped';
   if (current && responses.has(current.id)) renderResponse();
   renderRequest(); renderSidebar();
@@ -813,6 +817,7 @@ async function linkProject(c) {
   const dir = await dialog.open({ directory: true, title: 'Choose an empty folder (or the project folder of this collection)' });
   if (!dir) return;
   try {
+    if (data.collections.some((x) => x !== c && x.project_dir === dir)) { toast('Another collection is already synced to that folder.', { error: true }); return; }
     const linked = await invoke('link_project', { collection: c, dir });
     Object.assign(c, linked); dirty(); renderSidebar();
     toast(`“${c.name}” now lives in ${dir}. Commit that folder; teammates open it with Open project folder…`);
@@ -825,8 +830,9 @@ async function openProject() {
     const c = await invoke('open_project', { dir });
     const existing = data.collections.find((x) => x.id === c.id);
     if (existing) { Object.assign(existing, c); dirty(); renderSidebar(); toast(`Reloaded “${c.name}” from ${dir}.`); return; }
+    const n = disarmCaptures(c); // 仓库里的东西和导入文件一样不可信
     data.collections.push(c); dirty(); renderSidebar();
-    toast(`Opened “${c.name}”. Changes you make are written back to ${dir}.`);
+    toast(`Opened “${c.name}”. Changes you make are written back to ${dir}.` + (n ? ` ${n} capture rule${n > 1 ? 's were' : ' was'} turned off — review before enabling.` : ''));
   } catch (e) { toast(String(e), { error: true }); }
 }
 
@@ -1671,6 +1677,7 @@ function bind() {
   acBind();
   $('#run-close').onclick = () => { runAbort = true; $('#run-dialog').close(); };
   $('#run-stop').onclick = () => { runAbort = true; };
+  $('#run-dialog').onclose = () => { runAbort = true; }; // Esc 关掉也要停
   $('#cookies-btn').onclick = () => { renderCookies(); $('#cookie-dialog').showModal(); };
   $('#cookie-close').onclick = () => $('#cookie-dialog').close();
   $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies and cached OAuth2 tokens cleared.'); };

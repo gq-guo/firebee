@@ -81,6 +81,11 @@ fn check(subject: &str, cond: &str, resp: &Resp, json: Option<&Value>) -> Result
         Some((op, rest)) => (op, rest.trim()),
         None => (cond, ""),
     };
+    // 引号只是给人看的：`= "abc"` 和 `contains "abc"` 都按 abc 比
+    let expected = expected
+        .strip_prefix('"')
+        .and_then(|e| e.strip_suffix('"'))
+        .unwrap_or(expected);
     let got = actual(subject, resp, json)?;
     let show = |v: &Option<Value>| match v {
         None => "nothing".to_string(),
@@ -126,7 +131,7 @@ fn check(subject: &str, cond: &str, resp: &Resp, json: Option<&Value>) -> Result
     let fail = |why: &str| Err(format!("{why} (got {})", show(&Some(got.clone()))));
     let eq = || match (got_n, exp_n) {
         (Some(a), Some(b)) => a == b,
-        _ => got_s == expected.trim_matches('"'),
+        _ => got_s == expected,
     };
     match op {
         "=" | "==" | "is" => {
@@ -175,23 +180,33 @@ fn check(subject: &str, cond: &str, resp: &Resp, json: Option<&Value>) -> Result
             }
         }
         "matches" | "~" => {
-            // ponytail: 不上 regex crate；* 当通配，够用
-            let pat = expected.trim_matches('/');
-            let ok = pat
-                .split('*')
-                .try_fold(0usize, |from, part| {
-                    got_s[from..].find(part).map(|i| from + i + part.len())
-                })
-                .is_some()
-                && (pat.starts_with('*') || got_s.starts_with(pat.split('*').next().unwrap_or("")))
-                && (pat.ends_with('*') || got_s.ends_with(pat.rsplit('*').next().unwrap_or("")));
-            if ok {
+            // ponytail: 不上 regex crate；* 当通配，整串锚定（没有 * 就是相等）
+            if glob(expected.trim_matches('/'), &got_s) {
                 Ok(())
             } else {
                 fail(&format!("expected to match {expected}"))
             }
         }
         other => Err(format!("unknown operator “{other}”")),
+    }
+}
+
+/// `*` 匹配任意串，其余字面；整串锚定
+fn glob(pat: &str, s: &str) -> bool {
+    match pat.split_once('*') {
+        None => pat == s,
+        Some((head, rest)) => {
+            let Some(after) = s.strip_prefix(head) else {
+                return false;
+            };
+            if rest.is_empty() {
+                return true;
+            }
+            // 让 * 吃任意长度前缀，剩下的递归
+            (0..=after.len())
+                .filter(|&i| after.is_char_boundary(i))
+                .any(|i| glob(rest, &after[i..]))
+        }
     }
 }
 
@@ -240,6 +255,11 @@ mod tests {
         ok("body", "contains \"id\":\"abc\"");
         ok("body", "matches *\"n\":3*");
         bad("body", "matches *zzz*");
+        bad("$.data.id", "matches a");
+        ok("$.data.id", "matches abc");
+        ok("$.data.id", "matches a*c");
+        bad("$.data.id", "matches a*b");
+        ok("$.data.id", "contains \"ab\"");
         bad("$.data.id", "");
         bad("nonsense", "= 1");
     }

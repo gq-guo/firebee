@@ -45,6 +45,8 @@ pub struct Storage {
     /// 集合和凭据原地抹掉了 —— 宁可这次不保存，也不能覆盖。
     unreadable: Mutex<HashSet<String>>,
     secrets: Box<dyn SecretStore>,
+    /// CLI 用：只读。解析失败不把文件挪成 .bak —— 旧版 CLI 认不得新版 GUI 写的字段时不能动用户数据
+    read_only: bool,
 }
 
 impl Storage {
@@ -57,6 +59,14 @@ impl Storage {
             dir,
             unreadable: Mutex::default(),
             secrets,
+            read_only: false,
+        }
+    }
+
+    pub fn read_only(dir: PathBuf) -> Self {
+        Self {
+            read_only: true,
+            ..Self::new(dir)
         }
     }
 
@@ -86,6 +96,10 @@ impl Storage {
         };
         match serde_json::from_slice(&bytes) {
             Ok(v) => v,
+            Err(e) if self.read_only => {
+                tracing::warn!("{name} 解析失败（{e}）；只读模式，不动文件");
+                T::default()
+            }
             Err(e) => {
                 let bak = self.free_backup_name(name);
                 tracing::warn!("{name} 解析失败（{e}），备份为 {bak} 并以空数据启动");
@@ -126,6 +140,9 @@ impl Storage {
         value: &T,
         pretty: bool,
     ) -> std::io::Result<()> {
+        if self.read_only {
+            return Err(std::io::Error::other("storage opened read-only"));
+        }
         if self.unreadable.lock().unwrap().contains(name) {
             return Err(std::io::Error::other(format!(
                 "{name} couldn't be read at startup, so Firebee won't overwrite it. \
@@ -178,25 +195,64 @@ impl Storage {
     /// 本地副本先落盘，再同步到各自的项目目录；目录写失败只报错不回滚（本地已经是对的）
     pub fn save_collections(&self, collections: &[Collection]) -> std::io::Result<()> {
         self.save("collections.json", &collections, true)?;
+        // 目录写失败不拦着别的目录；错误攒起来最后一起报（本地副本已经是对的）
+        let mut errs = vec![];
         for c in collections {
             if let Some(dir) = crate::core::project::dir_of(c) {
-                crate::core::project::write(&dir, c).map_err(|e| {
-                    std::io::Error::other(format!("Couldn't write project {}: {e}", dir.display()))
-                })?;
+                // 目录本身没了（挪走 / 卷没挂）就不写：create_dir_all 会在旧路径把它凭空造回来
+                if !dir.is_dir() {
+                    errs.push(format!(
+                        "{}: folder is gone — unlink it or put it back",
+                        dir.display()
+                    ));
+                    continue;
+                }
+                if let Err(e) = crate::core::project::write(&dir, c) {
+                    errs.push(format!("{}: {e}", dir.display()));
+                }
             }
         }
-        Ok(())
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "Couldn't write project folder {}",
+                errs.join("; ")
+            )))
+        }
     }
 
     /// secret 变量的值从钥匙串填回来；钥匙串里没有就留空（界面上看得出要重填）
     pub fn load_environments(&self) -> Vec<Environment> {
         let mut envs: Vec<Environment> = self.load("environments.json");
         for e in envs.iter_mut() {
-            for v in e.variables.iter_mut().filter(|v| v.secret) {
-                v.value = self.secrets.get(&account(e.id, &v.key)).unwrap_or_default();
-            }
+            self.fill_secrets(e);
         }
         envs
+    }
+
+    /// 不碰钥匙串的版本：CLI 先按名字挑环境，再只给那一个填 secret（每个条目都会弹一次钥匙串授权）
+    pub fn load_environments_without_secrets(&self) -> Vec<Environment> {
+        self.load("environments.json")
+    }
+
+    /// 返回读不出来的变量名（钥匙串锁着 / 用户拒绝）
+    pub fn fill_secrets(&self, e: &mut Environment) -> Vec<String> {
+        let mut failed = vec![];
+        for v in e
+            .variables
+            .iter_mut()
+            .filter(|v| v.secret && !v.key.is_empty())
+        {
+            match self.secrets.get(&account(e.id, &v.key)) {
+                Ok(val) => v.value = val.unwrap_or_default(),
+                Err(err) => {
+                    tracing::warn!("secret {}: {err}", v.key);
+                    failed.push(v.key.clone());
+                }
+            }
+        }
+        failed
     }
 
     /// secret 变量：值写钥匙串（变了才写），JSON 里只留壳；上次有、这次没了的条目从钥匙串删掉
@@ -211,7 +267,11 @@ impl Storage {
                 .filter(|v| v.secret && !v.key.is_empty())
             {
                 let acct = account(e.id, &v.key);
-                if self.secrets.get(&acct).as_deref() != Some(v.value.as_str()) {
+                // 钥匙串读不了就整个不保存：拿空值去覆盖真 secret 比保存失败糟得多
+                let current = self.secrets.get(&acct).map_err(|e| {
+                    std::io::Error::other(format!("{e} — secret “{}” not saved", v.key))
+                })?;
+                if current.as_deref() != Some(v.value.as_str()) {
                     self.secrets
                         .set(&acct, &v.value)
                         .map_err(std::io::Error::other)?;
@@ -271,7 +331,7 @@ mod tests {
         env2.variables.pop();
         s.save_environments(&[env2]).unwrap();
         assert_eq!(s.load_environments()[0].variables.len(), 1);
-        assert!(s.secrets.get(&account(env.id, "token")).is_none());
+        assert!(s.secrets.get(&account(env.id, "token")).unwrap().is_none());
     }
 
     use super::*;

@@ -166,6 +166,18 @@ pub fn read(dir: &Path) -> std::io::Result<Collection> {
         ));
     }
     let req_dir = dir.join(REQUESTS);
+    // manifest 列了文件但一个都读不到（requests/ 被 gitignore、只拷了一半）：按坏目录处理，
+    // 调用方会退回本地副本，而不是把空集合存成新的事实
+    fn count(n: &Node) -> usize {
+        n.requests.len() + n.folders.iter().map(count).sum::<usize>()
+    }
+    let listed = m.requests.len() + m.folders.iter().map(count).sum::<usize>();
+    if listed > 0 && !req_dir.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{MANIFEST} lists {listed} requests but {REQUESTS}/ is missing"),
+        ));
+    }
     fn reqs(names: &[String], req_dir: &Path) -> Vec<Request> {
         names
             .iter()
@@ -277,6 +289,14 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         write(tmp.path(), &c).unwrap();
         assert_eq!(fs::metadata(&p).unwrap().modified().unwrap(), m1);
+    }
+
+    #[test]
+    fn missing_requests_dir_is_an_error_not_an_empty_collection() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), &sample()).unwrap();
+        fs::remove_dir_all(tmp.path().join("requests")).unwrap();
+        assert!(read(tmp.path()).is_err());
     }
 
     #[test]

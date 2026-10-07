@@ -24,14 +24,20 @@ fn tokenize(path: &str) -> Result<Vec<Tok>, String> {
         if let Some(r) = rest.strip_prefix("..") {
             let n = ident(r);
             if n == 0 {
-                return Err(format!("Can't read “{}”", &rest[..rest.len().min(10)]));
+                return Err(format!(
+                    "Can't read “{}”",
+                    rest.chars().take(10).collect::<String>()
+                ));
             }
             toks.push(Tok::Deep(r[..n].to_string()));
             rest = &r[n..];
         } else if let Some(r) = rest.strip_prefix('.') {
             let n = ident(r);
             if n == 0 {
-                return Err(format!("Can't read “{}”", &rest[..rest.len().min(10)]));
+                return Err(format!(
+                    "Can't read “{}”",
+                    rest.chars().take(10).collect::<String>()
+                ));
             }
             toks.push(Tok::Key(r[..n].to_string()));
             rest = &r[n..];
@@ -48,7 +54,10 @@ fn tokenize(path: &str) -> Result<Vec<Tok>, String> {
             toks.push(Tok::Key(key.to_string()));
             rest = &r[end + 1..];
         } else {
-            return Err(format!("Can't read “{}”", &rest[..rest.len().min(10)]));
+            return Err(format!(
+                "Can't read “{}”",
+                rest.chars().take(10).collect::<String>()
+            ));
         }
     }
     Ok(toks)
@@ -142,6 +151,14 @@ mod tests {
         assert_eq!(s("$['a b']"), vec![json!(7)]);
         assert_eq!(s("$.nope.x"), Vec::<Value>::new());
         assert!(query(&j, "data.token").is_err());
+        assert!(
+            query(&j, "$.a€€€€").is_err(),
+            "non-ASCII garbage must be an error, not a panic"
+        );
+        assert_eq!(
+            query(&json!({"数据": {"名称": "x"}}), "$.数据.名称").unwrap(),
+            vec![&json!("x")]
+        );
         assert_eq!(capture(&j, "$.data.token").unwrap().as_deref(), Some("t"));
         assert_eq!(
             capture(&j, "$.data.orders[0].app").unwrap().as_deref(),
