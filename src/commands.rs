@@ -22,13 +22,9 @@ use crate::core::vars::substitute_request;
 #[derive(Default)]
 pub struct Pending(Mutex<HashMap<u64, watch::Sender<bool>>>);
 
-/// 应用生命周期内共享的 Cookie 罐（登录后会话接口能连着调）；Clear 即换新罐
-pub struct Cookies(pub Mutex<Arc<reqwest::cookie::Jar>>);
-impl Default for Cookies {
-    fn default() -> Self {
-        Self(Mutex::new(Arc::new(reqwest::cookie::Jar::default())))
-    }
-}
+/// 应用生命周期内共享的 Cookie 罐（登录后会话接口能连着调）
+#[derive(Default)]
+pub struct Cookies(pub Arc<crate::core::cookies::Cookies>);
 
 /// OAuth2 access_token 缓存：key = token_url + client_id + scope → (token, 过期时刻)。只在内存。
 #[derive(Default)]
@@ -185,7 +181,7 @@ pub async fn send_request(
     resolve_oauth(&mut req, &tokens, timeout, &net).await?;
     let (tx, rx) = watch::channel(false);
     pending.0.lock().unwrap().insert(job_id, tx);
-    let jar = cookies.0.lock().unwrap().clone();
+    let jar: Arc<dyn reqwest::cookie::CookieStore> = cookies.0.clone();
     // SSE / NDJSON：每个 chunk 立刻推给界面（事件 "stream"），完整响应仍走返回值
     let on_stream = Box::new(move |ev: StreamEvent| {
         let _ = match ev {
@@ -277,8 +273,6 @@ pub fn final_request(
     let parsed = reqwest::Url::parse(&url).map_err(|e| e.to_string())?;
     let cookies = cookies
         .0
-        .lock()
-        .unwrap()
         .cookies(&parsed)
         .map(|v| {
             v.to_str()
@@ -326,8 +320,18 @@ pub fn final_request(
 
 #[tauri::command]
 pub fn clear_cookies(cookies: State<Cookies>, tokens: State<Tokens>) {
-    *cookies.0.lock().unwrap() = Arc::new(reqwest::cookie::Jar::default());
+    cookies.0.clear();
     tokens.0.lock().unwrap().clear();
+}
+
+#[tauri::command]
+pub fn list_cookies(cookies: State<Cookies>) -> Vec<crate::core::cookies::CookieView> {
+    cookies.0.list()
+}
+
+#[tauri::command]
+pub fn delete_cookie(cookies: State<Cookies>, domain: String, path: String, name: String) -> bool {
+    cookies.0.remove(&domain, &path, &name)
 }
 
 /// 把响应体保存到文件：文本直接写，二进制走 base64 解码

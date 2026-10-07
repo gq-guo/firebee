@@ -915,6 +915,20 @@ function bodyEditor() {
   return wrap;
 }
 
+/** Cookie 管理：列出会话里的 cookie，可单删 */
+async function renderCookies() {
+  const list = $('#cookie-list');
+  const rows = await invoke('list_cookies');
+  if (!rows.length) { put(list, h('div', { class: 'ready' }, h('strong', {}, 'No cookies'), h('span', {}, 'Send a request to a server that sets one.'))); return; }
+  put(list, h('table', { class: 'kv ro cookies' }, h('tr', {}, h('th', {}, 'Host'), h('th', {}, 'Name'), h('th', {}, 'Value'), h('th', {}, 'Expires'), h('th', {})),
+    ...rows.map((c) => h('tr', {},
+      h('td', {}, h('code', {}, c.domain + (c.path !== '/' ? c.path : '')), c.secure ? h('span', { class: 'muted', title: 'Secure' }, ' 🔒') : null),
+      h('td', {}, h('code', {}, c.name)),
+      h('td', { class: 'val' }, h('code', { title: c.value }, c.value)),
+      h('td', { class: 'muted' }, c.expires ? new Date(c.expires).toLocaleString() : 'Session'),
+      h('td', { class: 'ctl' }, btn('×', async () => { await invoke('delete_cookie', { domain: c.domain, path: c.path, name: c.name }); renderCookies(); renderRequest(); }, 'small ghost').withAttr('aria-label', 'Delete cookie'))))));
+}
+
 /** Actual Request：变量、继承 header/auth、默认 Content-Type、会话 Cookie 全算完之后真正会发出去的请求。只读。 */
 function previewEditor() {
   const wrap = h('div', { class: 'preview' }, h('div', { class: 'helper' }, 'Exactly what will be sent: variables resolved, inherited headers and auth applied, session cookies attached.'));
@@ -1555,6 +1569,8 @@ function acBind() {
 // ---------- 事件绑定 ----------
 function bind() {
   acBind();
+  $('#cookies-btn').onclick = () => { renderCookies(); $('#cookie-dialog').showModal(); };
+  $('#cookie-close').onclick = () => $('#cookie-dialog').close();
   $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies and cached OAuth2 tokens cleared.'); };
   $('#method').replaceChildren(...METHODS.map((m) => h('option', { value: m }, m.toUpperCase())));
   $('#method').onchange = (e) => { current.method = e.target.value; e.target.className = `m-${current.method.toLowerCase()}`; dirty(); renderSidebar(); renderTabs(); };

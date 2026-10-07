@@ -54,7 +54,7 @@ pub async fn execute(
     req: &Request,
     timeout: Duration,
     cancel: tokio::sync::watch::Receiver<bool>,
-    jar: Option<Arc<reqwest::cookie::Jar>>,
+    jar: Option<Arc<dyn reqwest::cookie::CookieStore>>,
     follow_redirects: bool,
     insecure: bool,
 ) -> Result<ResponseMeta, HttpError> {
@@ -96,6 +96,21 @@ impl Default for Net {
             ca_path: String::new(),
             cert_path: String::new(),
         }
+    }
+}
+
+/// cookie_provider 要一个具体类型；这层把 dyn 转发过去
+struct DynJar(Arc<dyn reqwest::cookie::CookieStore>);
+impl reqwest::cookie::CookieStore for DynJar {
+    fn set_cookies(
+        &self,
+        h: &mut dyn Iterator<Item = &reqwest::header::HeaderValue>,
+        url: &reqwest::Url,
+    ) {
+        self.0.set_cookies(h, url)
+    }
+    fn cookies(&self, url: &reqwest::Url) -> Option<reqwest::header::HeaderValue> {
+        self.0.cookies(url)
     }
 }
 
@@ -152,7 +167,7 @@ pub async fn execute_streaming(
     req: &Request,
     timeout: Duration,
     cancel: tokio::sync::watch::Receiver<bool>,
-    jar: Option<Arc<reqwest::cookie::Jar>>,
+    jar: Option<Arc<dyn reqwest::cookie::CookieStore>>,
     net: &Net,
     on_stream: Option<OnStream>,
 ) -> Result<ResponseMeta, HttpError> {
@@ -192,7 +207,7 @@ pub async fn execute_streaming(
             attempt.follow()
         }));
     if let Some(jar) = jar {
-        builder = builder.cookie_provider(jar);
+        builder = builder.cookie_provider(Arc::new(DynJar(jar)));
     }
     builder = apply_net(builder, net)?;
     let client = builder
@@ -921,7 +936,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200))
             .mount(&server)
             .await;
-        let jar = Arc::new(reqwest::cookie::Jar::default());
+        let jar: Arc<dyn reqwest::cookie::CookieStore> = Arc::new(reqwest::cookie::Jar::default());
         let mut login = Request::new("l");
         login.url = format!("{}/login", server.uri());
         execute(

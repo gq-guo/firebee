@@ -107,7 +107,12 @@
     <div id="env-list"></div>
     <div id="env-editor"></div>
   </div>
-  <div class="row dialog-foot"><span class="muted">Cookies and OAuth2 tokens are kept in memory for this session.</span><span class="spacer"></span><button id="clear-cookies" class="small ghost">Clear cookies &amp; tokens</button></div>
+  <div class="row dialog-foot"><span class="muted">Cookies and OAuth2 tokens are kept in memory for this session.</span><span class="spacer"></span><button id="cookies-btn" class="small ghost">Cookies…</button><button id="clear-cookies" class="small ghost">Clear cookies &amp; tokens</button></div>
+</dialog>
+
+<dialog id="cookie-dialog">
+  <div class="row dialog-head"><strong>Cookies</strong><span class="muted">Set by servers during this session. Sent back automatically to matching hosts.</span><span class="spacer"></span><button id="cookie-close" class="small">Close</button></div>
+  <div id="cookie-list"></div>
 </dialog>
 
 <dialog id="settings-dialog">

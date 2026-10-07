@@ -387,3 +387,8 @@ pre.stream { max-height: 100%; overflow: auto; }
 .popover select { font: 12px var(--font); }
 .file-pick { display: inline-flex; align-items: center; gap: 6px; max-width: 170px; }
 .file-pick .file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px var(--font-mono); }
+
+/* Cookie 管理 */
+#cookie-dialog { width: min(820px, 90vw); }
+table.kv.cookies th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 4px 6px; }
+table.kv.cookies td.val code { display: inline-block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }

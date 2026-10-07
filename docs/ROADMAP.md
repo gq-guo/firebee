@@ -2,7 +2,7 @@
 
 原则不变：不堆功能、默认简单、调试优先、开发者原生。排序依据是**使用中断风险 ÷ 实现成本**，不是功能高级程度。
 
-## P0 — 0.4 "Never Leave Firebee"
+## P0 — 0.4 "Never Leave Firebee"（已完成）
 
 缺了就被迫切回 curl / Postman 的能力，按成本从低到高做：
 
@@ -16,7 +16,7 @@
 | 6 | SSE / 流式响应 | `resp.bytes().await` 读完才显示，流式接口要么等到关连接要么超时 | `Content-Type: text/event-stream` 时按 chunk 推给前端追加 |
 | 7 | Actual Request | 导出 curl 已经先替换变量再拼 URL | 只读 "Final Request" 面板，展示变量替换、继承 header/auth、Cookie 之后的最终请求 |
 
-## P1 — 0.5 "Debug Faster"
+## P1 — 0.5 "Debug Faster"（已完成，PKCE 与 DNS/Connect/TLS 拆分除外）
 
 - 自定义 Proxy（HTTP/HTTPS + bypass 列表）
 - mTLS（PEM / PKCS12 客户端证书）、自定义 CA 文件

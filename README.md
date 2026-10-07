@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - Preview 标签：变量替换、继承的 header/auth、默认 Content-Type、会话 Cookie 全算完之后真正发出去的请求，调 401 不用猜
 - 可取消、超时可配；多个请求可同时在飞，响应按请求保留（切换不丢，内存中最多 50 条）
 - Capture：2xx 响应后按 JSONPath 把值写进当前环境变量（`token` ← `$.data.token`），登录拿 token 不用手动复制
-- Cookie 在会话内自动保持，登录后可连着调会话接口；Environment › Manage… 里可清除
+- Cookie 在会话内自动保持，登录后可连着调会话接口；Environment › Manage… › Cookies… 可逐条查看 / 删除，也可一键清空
 - 重定向：顶栏可关；开着时也只跟同一 host（换 host 必停）。跟过的每一跳都在响应区列出来，停下来时显示 Location 并可一键填进 URL。reqwest 换 host 时只剥 Authorization / Cookie，`X-API-Key` 这类自定义头会原样发过去，被控制的接口一个 302 就能取走密钥
 
 **响应**

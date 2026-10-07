@@ -64,6 +64,8 @@ pub fn run() {
             commands::missing_vars,
             commands::send_request,
             commands::final_request,
+            commands::list_cookies,
+            commands::delete_cookie,
             commands::cancel_request,
             commands::export_code,
             commands::import_curl,

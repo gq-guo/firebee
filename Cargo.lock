@@ -926,6 +926,7 @@ version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "cookie_store",
  "dirs",
  "mime_guess",
  "reqwest 0.12.28",
