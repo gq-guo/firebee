@@ -371,8 +371,13 @@ pub struct Imported {
 #[tauri::command]
 pub fn import_file(path: String) -> Result<Imported, String> {
     let bytes = std::fs::read(&path).map_err(|e| format!("Couldn't read {path}: {e}"))?;
-    let v: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|e| format!("Not valid JSON: {e}"))?;
+    // JSON 优先；不是 JSON 再按 YAML 读（OpenAPI 常见）。YAML 是 JSON 的超集，所以错误信息按 JSON 的报
+    let v: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(je) => {
+            serde_yaml::from_slice(&bytes).map_err(|_| format!("Not valid JSON or YAML: {je}"))?
+        }
+    };
     if v.get("firebee").is_some() {
         let mut collection: Collection = serde_json::from_value(v["collection"].clone())
             .map_err(|e| format!("Not a Firebee collection file: {e}"))?;
@@ -395,7 +400,14 @@ pub fn import_file(path: String) -> Result<Imported, String> {
             ..Default::default()
         });
     }
-    Err("Unrecognised file — expected a Firebee export, a Postman collection (v2.x) or a Postman environment".into())
+    if crate::core::openapi::is_openapi(&v) {
+        let (collection, environment) = crate::core::openapi::to_collection(&v);
+        return Ok(Imported {
+            collection: Some(collection),
+            environment,
+        });
+    }
+    Err("Unrecognised file — expected a Firebee export, a Postman collection (v2.x) / environment, or an OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML)".into())
 }
 
 #[tauri::command]

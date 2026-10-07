@@ -765,7 +765,7 @@ async function exportCollection(c) {
 }
 /** 导入 Firebee 导出 / Postman collection / Postman environment */
 async function importFile() {
-  const path = await dialog.open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] });
+  const path = await dialog.open({ multiple: false, filters: [{ name: 'JSON / YAML', extensions: ['json', 'yaml', 'yml'] }] });
   if (!path) return;
   try {
     const r = await invoke('import_file', { path });
