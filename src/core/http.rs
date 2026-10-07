@@ -58,6 +58,37 @@ pub async fn execute(
     follow_redirects: bool,
     insecure: bool,
 ) -> Result<ResponseMeta, HttpError> {
+    execute_streaming(req, timeout, cancel, jar, follow_redirects, insecure, None).await
+}
+
+/// 流式响应（SSE / NDJSON）边收边推给界面的事件
+pub enum StreamEvent {
+    /// 响应头已到：状态码 + 头
+    Start(u16, Vec<(String, String)>),
+    Chunk(Vec<u8>),
+}
+
+pub type OnStream = Box<dyn Fn(StreamEvent) + Send + Sync>;
+
+fn is_streaming(headers: &[(String, String)]) -> bool {
+    headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("content-type")
+            && (v.starts_with("text/event-stream") || v.starts_with("application/x-ndjson"))
+    })
+}
+
+/// execute 的完整版：on_stream 给了且响应是 text/event-stream / x-ndjson 时，
+/// 每个 chunk 到达即回调；最终返回值仍是完整响应（历史、Capture 不用改）。
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_streaming(
+    req: &Request,
+    timeout: Duration,
+    cancel: tokio::sync::watch::Receiver<bool>,
+    jar: Option<Arc<reqwest::cookie::Jar>>,
+    follow_redirects: bool,
+    insecure: bool,
+    on_stream: Option<OnStream>,
+) -> Result<ResponseMeta, HttpError> {
     let url = build_url(req)?;
     // 跟过的重定向记下来给界面显示 —— 否则"到底跳去哪了"完全看不见
     let trail: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
@@ -175,27 +206,44 @@ pub async fn execute(
     let start = Instant::now();
     let send = builder.send();
     tokio::pin!(send);
-    let resp = tokio::select! {
+    let mut resp = tokio::select! {
         r = &mut send => r.map_err(|e| map_reqwest_err(&e, timeout))?,
-        _ = wait_cancelled(cancel) => return Err(HttpError::Cancelled),
+        _ = wait_cancelled(cancel.clone()) => return Err(HttpError::Cancelled),
     };
     let status = resp.status().as_u16();
-    let headers = resp
+    let headers: Vec<(String, String)> = resp
         .headers()
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| HttpError::Network(e.to_string()))?;
+    let bytes: Vec<u8> = match on_stream.filter(|_| is_streaming(&headers)) {
+        None => resp
+            .bytes()
+            .await
+            .map_err(|e| HttpError::Network(e.to_string()))?
+            .to_vec(),
+        Some(cb) => {
+            cb(StreamEvent::Start(status, headers.clone()));
+            let mut buf = Vec::new();
+            loop {
+                let next = tokio::select! {
+                    c = resp.chunk() => c.map_err(|e| HttpError::Network(e.to_string()))?,
+                    _ = wait_cancelled(cancel.clone()) => return Err(HttpError::Cancelled),
+                };
+                let Some(c) = next else { break };
+                buf.extend_from_slice(&c);
+                cb(StreamEvent::Chunk(c.to_vec()));
+            }
+            buf
+        }
+    };
     let duration_ms = start.elapsed().as_millis();
     let redirects = std::mem::take(&mut *trail.lock().unwrap());
     Ok(ResponseMeta {
         status,
         headers,
         size_bytes: bytes.len(),
-        body: bytes.to_vec(),
+        body: bytes,
         duration_ms,
         redirects,
     })
@@ -259,6 +307,43 @@ mod multipart_tests {
             "{body}"
         );
         assert!(body.contains("hi there"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn sse_response_streams_chunks_and_still_returns_full_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/sse"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw("data: a\n\ndata: b\n\n", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let mut r = Request::new("sse");
+        r.url = format!("{}/sse", server.uri());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let s2 = seen.clone();
+        let cb: OnStream = Box::new(move |ev| {
+            s2.lock().unwrap().push(match ev {
+                StreamEvent::Start(st, _) => format!("start {st}"),
+                StreamEvent::Chunk(c) => String::from_utf8_lossy(&c).into_owned(),
+            })
+        });
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        drop(tx);
+        let resp = execute_streaming(&r, Duration::from_secs(5), rx, None, true, false, Some(cb))
+            .await
+            .unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen.first().map(String::as_str),
+            Some("start 200"),
+            "headers={:?}",
+            resp.headers
+        );
+        assert_eq!(seen[1..].concat(), "data: a\n\ndata: b\n\n");
+        assert_eq!(resp.body, b"data: a\n\ndata: b\n\n");
     }
 
     #[tokio::test]

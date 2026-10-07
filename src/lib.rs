@@ -62,6 +62,7 @@ pub fn run() {
             commands::save_history,
             commands::missing_vars,
             commands::send_request,
+            commands::final_request,
             commands::cancel_request,
             commands::export_code,
             commands::import_curl,

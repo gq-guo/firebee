@@ -28,6 +28,8 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - GraphQL：新建时选 New GraphQL request，Query + Variables（JSON）编辑，按 `{"query","variables"}` POST；Postman 的 GraphQL body 可导入
 - Params / Headers 表格末尾常驻空白行，直接输入即新增；Header 名与 Content-Type / Accept 值自动补全；JSON body 一键格式化并定位错误
 - 信任系统钥匙串里的 CA（企业 CA、Charles / mitmproxy 根证书直接生效）；走系统代理；自签名测试环境可在 Request settings 里打开 Allow invalid certificates
+- SSE / NDJSON 流式响应边收边显示，不用等连接关闭
+- Preview 标签：变量替换、继承的 header/auth、默认 Content-Type、会话 Cookie 全算完之后真正发出去的请求，调 401 不用猜
 - 可取消、超时可配；多个请求可同时在飞，响应按请求保留（切换不丢，内存中最多 50 条）
 - Capture：2xx 响应后按 JSONPath 把值写进当前环境变量（`token` ← `$.data.token`），登录拿 token 不用手动复制
 - Cookie 在会话内自动保持，登录后可连着调会话接口；Environment › Manage… 里可清除

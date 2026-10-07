@@ -11,7 +11,7 @@ fn py(s: &str) -> String {
 }
 
 /// 收集最终生效的 header（含认证与 Content-Type），供 curl/python 共用。
-fn effective_headers(req: &Request) -> Vec<(String, String)> {
+pub fn effective_headers(req: &Request) -> Vec<(String, String)> {
     let mut hs: Vec<(String, String)> = req
         .headers
         .iter()

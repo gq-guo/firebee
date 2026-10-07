@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use base64::Engine;
 use serde::Serialize;
-use tauri::State;
+use tauri::{Emitter, State};
 use tokio::sync::watch;
 
-use crate::core::export::{to_curl, to_python};
-use crate::core::http::{build_url, execute};
+use crate::core::export::{effective_headers, to_curl, to_python};
+use crate::core::http::{build_url, execute_streaming, StreamEvent};
 use crate::core::models::{
     merge_inherited, Collection, Environment, HistoryEntry, Inherited, Request,
 };
@@ -118,6 +118,7 @@ pub struct SendOptions {
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn send_request(
+    app: tauri::AppHandle,
     pending: State<'_, Pending>,
     cookies: State<'_, Cookies>,
     job_id: u64,
@@ -136,13 +137,27 @@ pub async fn send_request(
     let (tx, rx) = watch::channel(false);
     pending.0.lock().unwrap().insert(job_id, tx);
     let jar = cookies.0.lock().unwrap().clone();
-    let result = execute(
+    // SSE / NDJSON：每个 chunk 立刻推给界面（事件 "stream"），完整响应仍走返回值
+    let on_stream = Box::new(move |ev: StreamEvent| {
+        let _ = match ev {
+            StreamEvent::Start(status, headers) => app.emit(
+                "stream",
+                serde_json::json!({ "job_id": job_id, "kind": "start", "status": status, "headers": headers }),
+            ),
+            StreamEvent::Chunk(c) => app.emit(
+                "stream",
+                serde_json::json!({ "job_id": job_id, "kind": "chunk", "text": String::from_utf8_lossy(&c) }),
+            ),
+        };
+    });
+    let result = execute_streaming(
         &req,
         Duration::from_secs(timeout_secs.max(1)),
         rx,
         Some(jar),
         follow_redirects.unwrap_or(true),
         insecure,
+        Some(on_stream),
     )
     .await;
     pending.0.lock().unwrap().remove(&job_id);
@@ -174,6 +189,85 @@ pub async fn send_request(
             }
         })
         .map_err(|e| e.to_string())
+}
+
+/// 最终实际会发出去的请求：变量替换、继承的 header/auth、默认 Content-Type、
+/// 会话 Cookie 全部算完之后的样子。调"为什么 401 / 为什么没带上"用。
+#[derive(Serialize)]
+pub struct FinalRequest {
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    cookies: Vec<String>,
+    body: String,
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn final_request(
+    cookies: State<Cookies>,
+    request: Request,
+    env: Option<Environment>,
+    inherited: Option<Vec<Inherited>>,
+) -> Result<FinalRequest, String> {
+    use crate::core::models::{Auth, BodyType};
+    use reqwest::cookie::CookieStore;
+    let request = merge_inherited(&request, &inherited.unwrap_or_default());
+    let (req, _) = substitute_request(&request, &vars(&env));
+    let url = build_url(&req).map_err(|e| e.to_string())?;
+    let mut headers = effective_headers(&req);
+    if let Auth::Basic { username, password } = &req.auth {
+        let cred =
+            base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+        headers.push(("Authorization".into(), format!("Basic {cred}")));
+    }
+    let parsed = reqwest::Url::parse(&url).map_err(|e| e.to_string())?;
+    let cookies = cookies
+        .0
+        .lock()
+        .unwrap()
+        .cookies(&parsed)
+        .map(|v| {
+            v.to_str()
+                .unwrap_or("")
+                .split("; ")
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let on = |rows: &[crate::core::models::KeyValue]| {
+        rows.iter()
+            .filter(|f| f.enabled && !f.key.is_empty())
+            .map(|f| format!("{}={}{}", f.key, if f.is_file { "@" } else { "" }, f.value))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let body = match req.body_type {
+        BodyType::None => String::new(),
+        BodyType::Json | BodyType::Text => req.body.clone(),
+        BodyType::GraphQL => req.graphql_payload().unwrap_or_default(),
+        BodyType::Form => {
+            headers.push((
+                "Content-Type".into(),
+                "application/x-www-form-urlencoded".into(),
+            ));
+            on(&req.form)
+        }
+        BodyType::Multipart => {
+            headers.push((
+                "Content-Type".into(),
+                "multipart/form-data; boundary=…".into(),
+            ));
+            on(&req.form)
+        }
+        BodyType::Binary => format!("@{}", req.body.trim()),
+    };
+    Ok(FinalRequest {
+        method: req.effective_method().as_str().into(),
+        url,
+        headers,
+        cookies,
+        body,
+    })
 }
 
 #[tauri::command]

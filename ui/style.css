@@ -372,3 +372,11 @@ label.check input { flex: none; }
 .from-history { color: var(--warn); font-family: var(--font-body); font-size: 12px; }
 .helper.redirects code { font-size: 12px; }
 [role="radiogroup"] label { font-size: 13px; color: var(--text-2); }
+
+/* Preview（Actual Request）与流式响应 */
+.preview h4 { margin: 12px 0 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.preview .method { font-weight: 700; margin-right: 8px; }
+.preview .url { word-break: break-all; }
+table.kv.ro td { padding: 4px 6px; vertical-align: top; }
+table.kv.ro td.val code { word-break: break-all; }
+pre.stream { max-height: 100%; overflow: auto; }

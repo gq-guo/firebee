@@ -844,6 +844,7 @@ function renderRequest() {
   }
   else if (reqTab === 'body') body.append(bodyEditor());
   else if (reqTab === 'capture') body.append(captureEditor());
+  else if (reqTab === 'preview') body.append(previewEditor());
   else {
     const ia = inheritedAuth(current);
     if (current.auth === 'Off') body.append(h('div', { class: 'helper' }, ia
@@ -905,6 +906,20 @@ function bodyEditor() {
       name ? btn('×', () => { current.body = ''; dirty(); renderRequest(); renderTabCounts(); }, 'small ghost').withAttr('aria-label', 'Clear file') : null),
       h('div', { class: 'helper' }, 'The whole file is sent as the request body. Set Content-Type in Headers if the server needs it.'));
   }
+  return wrap;
+}
+
+/** Actual Request：变量、继承 header/auth、默认 Content-Type、会话 Cookie 全算完之后真正会发出去的请求。只读。 */
+function previewEditor() {
+  const wrap = h('div', { class: 'preview' }, h('div', { class: 'helper' }, 'Exactly what will be sent: variables resolved, inherited headers and auth applied, session cookies attached.'));
+  invoke('final_request', { request: current, env: activeEnv(), inherited: chainFor(current) || [] }).then((f) => {
+    const kvs = (rows) => h('table', { class: 'kv ro' }, ...rows.map(([k, v]) => h('tr', {}, h('td', { class: 'key' }, h('code', {}, k)), h('td', { class: 'val' }, h('code', {}, v)))));
+    put(wrap, wrap.firstChild,
+      h('div', { class: 'row' }, h('code', { class: 'method' }, f.method), h('code', { class: 'url' }, f.url)),
+      h('h4', {}, `Headers (${f.headers.length})`), f.headers.length ? kvs(f.headers) : h('div', { class: 'muted' }, 'None'),
+      f.cookies.length ? h('h4', {}, `Cookies (${f.cookies.length})`) : null, f.cookies.length ? kvs(f.cookies.map((c) => c.split(/=(.*)/s).slice(0, 2))) : null,
+      f.body ? h('h4', {}, 'Body') : null, f.body ? h('pre', {}, f.body) : null);
+  }, (e) => put(wrap, wrap.firstChild, h('div', { class: 'helper error' }, String(e))));
   return wrap;
 }
 
@@ -999,7 +1014,7 @@ async function send() {
   } catch (e) {
     result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
   }
-  pendings.delete(rid); setResponse(rid, result);
+  pendings.delete(rid); streams.delete(rid); setResponse(rid, result);
   if (result.ok && result.ok.status < 300) {
     const cap = runCaptures(req, result.ok, capEnv);
     if (cap) toast(cap.ok || cap.error, { error: !cap.ok });
@@ -1015,6 +1030,15 @@ async function send() {
   renderSidebar(); renderTabs();
 }
 const sentAt = new Map(); // request.id → 发出时刻，Waiting 计时用
+// SSE / NDJSON 边收边显示：request.id → {status, headers, text}；请求结束即删，最终响应走 responses
+const streams = new Map();
+window.__TAURI__.event.listen('stream', ({ payload }) => {
+  const rid = [...pendings].find(([, job]) => job === payload.job_id)?.[0];
+  if (!rid) return;
+  if (payload.kind === 'start') streams.set(rid, { status: payload.status, headers: payload.headers, text: '' });
+  else if (streams.has(rid)) streams.get(rid).text += payload.text;
+  if (current.id === rid) renderResponse();
+});
 
 /** URL 栏右侧的瞬时结果：亮 1.5s 后变淡，切请求 / 再次发送时清掉 */
 let flashTimer = null;
@@ -1178,6 +1202,15 @@ function renderResponse() {
   if (response) $('#split').classList.add('has-resp');
   clearInterval(waitTick);
   if (!response) {
+    const live = streams.get(current.id);
+    if (pending && live) {
+      put(meta, h('span', { class: `status s${Math.floor(live.status / 100)}` }, live.status), REASON[live.status] && h('span', { class: 'reason' }, REASON[live.status]),
+        h('span', { class: 'sep' }, '·'), h('span', { class: 'spinner' }), h('span', { class: 'waiting' }, 'Streaming…'),
+        h('span', { class: 'sep' }, '·'), h('span', { class: 'meta' }, fmtSize(new TextEncoder().encode(live.text).length)));
+      const pre = h('pre', { class: 'stream' }, live.text);
+      body.append(pre); pre.scrollTop = pre.scrollHeight;
+      return;
+    }
     if (pending) {
       const el = h('span', { class: 'muted waiting' });
       const t0 = sentAt.get(current.id) ?? performance.now();
