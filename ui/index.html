@@ -111,6 +111,11 @@
   <div class="row dialog-foot"><span class="muted">Cookies and OAuth2 tokens are kept in memory for this session.</span><span class="spacer"></span><button id="cookies-btn" class="small ghost">Cookies…</button><button id="clear-cookies" class="small ghost">Clear cookies &amp; tokens</button></div>
 </dialog>
 
+<dialog id="run-dialog">
+  <div class="row dialog-head"><strong id="run-title">Run collection</strong><span class="muted" id="run-summary"></span><span class="spacer"></span><button id="run-stop" class="small ghost">Stop</button><button id="run-close" class="small">Close</button></div>
+  <div id="run-list"></div>
+</dialog>
+
 <dialog id="cookie-dialog">
   <div class="row dialog-head"><strong>Cookies</strong><span class="muted">Set by servers during this session. Sent back automatically to matching hosts.</span><span class="spacer"></span><button id="cookie-close" class="small">Close</button></div>
   <div id="cookie-list"></div>

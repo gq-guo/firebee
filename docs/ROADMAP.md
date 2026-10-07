@@ -25,7 +25,7 @@
 - 响应 TTFB / Total（DNS/Connect/TLS 拆分 reqwest 不暴露，要自写 connector，放 P2）
 - Cookie Manager
 
-## P2 — 0.6 "Developer Workflow"
+## P2 — 0.6 "Developer Workflow"（已完成）
 
 顺序有依赖，先定文件格式：
 

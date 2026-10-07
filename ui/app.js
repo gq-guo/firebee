@@ -462,6 +462,7 @@ function containerNode(c, parentArr, isFolder = false) {
     ['New folder', () => { c.folders.push(newContainer('New folder')); collapsed.delete(c.id); dirty(); renderSidebar(); }],
     ['Shared headers & auth…', () => openSettings(c, isFolder)],
     ['Import from curl…', () => openImport(c)],
+    ['Run ' + (isFolder ? 'folder' : 'collection') + '…', () => runCollection(c)],
     !isFolder && ['Export collection…', () => exportCollection(c)],
     !isFolder && (c.project_dir
       ? ['Unlink project folder', () => { delete c.project_dir; dirty(); renderSidebar(); toast(`“${c.name}” is no longer synced to a folder. The files there are untouched.`); }]
@@ -766,6 +767,47 @@ function openImport(into = null) {
 }
 
 /** 集合导出为 Firebee JSON 文件 */
+/** Runner：按顺序发送容器里的所有请求（含子文件夹），Capture 传给后面的，Tests 决定 PASS/FAIL */
+let runAbort = false;
+async function runCollection(container) {
+  const flat = [];
+  (function walk(n, path) { for (const r of n.requests) flat.push({ r, path: path ? `${path}/${r.name}` : r.name }); for (const f of n.folders) walk(f, path ? `${path}/${f.name}` : f.name); })(container, '');
+  if (!flat.length) { toast('Nothing to run — the container is empty.'); return; }
+  const dlg = $('#run-dialog'), list = $('#run-list'), summary = $('#run-summary');
+  $('#run-title').textContent = `Run “${container.name}”`;
+  runAbort = false; $('#run-stop').classList.remove('hidden');
+  const rows = flat.map(({ path }) => h('div', { class: 'run-row' }, h('span', { class: 'st muted' }, '·'), h('span', { class: 'name' }, path), h('span', { class: 'meta muted' }, '')));
+  put(list, ...rows); summary.textContent = `0 / ${flat.length}`; dlg.showModal();
+  const env = activeEnv();
+  let pass = 0, fail = 0;
+  for (let i = 0; i < flat.length; i++) {
+    if (runAbort) break;
+    const { r, path } = flat[i], row = rows[i];
+    row.firstChild.textContent = '…'; row.firstChild.className = 'st';
+    const req = structuredClone(r), chain = chainFor(r) || [];
+    let ok, meta;
+    try {
+      const dto = await invoke('send_request', { job_id: ++jobSeq, request: req, env: activeEnv(),
+        options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
+      const asserts = await runAsserts(req, dto);
+      ok = asserts ? asserts.every((a) => a.ok) : dto.status < 400;
+      const cap = dto.status < 300 ? runCaptures(req, dto, env) : null;
+      meta = `${dto.status} · ${dto.duration_ms} ms` + (cap?.ok ? ' · captured' : '') + (asserts ? ` · ${asserts.filter((a) => a.ok).length}/${asserts.length} tests` : '');
+      const failed = (asserts || []).filter((a) => !a.ok);
+      if (failed.length) row.append(...failed.map((a) => h('div', { class: 'fail' }, `✗ ${a.rule} — ${a.message}`)));
+      setResponse(r.id, { ok: { ...dto, asserts } });
+    } catch (e) { ok = false; meta = String(e); }
+    ok ? pass++ : fail++;
+    row.firstChild.textContent = ok ? '✓' : '✗'; row.firstChild.className = 'st ' + (ok ? 'ok' : 'bad');
+    row.querySelector('.meta').textContent = meta; row.classList.add(ok ? 'pass' : 'fail');
+    summary.textContent = `${pass + fail} / ${flat.length} · ${pass} passed${fail ? ` · ${fail} failed` : ''}`;
+  }
+  $('#run-stop').classList.add('hidden');
+  if (runAbort) summary.textContent += ' · stopped';
+  if (current && responses.has(current.id)) renderResponse();
+  renderRequest(); renderSidebar();
+}
+
 /** 项目目录：集合与目录双向同步（见 core/project.rs），目录可以进 git */
 async function linkProject(c) {
   const dir = await dialog.open({ directory: true, title: 'Choose an empty folder (or the project folder of this collection)' });
@@ -1627,6 +1669,8 @@ function acBind() {
 // ---------- 事件绑定 ----------
 function bind() {
   acBind();
+  $('#run-close').onclick = () => { runAbort = true; $('#run-dialog').close(); };
+  $('#run-stop').onclick = () => { runAbort = true; };
   $('#cookies-btn').onclick = () => { renderCookies(); $('#cookie-dialog').showModal(); };
   $('#cookie-close').onclick = () => $('#cookie-dialog').close();
   $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies and cached OAuth2 tokens cleared.'); };
