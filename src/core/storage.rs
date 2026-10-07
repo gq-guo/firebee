@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::core::models::{Collection, Environment, HistoryEntry};
+use crate::core::secrets::{account, SecretStore};
 
 pub const HISTORY_LIMIT: usize = 500;
 
@@ -43,13 +44,19 @@ pub struct Storage {
     /// 这些文件拒绝写入：前端拿到空数据会立刻存盘，那就把还在磁盘上的
     /// 集合和凭据原地抹掉了 —— 宁可这次不保存，也不能覆盖。
     unreadable: Mutex<HashSet<String>>,
+    secrets: Box<dyn SecretStore>,
 }
 
 impl Storage {
     pub fn new(dir: PathBuf) -> Self {
+        Self::with_secrets(dir, crate::core::secrets::default_store())
+    }
+
+    pub fn with_secrets(dir: PathBuf, secrets: Box<dyn SecretStore>) -> Self {
         Self {
             dir,
             unreadable: Mutex::default(),
+            secrets,
         }
     }
 
@@ -181,12 +188,47 @@ impl Storage {
         Ok(())
     }
 
+    /// secret 变量的值从钥匙串填回来；钥匙串里没有就留空（界面上看得出要重填）
     pub fn load_environments(&self) -> Vec<Environment> {
-        self.load("environments.json")
+        let mut envs: Vec<Environment> = self.load("environments.json");
+        for e in envs.iter_mut() {
+            for v in e.variables.iter_mut().filter(|v| v.secret) {
+                v.value = self.secrets.get(&account(e.id, &v.key)).unwrap_or_default();
+            }
+        }
+        envs
     }
 
+    /// secret 变量：值写钥匙串（变了才写），JSON 里只留壳；上次有、这次没了的条目从钥匙串删掉
     pub fn save_environments(&self, envs: &[Environment]) -> std::io::Result<()> {
-        self.save("environments.json", &envs, true)
+        let before: Vec<Environment> = self.load("environments.json");
+        let mut stripped = envs.to_vec();
+        let mut keep = HashSet::new();
+        for e in stripped.iter_mut() {
+            for v in e
+                .variables
+                .iter_mut()
+                .filter(|v| v.secret && !v.key.is_empty())
+            {
+                let acct = account(e.id, &v.key);
+                if self.secrets.get(&acct).as_deref() != Some(v.value.as_str()) {
+                    self.secrets
+                        .set(&acct, &v.value)
+                        .map_err(std::io::Error::other)?;
+                }
+                keep.insert(acct);
+                v.value.clear();
+            }
+        }
+        for e in &before {
+            for v in e.variables.iter().filter(|v| v.secret && !v.key.is_empty()) {
+                let acct = account(e.id, &v.key);
+                if !keep.contains(&acct) {
+                    self.secrets.delete(&acct);
+                }
+            }
+        }
+        self.save("environments.json", &stripped, true)
     }
 
     pub fn load_history(&self) -> Vec<HistoryEntry> {
@@ -202,13 +244,46 @@ impl Storage {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn secret_values_stay_out_of_json_and_come_back_from_store() {
+        use crate::core::models::{Environment, KeyValue};
+        let tmp = tempfile::tempdir().unwrap();
+        let s = Storage::with_secrets(
+            tmp.path().to_path_buf(),
+            Box::new(crate::core::secrets::Memory::default()),
+        );
+        let mut tok = KeyValue::new("token", "s3cr3t");
+        tok.secret = true;
+        let env = Environment {
+            id: uuid::Uuid::new_v4(),
+            name: "dev".into(),
+            variables: vec![KeyValue::new("base", "https://x"), tok],
+        };
+        s.save_environments(&[env.clone()]).unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join("environments.json")).unwrap();
+        assert!(!raw.contains("s3cr3t"), "{raw}");
+        assert!(raw.contains("\"secret\": true"));
+        let back = s.load_environments();
+        assert_eq!(back[0].variables[1].value, "s3cr3t");
+        assert_eq!(back[0].variables[0].value, "https://x");
+        // 删掉变量后钥匙串条目也没了
+        let mut env2 = env.clone();
+        env2.variables.pop();
+        s.save_environments(&[env2]).unwrap();
+        assert_eq!(s.load_environments()[0].variables.len(), 1);
+        assert!(s.secrets.get(&account(env.id, "token")).is_none());
+    }
+
     use super::*;
     use crate::core::models::Collection;
 
     #[test]
     fn collections_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        let s = Storage::new(tmp.path().to_path_buf());
+        let s = Storage::with_secrets(
+            tmp.path().to_path_buf(),
+            Box::new(crate::core::secrets::Memory::default()),
+        );
         let cols = vec![Collection::new("我的集合")];
         s.save_collections(&cols).unwrap();
         let loaded = s.load_collections();
@@ -219,7 +294,10 @@ mod tests {
     #[test]
     fn missing_file_returns_default() {
         let tmp = tempfile::tempdir().unwrap();
-        let s = Storage::new(tmp.path().to_path_buf());
+        let s = Storage::with_secrets(
+            tmp.path().to_path_buf(),
+            Box::new(crate::core::secrets::Memory::default()),
+        );
         assert!(s.load_collections().is_empty());
     }
 
@@ -227,7 +305,10 @@ mod tests {
     fn corrupted_file_backed_up_and_defaulted() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("collections.json"), b"{broken").unwrap();
-        let s = Storage::new(tmp.path().to_path_buf());
+        let s = Storage::with_secrets(
+            tmp.path().to_path_buf(),
+            Box::new(crate::core::secrets::Memory::default()),
+        );
         assert!(s.load_collections().is_empty());
         let bak = std::fs::read_dir(tmp.path())
             .unwrap()
@@ -245,7 +326,10 @@ mod tests {
     fn corrupt_file_twice_keeps_both_backups() {
         // 第二次损坏不能盖掉第一次的备份
         let tmp = tempfile::tempdir().unwrap();
-        let s = Storage::new(tmp.path().to_path_buf());
+        let s = Storage::with_secrets(
+            tmp.path().to_path_buf(),
+            Box::new(crate::core::secrets::Memory::default()),
+        );
         let baks = || {
             std::fs::read_dir(tmp.path())
                 .unwrap()
@@ -264,7 +348,10 @@ mod tests {
     #[test]
     fn save_leaves_no_temp_files_behind() {
         let tmp = tempfile::tempdir().unwrap();
-        let s = Storage::new(tmp.path().to_path_buf());
+        let s = Storage::with_secrets(
+            tmp.path().to_path_buf(),
+            Box::new(crate::core::secrets::Memory::default()),
+        );
         s.save_collections(&[Collection::new("a")]).unwrap();
         s.save_collections(&[Collection::new("b")]).unwrap();
         let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
@@ -300,7 +387,10 @@ mod tests {
         std::fs::write(&path, precious).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-        let s = Storage::new(tmp.path().to_path_buf());
+        let s = Storage::with_secrets(
+            tmp.path().to_path_buf(),
+            Box::new(crate::core::secrets::Memory::default()),
+        );
         assert!(s.load_collections().is_empty(), "读不出来时返回空");
         // 前端见到空数据会立刻存盘——必须被拒绝
         let err = s.save_collections(&[Collection::new("empty")]).unwrap_err();
@@ -316,7 +406,10 @@ mod tests {
     #[test]
     fn history_trimmed_to_limit() {
         let tmp = tempfile::tempdir().unwrap();
-        let s = Storage::new(tmp.path().to_path_buf());
+        let s = Storage::with_secrets(
+            tmp.path().to_path_buf(),
+            Box::new(crate::core::secrets::Memory::default()),
+        );
         let entries: Vec<HistoryEntry> = (0..600)
             .map(|_| HistoryEntry {
                 timestamp: chrono::Local::now(),

@@ -200,7 +200,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 /** 通用 key-value 表格；增删行时调 rerender 重建，输入只写模型不重绘（保焦点）。 */
-function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = null, files = false } = {}) {
+function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = null, files = false, secrets = false } = {}) {
   const table = h('table', { class: 'kv' });
   const listFor = (key) => (valList && /^(content-type|accept)$/i.test(key.trim()) ? valList : null);
   // 最后一行永远是空白"幽灵行"：一敲字就变成真实行并追加新的幽灵行，不用点 Add
@@ -216,6 +216,7 @@ function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = n
       if (cell) { cell.focus(); cell.setSelectionRange(cell.value.length, cell.value.length); }
     };
     const val = h('input', { placeholder: valHint, value: ghost ? '' : r.value, 'aria-label': valHint, spellcheck: 'false', list: ghost ? null : listFor(r.key),
+      type: !ghost && r.secret ? 'password' : 'text', autocomplete: 'off',
       oninput: (e) => { if (ghost) return promote('value', e.target.value); r.value = e.target.value; if (!files) r.is_file = false; dirty(); } });
     // 文件行：值是本机路径，用系统文件框选；Text/File 按钮切换
     const fileCell = () => h('span', { class: 'row' },
@@ -224,6 +225,10 @@ function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = n
         if (path) { r.value = path; dirty(); rerender(); }
       }, 'small').withAttr('title', r.value || ''),
       r.value ? h('span', { class: 'muted' }, r.value) : null);
+    // Secret：值进钥匙串不进 JSON，输入框遮罩
+    const secretBtn = !secrets || ghost ? null : btn(r.secret ? '🔒' : '🔓', () => { r.secret = !r.secret; dirty(); rerender(); }, 'small ghost')
+      .withAttr('title', r.secret ? 'Secret — stored in the keychain, masked, never exported. Click to make plain.' : 'Plain — click to make secret')
+      .withAttr('aria-label', 'Toggle secret');
     const typeBtn = !files || ghost ? null : btn(r.is_file ? 'File' : 'Text', () => {
       r.is_file = !r.is_file; r.value = ''; dirty(); rerender();
     }, 'small ghost').withAttr('aria-label', 'Field type');
@@ -233,6 +238,7 @@ function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = n
       h('td', { class: 'key' }, h('input', { placeholder: keyHint, value: ghost ? '' : r.key, 'aria-label': keyHint, spellcheck: 'false', list: keyList,
         oninput: (e) => { if (ghost) return promote('key', e.target.value); r.key = e.target.value; const l = listFor(r.key); l ? val.setAttribute('list', l) : val.removeAttribute('list'); dirty(); renderTabCounts(); } })),
       files ? h('td', { class: 'ctl type' }, typeBtn) : null,
+      secrets ? h('td', { class: 'ctl type' }, secretBtn) : null,
       h('td', { class: 'val' }, !ghost && r.is_file && files ? fileCell() : val),
       h('td', { class: 'ctl' }, ghost ? null : btn('×', () => { rows.splice(i, 1); dirty(); rerender(); renderTabCounts(); }, 'small ghost').withAttr('aria-label', 'Remove row')),
     );
@@ -282,7 +288,7 @@ function renderUrlMirror() {
 /** URL 下方的"解析后"预览：环境变量换成值，$动态变量和未定义的原样（后者标红） */
 function renderResolved() {
   const env = activeEnv(), url = current.url;
-  const vals = new Map(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.value]) : []);
+  const vals = new Map(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.secret ? '••••••' : v.value]) : []);
   const out = $('#resolved-url');
   out.replaceChildren();
   // enc：query 里的键值要按 URL 编码显示，复制出来才是能直接用的地址
@@ -1515,8 +1521,9 @@ function renderEnvDialog() {
       btn('Duplicate', () => { const d = structuredClone(env); d.id = crypto.randomUUID(); d.name += ' copy'; data.environments.splice(data.environments.indexOf(env) + 1, 0, d); envSel = d; dirty(); renderEnvDialog(); renderTopbar(); }),
       btn('Delete', del, 'small ghost'),
     ),
-    h('div', { class: 'vars-head' }, h('span'), h('span', {}, 'Name'), h('span', {}, 'Value'), h('span')),
-    h('div', { class: 'vars' }, kvTable(env.variables, 'e.g. base_url', 'e.g. https://api.example.com', renderEnvDialog)),
+    h('div', { class: 'vars-head' }, h('span'), h('span', {}, 'Name'), h('span'), h('span', {}, 'Value'), h('span')),
+    h('div', { class: 'vars' }, kvTable(env.variables, 'e.g. base_url', 'e.g. https://api.example.com', renderEnvDialog, { secrets: true })),
+    h('div', { class: 'helper' }, '🔒 Secret values are kept in the macOS keychain, masked in the UI, and left out of exports, project folders and history.'),
   );
 }
 
@@ -1547,7 +1554,7 @@ function acUpdate(el) {
   if (!m) return acHide();
   const prefix = m[1].toLowerCase();
   const env = activeEnv();
-  const names = [...(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.value]) : []), ...DYNAMIC_VARS]
+  const names = [...(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.secret ? '••••••' : v.value]) : []), ...DYNAMIC_VARS]
     .filter(([k]) => k.toLowerCase().startsWith(prefix));
   if (!names.length) return acHide();
   Object.assign(ac, { field: el, items: names, cur: 0, start: el.selectionStart - m[1].length });

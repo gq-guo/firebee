@@ -43,6 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - HTML 沙箱预览、图片预览、保存到文件
 
 **变量与环境**
+- 环境变量可标 🔒 Secret：值存 macOS 钥匙串，不进 environments.json / 导出 / 项目目录 / 历史，界面遮罩
 - 多环境切换，`{{variable}}` 在 URL / 参数 / 头 / 体 / 认证中替换；URL 里的变量实时着色（可解析绿、未解析橙），Send 旁显示未解析数量，再点一次强制发送
 - 输入 `{{` 自动补全环境变量与动态变量
 - 动态变量：`{{$uuid}}`、`{{$timestamp}}`、`{{$randomEmail}}`、`{{$randomFullName}}` 等 29 个（名字与 Postman 一致），

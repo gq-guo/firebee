@@ -44,6 +44,9 @@ pub struct KeyValue {
     /// 仅 Multipart body 用：true 时 value 是本机文件路径，作为文件 part 发送
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_file: bool,
+    /// 仅环境变量用：值存钥匙串，不进 JSON / 导出 / 项目目录；界面遮罩
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
 }
 
 impl KeyValue {
@@ -53,6 +56,7 @@ impl KeyValue {
             key: key.into(),
             value: value.into(),
             is_file: false,
+            secret: false,
         }
     }
 }
@@ -289,6 +293,7 @@ pub fn merge_inherited(req: &Request, chain: &[Inherited]) -> Request {
                 key: h.key.trim().to_string(),
                 value: h.value.clone(),
                 is_file: false,
+                secret: false,
             })
             .collect();
         headers.retain(|kept| {
@@ -513,6 +518,7 @@ mod tests {
                     key: "X-Off".into(),
                     value: "x".into(),
                     is_file: false,
+                    secret: false,
                 },
             ],
             auth: Auth::None,
@@ -756,6 +762,7 @@ mod tests {
                     key: "skip".into(),
                     value: "x".into(),
                     is_file: false,
+                    secret: false,
                 },
                 KeyValue::new("", "no-key"),
             ],

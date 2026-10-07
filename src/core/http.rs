@@ -1118,6 +1118,7 @@ mod tests {
                 key: "b".into(),
                 value: "2".into(),
                 is_file: false,
+                secret: false,
             },
             KeyValue::new("", "skip"),
         ];

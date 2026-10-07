@@ -25,6 +25,7 @@ fn kvs(v: Option<&Value>) -> Vec<KeyValue> {
                     key: s(&x["key"]),
                     value: s(&x["value"]),
                     is_file: false,
+                    secret: false,
                 })
                 .collect()
         })
@@ -215,6 +216,7 @@ pub fn to_environment(v: &Value) -> Environment {
                         key: s(&x["key"]),
                         value: s(&x["value"]),
                         is_file: false,
+                        secret: false,
                     })
                     .collect()
             })

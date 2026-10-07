@@ -6,5 +6,6 @@ pub mod models;
 pub mod openapi;
 pub mod postman;
 pub mod project;
+pub mod secrets;
 pub mod storage;
 pub mod vars;
