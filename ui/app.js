@@ -829,6 +829,8 @@ function renderTabCounts() {
 
 function renderRequest() {
   setTab('req', reqTab);
+  // Preview 里已经有完整的最终 URL，URL 栏下那行就不重复显示了
+  $('#resolved').classList.toggle('hidden', reqTab === 'preview');
   renderRequestHeader();
   const body = $('#req-body');
   body.replaceChildren();
