@@ -65,7 +65,8 @@ pub async fn execute(
 pub enum StreamEvent {
     /// 响应头已到：状态码 + 头
     Start(u16, Vec<(String, String)>),
-    Chunk(Vec<u8>),
+    /// 已经是完整 UTF-8 的一段（跨 chunk 被切开的多字节字符会攒到下一段）
+    Chunk(String),
 }
 
 pub type OnStream = Box<dyn Fn(StreamEvent) + Send + Sync>;
@@ -167,10 +168,11 @@ pub async fn execute_streaming(
             }
         }
         BodyType::Form => {
+            // is_file 的行是从 Multipart 切过来的：本机路径不能当文本发出去
             let form: Vec<(String, String)> = req
                 .form
                 .iter()
-                .filter(|f| f.enabled && !f.key.is_empty())
+                .filter(|f| f.enabled && !f.key.is_empty() && !f.is_file)
                 .map(|f| (f.key.clone(), f.value.clone()))
                 .collect();
             builder = builder.form(&form);
@@ -202,9 +204,31 @@ pub async fn execute_streaming(
     {
         builder = builder.header("Content-Type", "application/json");
     }
-
+    // .form() / .multipart() 也会追加 Content-Type；用户自己填了的话会发出去两个。
+    // Form 以用户的为准；Multipart 必须用 reqwest 带 boundary 的那个（用户填的没有 boundary）
+    let mut built = builder
+        .build()
+        .map_err(|e| HttpError::Network(e.to_string()))?;
+    if matches!(req.body_type, BodyType::Form | BodyType::Multipart)
+        && req.has_header("content-type")
+    {
+        let all: Vec<_> = built
+            .headers()
+            .get_all(reqwest::header::CONTENT_TYPE)
+            .iter()
+            .cloned()
+            .collect();
+        let keep = if req.body_type == BodyType::Form {
+            all.first()
+        } else {
+            all.last()
+        };
+        if let Some(v) = keep.cloned() {
+            built.headers_mut().insert(reqwest::header::CONTENT_TYPE, v);
+        }
+    }
     let start = Instant::now();
-    let send = builder.send();
+    let send = client.execute(built);
     tokio::pin!(send);
     let mut resp = tokio::select! {
         r = &mut send => r.map_err(|e| map_reqwest_err(&e, timeout))?,
@@ -225,14 +249,35 @@ pub async fn execute_streaming(
         Some(cb) => {
             cb(StreamEvent::Start(status, headers.clone()));
             let mut buf = Vec::new();
+            // tail：上一个 chunk 末尾没凑齐的多字节字符
+            let mut tail = Vec::new();
             loop {
                 let next = tokio::select! {
-                    c = resp.chunk() => c.map_err(|e| HttpError::Network(e.to_string()))?,
-                    _ = wait_cancelled(cancel.clone()) => return Err(HttpError::Cancelled),
+                    c = resp.chunk() => c,
+                    _ = wait_cancelled(cancel.clone()) => {
+                        // 无限流只能靠取消结束：收到的部分就是结果，不能当"什么都没收到"
+                        if buf.is_empty() { return Err(HttpError::Cancelled) }
+                        break;
+                    }
+                };
+                let next = match next {
+                    Ok(c) => c,
+                    // 总超时对长连接流没有意义：到点就把已收到的返回
+                    Err(e) if e.is_timeout() && !buf.is_empty() => break,
+                    Err(e) => return Err(map_reqwest_err(&e, timeout)),
                 };
                 let Some(c) = next else { break };
                 buf.extend_from_slice(&c);
-                cb(StreamEvent::Chunk(c.to_vec()));
+                tail.extend_from_slice(&c);
+                let valid = match std::str::from_utf8(&tail) {
+                    Ok(_) => tail.len(),
+                    Err(e) => e.valid_up_to(),
+                };
+                if valid > 0 {
+                    let rest = tail.split_off(valid);
+                    cb(StreamEvent::Chunk(String::from_utf8(tail).unwrap()));
+                    tail = rest;
+                }
             }
             buf
         }
@@ -262,7 +307,11 @@ async fn file_part(path: &str) -> Result<reqwest::multipart::Part, HttpError> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".into());
-    Ok(reqwest::multipart::Part::bytes(bytes).file_name(name))
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    reqwest::multipart::Part::bytes(bytes)
+        .file_name(name)
+        .mime_str(mime.as_ref())
+        .map_err(|e| HttpError::InvalidBody(e.to_string()))
 }
 
 #[cfg(test)]
@@ -327,7 +376,7 @@ mod multipart_tests {
         let cb: OnStream = Box::new(move |ev| {
             s2.lock().unwrap().push(match ev {
                 StreamEvent::Start(st, _) => format!("start {st}"),
-                StreamEvent::Chunk(c) => String::from_utf8_lossy(&c).into_owned(),
+                StreamEvent::Chunk(c) => c,
             })
         });
         let (tx, rx) = tokio::sync::watch::channel(false);
@@ -344,6 +393,60 @@ mod multipart_tests {
         );
         assert_eq!(seen[1..].concat(), "data: a\n\ndata: b\n\n");
         assert_eq!(resp.body, b"data: a\n\ndata: b\n\n");
+    }
+
+    #[tokio::test]
+    async fn multipart_file_part_has_mime_type() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let fp = dir.path().join("a.json");
+        std::fs::write(&fp, b"{}").unwrap();
+        let mut r = Request::new("up");
+        r.method = HttpMethod::Post;
+        r.url = format!("{}/up", server.uri());
+        r.body_type = BodyType::Multipart;
+        let mut f = KeyValue::new("doc", fp.to_string_lossy());
+        f.is_file = true;
+        r.form = vec![f];
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        drop(tx);
+        execute(&r, Duration::from_secs(5), rx, None, true, false)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&server.received_requests().await.unwrap()[0].body)
+            .into_owned();
+        assert!(body.contains("Content-Type: application/json"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn form_with_user_content_type_sends_only_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let mut r = Request::new("f");
+        r.method = HttpMethod::Post;
+        r.url = format!("{}/f", server.uri());
+        r.body_type = BodyType::Form;
+        r.form = vec![KeyValue::new("a", "1")];
+        r.headers = vec![KeyValue::new(
+            "Content-Type",
+            "application/x-www-form-urlencoded; charset=utf-8",
+        )];
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        drop(tx);
+        execute(&r, Duration::from_secs(5), rx, None, true, false)
+            .await
+            .unwrap();
+        let req = &server.received_requests().await.unwrap()[0];
+        let cts: Vec<_> = req.headers.get_all("content-type").iter().collect();
+        assert_eq!(cts.len(), 1, "{cts:?}");
+        assert_eq!(cts[0], "application/x-www-form-urlencoded; charset=utf-8");
     }
 
     #[tokio::test]

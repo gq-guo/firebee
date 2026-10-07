@@ -126,7 +126,9 @@ fn request(item: &Value) -> Request {
                         .zip(a.iter().filter(|x| x.get("key").is_some()))
                     {
                         if x.get("type").and_then(Value::as_str) == Some("file") {
+                            // 别人集合里的本机路径不能一点 Send 就读：先关掉，用户看过再开
                             f.is_file = true;
+                            f.enabled = false;
                             f.value = match x.get("src") {
                                 Some(Value::Array(v)) => v.first().map(s).unwrap_or_default(),
                                 Some(v) => s(v),

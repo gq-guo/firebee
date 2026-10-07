@@ -212,7 +212,7 @@ function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = n
       if (cell) { cell.focus(); cell.setSelectionRange(cell.value.length, cell.value.length); }
     };
     const val = h('input', { placeholder: valHint, value: ghost ? '' : r.value, 'aria-label': valHint, spellcheck: 'false', list: ghost ? null : listFor(r.key),
-      oninput: (e) => { if (ghost) return promote('value', e.target.value); r.value = e.target.value; dirty(); } });
+      oninput: (e) => { if (ghost) return promote('value', e.target.value); r.value = e.target.value; if (!files) r.is_file = false; dirty(); } });
     // 文件行：值是本机路径，用系统文件框选；Text/File 按钮切换
     const fileCell = () => h('span', { class: 'row' },
       btn(r.value ? r.value.split('/').pop() : 'Choose file…', async () => {
@@ -229,7 +229,7 @@ function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = n
       h('td', { class: 'key' }, h('input', { placeholder: keyHint, value: ghost ? '' : r.key, 'aria-label': keyHint, spellcheck: 'false', list: keyList,
         oninput: (e) => { if (ghost) return promote('key', e.target.value); r.key = e.target.value; const l = listFor(r.key); l ? val.setAttribute('list', l) : val.removeAttribute('list'); dirty(); renderTabCounts(); } })),
       files ? h('td', { class: 'ctl type' }, typeBtn) : null,
-      h('td', { class: 'val' }, !ghost && r.is_file ? fileCell() : val),
+      h('td', { class: 'val' }, !ghost && r.is_file && files ? fileCell() : val),
       h('td', { class: 'ctl' }, ghost ? null : btn('×', () => { rows.splice(i, 1); dirty(); rerender(); renderTabCounts(); }, 'small ghost').withAttr('aria-label', 'Remove row')),
     );
     table.append(tr);
@@ -1037,9 +1037,17 @@ const streams = new Map();
 window.__TAURI__.event.listen('stream', ({ payload }) => {
   const rid = [...pendings].find(([, job]) => job === payload.job_id)?.[0];
   if (!rid) return;
-  if (payload.kind === 'start') streams.set(rid, { status: payload.status, headers: payload.headers, text: '' });
-  else if (streams.has(rid)) streams.get(rid).text += payload.text;
-  if (current.id === rid) renderResponse();
+  if (payload.kind === 'start') { streams.set(rid, { status: payload.status, headers: payload.headers, text: '', bytes: 0 }); if (current.id === rid) renderResponse(); return; }
+  const live = streams.get(rid);
+  if (!live) return;
+  live.text += payload.text; live.bytes += new TextEncoder().encode(payload.text).length;
+  if (current.id !== rid) return;
+  // 已经在流式视图里：只追加，不重建（每个 chunk 重画整段文本是 O(n²)，而且会抢走滚动位置）
+  const pre = $('#resp-body pre.stream'), size = $('#resp-meta .stream-size');
+  if (!pre) return renderResponse();
+  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 4;
+  pre.append(payload.text); if (size) size.textContent = fmtSize(live.bytes);
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
 });
 
 /** URL 栏右侧的瞬时结果：亮 1.5s 后变淡，切请求 / 再次发送时清掉 */
@@ -1208,7 +1216,7 @@ function renderResponse() {
     if (pending && live) {
       put(meta, h('span', { class: `status s${Math.floor(live.status / 100)}` }, live.status), REASON[live.status] && h('span', { class: 'reason' }, REASON[live.status]),
         h('span', { class: 'sep' }, '·'), h('span', { class: 'spinner' }), h('span', { class: 'waiting' }, 'Streaming…'),
-        h('span', { class: 'sep' }, '·'), h('span', { class: 'meta' }, fmtSize(new TextEncoder().encode(live.text).length)));
+        h('span', { class: 'sep' }, '·'), h('span', { class: 'meta stream-size' }, fmtSize(live.bytes)));
       const pre = h('pre', { class: 'stream' }, live.text);
       body.append(pre); pre.scrollTop = pre.scrollHeight;
       return;

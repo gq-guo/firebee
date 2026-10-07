@@ -144,9 +144,9 @@ pub async fn send_request(
                 "stream",
                 serde_json::json!({ "job_id": job_id, "kind": "start", "status": status, "headers": headers }),
             ),
-            StreamEvent::Chunk(c) => app.emit(
+            StreamEvent::Chunk(text) => app.emit(
                 "stream",
-                serde_json::json!({ "job_id": job_id, "kind": "chunk", "text": String::from_utf8_lossy(&c) }),
+                serde_json::json!({ "job_id": job_id, "kind": "chunk", "text": text }),
             ),
         };
     });

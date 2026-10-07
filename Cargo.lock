@@ -927,6 +927,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dirs",
+ "mime_guess",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
