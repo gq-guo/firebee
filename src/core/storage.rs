@@ -259,7 +259,7 @@ mod tests {
             name: "dev".into(),
             variables: vec![KeyValue::new("base", "https://x"), tok],
         };
-        s.save_environments(&[env.clone()]).unwrap();
+        s.save_environments(std::slice::from_ref(&env)).unwrap();
         let raw = std::fs::read_to_string(tmp.path().join("environments.json")).unwrap();
         assert!(!raw.contains("s3cr3t"), "{raw}");
         assert!(raw.contains("\"secret\": true"));
