@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 ## 功能
 
 **请求**
-- 全部常用方法；Params / Headers / Body（JSON、Text、Form、Multipart 文件上传、Binary 整文件）/ Auth（Bearer、Basic、API Key）
+- 全部常用方法；Params / Headers / Body（JSON、Text、Form、Multipart 文件上传、Binary 整文件）/ Auth（Bearer、Basic、API Key、OAuth 2.0 Client Credentials——发送前自动换 token，内存缓存到过期）
 - GraphQL：新建时选 New GraphQL request，Query + Variables（JSON）编辑，按 `{"query","variables"}` POST；Postman 的 GraphQL body 可导入
 - Params / Headers 表格末尾常驻空白行，直接输入即新增；Header 名与 Content-Type / Accept 值自动补全；JSON body 一键格式化并定位错误
 - 信任系统钥匙串里的 CA（企业 CA、Charles / mitmproxy 根证书直接生效）；Request settings 里可切 System / None / Custom 代理（带 bypass 列表）、加自定义 CA（PEM）、配 mTLS 客户端证书（PEM，证书 + 私钥）、自签名环境打开 Allow invalid certificates

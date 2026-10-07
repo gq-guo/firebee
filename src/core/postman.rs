@@ -58,6 +58,13 @@ fn auth(v: Option<&Value>) -> Option<Auth> {
         // noauth 在 Postman 里是"明确不带凭据"，映射成 None 会变成"继承"，
         // 于是集合级的 prod token 被发给了一个本来不该带凭据的请求
         "noauth" => Auth::Off,
+        // 只接 client_credentials；别的 grant 需要浏览器回调，先当 None
+        "oauth2" if get("grant_type") == "client_credentials" => Auth::OAuth2 {
+            token_url: get("accessTokenUrl"),
+            client_id: get("clientId"),
+            client_secret: get("clientSecret"),
+            scope: get("scope"),
+        },
         _ => Auth::None,
     })
 }

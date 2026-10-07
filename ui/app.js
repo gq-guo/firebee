@@ -980,10 +980,11 @@ function authEditor(obj = current, rerender = renderRequest, container = false) 
   // 有东西可继承时，None 的语义就是"跟随上层"，标签跟着变；并多给一个明确不带凭据的选项
   const opts = [['None', inh ? 'Inherit' : 'None'],
     ...(inh || kind === 'Off' ? [['Off', 'No auth']] : []), // 已经是 Off 就一直显示，否则会四个都不选中
-    ['Bearer', 'Bearer token'], ['Basic', 'Basic auth'], ['ApiKey', 'API key']];
+    ['Bearer', 'Bearer token'], ['Basic', 'Basic auth'], ['ApiKey', 'API key'], ['OAuth2', 'OAuth 2.0']];
   const wrap = h('div', {}, radios(`auth-${obj.id}`, opts, kind, (v) => {
     obj.auth = { None: 'None', Off: 'Off', Bearer: { Bearer: { token: '' } }, Basic: { Basic: { username: '', password: '' } },
-                 ApiKey: { ApiKey: { key: '', value: '', in_query: false } } }[v];
+                 ApiKey: { ApiKey: { key: '', value: '', in_query: false } },
+                 OAuth2: { OAuth2: { token_url: '', client_id: '', client_secret: '', scope: '' } } }[v];
     dirty(); rerender();
   }));
   // 字段标签走 .field（文字在上、输入框在下）——inline-flex 的 label 在窄容器里
@@ -997,6 +998,11 @@ function authEditor(obj = current, rerender = renderRequest, container = false) 
     h('div', { class: 'row fields' }, field(a, 'key', 'Name'), field(a, 'value', 'Value')),
     h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: a.in_query, onchange: (e) => { a.in_query = e.target.checked; dirty(); } }),
       'Send as a query parameter instead of a header'));
+  else if (kind === 'OAuth2') wrap.append(
+    h('div', { class: 'helper' }, 'Client Credentials grant. On Send the token is fetched from the token URL (client ID and secret as Basic auth) and sent as a Bearer token; it is cached in memory until it expires. Environment › Manage… › Clear cookies also clears cached tokens.'),
+    h('div', { class: 'row fields' }, field(a, 'token_url', 'Token URL')),
+    h('div', { class: 'row fields' }, field(a, 'client_id', 'Client ID'), field(a, 'client_secret', 'Client secret', 'password')),
+    h('div', { class: 'row fields' }, field(a, 'scope', 'Scope (optional)')));
   return wrap;
 }
 
@@ -1549,7 +1555,7 @@ function acBind() {
 // ---------- 事件绑定 ----------
 function bind() {
   acBind();
-  $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies cleared for this session.'); };
+  $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies and cached OAuth2 tokens cleared.'); };
   $('#method').replaceChildren(...METHODS.map((m) => h('option', { value: m }, m.toUpperCase())));
   $('#method').onchange = (e) => { current.method = e.target.value; e.target.className = `m-${current.method.toLowerCase()}`; dirty(); renderSidebar(); renderTabs(); };
   $('#url').oninput = (e) => { current.url = e.target.value; dirty(); renderUrlMirror(); renderMissing(); };

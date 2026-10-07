@@ -93,6 +93,14 @@ pub enum Auth {
         value: String,
         in_query: bool,
     },
+    /// OAuth 2.0 Client Credentials：发送前先去 token_url 换 access_token，当 Bearer 用。
+    /// token 只在内存里缓存到过期，不进存档。
+    OAuth2 {
+        token_url: String,
+        client_id: String,
+        client_secret: String,
+        scope: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -20,6 +20,11 @@ pub fn effective_headers(req: &Request) -> Vec<(String, String)> {
         .collect();
     match &req.auth {
         Auth::Bearer { token } => hs.push(("Authorization".into(), format!("Bearer {token}"))),
+        // token 是发送时才换的，导出只能放占位
+        Auth::OAuth2 { .. } => hs.push((
+            "Authorization".into(),
+            "Bearer <OAuth2 access token>".into(),
+        )),
         Auth::ApiKey {
             key,
             value,

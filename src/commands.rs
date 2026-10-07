@@ -10,7 +10,8 @@ use tauri::{Emitter, State};
 use tokio::sync::watch;
 
 use crate::core::export::{effective_headers, to_curl, to_python};
-use crate::core::http::{build_url, execute_streaming, Net, StreamEvent};
+use crate::core::http::{build_url, execute_streaming, fetch_client_credentials, Net, StreamEvent};
+use crate::core::models::Auth;
 use crate::core::models::{
     merge_inherited, Collection, Environment, HistoryEntry, Inherited, Request,
 };
@@ -27,6 +28,52 @@ impl Default for Cookies {
     fn default() -> Self {
         Self(Mutex::new(Arc::new(reqwest::cookie::Jar::default())))
     }
+}
+
+/// OAuth2 access_token 缓存：key = token_url + client_id + scope → (token, 过期时刻)。只在内存。
+#[derive(Default)]
+pub struct Tokens(Mutex<HashMap<String, (String, std::time::Instant)>>);
+
+/// 请求用的是 OAuth2 时换成 Bearer：缓存没过期直接用，否则去 token_url 取
+async fn resolve_oauth(
+    req: &mut Request,
+    tokens: &Tokens,
+    timeout: Duration,
+    net: &Net,
+) -> Result<(), String> {
+    let Auth::OAuth2 {
+        token_url,
+        client_id,
+        client_secret,
+        scope,
+    } = &req.auth
+    else {
+        return Ok(());
+    };
+    let key = format!("{token_url}\n{client_id}\n{scope}");
+    let cached = tokens
+        .0
+        .lock()
+        .unwrap()
+        .get(&key)
+        .filter(|(_, exp)| *exp > std::time::Instant::now())
+        .map(|(t, _)| t.clone());
+    let token = match cached {
+        Some(t) => t,
+        None => {
+            let (t, ttl) =
+                fetch_client_credentials(token_url, client_id, client_secret, scope, timeout, net)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            // 提前 30 秒当过期，别拿着快过期的 token 去撞 401
+            let exp =
+                std::time::Instant::now() + Duration::from_secs(ttl.saturating_sub(30).max(1));
+            tokens.0.lock().unwrap().insert(key, (t.clone(), exp));
+            t
+        }
+    };
+    req.auth = Auth::Bearer { token };
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -120,6 +167,7 @@ pub async fn send_request(
     app: tauri::AppHandle,
     pending: State<'_, Pending>,
     cookies: State<'_, Cookies>,
+    tokens: State<'_, Tokens>,
     job_id: u64,
     request: Request,
     env: Option<Environment>,
@@ -131,7 +179,9 @@ pub async fn send_request(
         net,
     } = options;
     let request = merge_inherited(&request, &inherited.unwrap_or_default());
-    let (req, _) = substitute_request(&request, &vars(&env));
+    let (mut req, _) = substitute_request(&request, &vars(&env));
+    let timeout = Duration::from_secs(timeout_secs.max(1));
+    resolve_oauth(&mut req, &tokens, timeout, &net).await?;
     let (tx, rx) = watch::channel(false);
     pending.0.lock().unwrap().insert(job_id, tx);
     let jar = cookies.0.lock().unwrap().clone();
@@ -148,15 +198,7 @@ pub async fn send_request(
             ),
         };
     });
-    let result = execute_streaming(
-        &req,
-        Duration::from_secs(timeout_secs.max(1)),
-        rx,
-        Some(jar),
-        &net,
-        Some(on_stream),
-    )
-    .await;
+    let result = execute_streaming(&req, timeout, rx, Some(jar), &net, Some(on_stream)).await;
     pending.0.lock().unwrap().remove(&job_id);
     result
         .map(|r| {
@@ -203,6 +245,7 @@ pub struct FinalRequest {
 #[tauri::command(rename_all = "snake_case")]
 pub fn final_request(
     cookies: State<Cookies>,
+    tokens: State<Tokens>,
     request: Request,
     env: Option<Environment>,
     inherited: Option<Vec<Inherited>>,
@@ -210,7 +253,19 @@ pub fn final_request(
     use crate::core::models::{Auth, BodyType};
     use reqwest::cookie::CookieStore;
     let request = merge_inherited(&request, &inherited.unwrap_or_default());
-    let (req, _) = substitute_request(&request, &vars(&env));
+    let (mut req, _) = substitute_request(&request, &vars(&env));
+    if let Auth::OAuth2 {
+        token_url,
+        client_id,
+        scope,
+        ..
+    } = &req.auth
+    {
+        let key = format!("{token_url}\n{client_id}\n{scope}");
+        if let Some((t, _)) = tokens.0.lock().unwrap().get(&key) {
+            req.auth = Auth::Bearer { token: t.clone() };
+        }
+    }
     let url = build_url(&req).map_err(|e| e.to_string())?;
     let mut headers = effective_headers(&req);
     if let Auth::Basic { username, password } = &req.auth {
@@ -269,8 +324,9 @@ pub fn final_request(
 }
 
 #[tauri::command]
-pub fn clear_cookies(cookies: State<Cookies>) {
+pub fn clear_cookies(cookies: State<Cookies>, tokens: State<Tokens>) {
     *cookies.0.lock().unwrap() = Arc::new(reqwest::cookie::Jar::default());
+    tokens.0.lock().unwrap().clear();
 }
 
 /// 把响应体保存到文件：文本直接写，二进制走 base64 解码

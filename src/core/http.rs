@@ -362,6 +362,54 @@ pub async fn execute_streaming(
     })
 }
 
+/// OAuth2 Client Credentials：POST token_url 换 access_token。返回 (token, 有效秒数)。
+pub async fn fetch_client_credentials(
+    token_url: &str,
+    client_id: &str,
+    client_secret: &str,
+    scope: &str,
+    timeout: Duration,
+    net: &Net,
+) -> Result<(String, u64), HttpError> {
+    let client = apply_net(reqwest::Client::builder().timeout(timeout), net)?
+        .build()
+        .map_err(|e| HttpError::Network(e.to_string()))?;
+    let mut form = vec![("grant_type", "client_credentials")];
+    if !scope.trim().is_empty() {
+        form.push(("scope", scope.trim()));
+    }
+    let resp = client
+        .post(token_url.trim())
+        .basic_auth(client_id, Some(client_secret))
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| HttpError::Network(format!("OAuth2 token request: {e}")))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    let token = json.get("access_token").and_then(|v| v.as_str());
+    match token {
+        Some(t) if status.is_success() => Ok((
+            t.to_string(),
+            json.get("expires_in")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3600),
+        )),
+        _ => {
+            let why = json
+                .get("error_description")
+                .or_else(|| json.get("error"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| text.chars().take(200).collect());
+            Err(HttpError::Network(format!(
+                "OAuth2 token request failed ({status}): {why}"
+            )))
+        }
+    }
+}
+
 async fn read_file(path: &str) -> Result<Vec<u8>, HttpError> {
     tokio::fs::read(path)
         .await
@@ -584,6 +632,63 @@ mod multipart_tests {
             .await
             .unwrap();
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn client_credentials_posts_form_with_basic_auth() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                r#"{"access_token":"tok123","token_type":"bearer","expires_in":120}"#,
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+        let (tok, ttl) = fetch_client_credentials(
+            &format!("{}/token", server.uri()),
+            "id",
+            "secret",
+            "read write",
+            Duration::from_secs(5),
+            &Net::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!((tok.as_str(), ttl), ("tok123", 120));
+        let req = &server.received_requests().await.unwrap()[0];
+        assert_eq!(
+            req.headers.get("authorization").unwrap(),
+            "Basic aWQ6c2VjcmV0"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&req.body),
+            "grant_type=client_credentials&scope=read+write"
+        );
+    }
+
+    #[tokio::test]
+    async fn client_credentials_error_is_readable() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_raw(r#"{"error":"invalid_client"}"#, "application/json"),
+            )
+            .mount(&server)
+            .await;
+        let e = fetch_client_credentials(
+            &server.uri(),
+            "id",
+            "x",
+            "",
+            Duration::from_secs(5),
+            &Net::default(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("401") && e.contains("invalid_client"), "{e}");
     }
 
     #[tokio::test]
