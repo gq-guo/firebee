@@ -371,7 +371,8 @@ label.check input { flex: none; }
 .kv.inherited td.val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
 .from-history { color: var(--warn); font-family: var(--font-body); font-size: 12px; }
 .helper.redirects code { font-size: 12px; }
-[role="radiogroup"] label { font-size: 13px; color: var(--text-2); }
+[role="radiogroup"] { flex-wrap: wrap; row-gap: 4px; }
+[role="radiogroup"] label { font-size: 13px; color: var(--text-2); white-space: nowrap; }
 
 /* Preview（Actual Request）与流式响应 */
 .preview h4 { margin: 12px 0 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
