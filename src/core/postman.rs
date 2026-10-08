@@ -24,6 +24,8 @@ fn kvs(v: Option<&Value>) -> Vec<KeyValue> {
                     enabled: !x.get("disabled").and_then(Value::as_bool).unwrap_or(false),
                     key: s(&x["key"]),
                     value: s(&x["value"]),
+                    is_file: false,
+                    secret: false,
                 })
                 .collect()
         })
@@ -57,6 +59,13 @@ fn auth(v: Option<&Value>) -> Option<Auth> {
         // noauth 在 Postman 里是"明确不带凭据"，映射成 None 会变成"继承"，
         // 于是集合级的 prod token 被发给了一个本来不该带凭据的请求
         "noauth" => Auth::Off,
+        // 只接 client_credentials；别的 grant 需要浏览器回调，先当 None
+        "oauth2" if get("grant_type") == "client_credentials" => Auth::OAuth2 {
+            token_url: get("accessTokenUrl"),
+            client_id: get("clientId"),
+            client_secret: get("clientSecret"),
+            scope: get("scope"),
+        },
         _ => Auth::None,
     })
 }
@@ -115,9 +124,27 @@ fn request(item: &Value) -> Request {
                 req.form = kvs(body.get("urlencoded"));
             }
             "formdata" => {
-                // 文件字段不支持，只保留文本字段
-                req.body_type = BodyType::Form;
+                req.body_type = BodyType::Multipart;
                 req.form = kvs(body.get("formdata"));
+                // Postman 文件字段：{type:"file", src:"/path"}，src 可能是数组（多文件）
+                if let Some(a) = body.get("formdata").and_then(Value::as_array) {
+                    for (f, x) in req
+                        .form
+                        .iter_mut()
+                        .zip(a.iter().filter(|x| x.get("key").is_some()))
+                    {
+                        if x.get("type").and_then(Value::as_str) == Some("file") {
+                            // 别人集合里的本机路径不能一点 Send 就读：先关掉，用户看过再开
+                            f.is_file = true;
+                            f.enabled = false;
+                            f.value = match x.get("src") {
+                                Some(Value::Array(v)) => v.first().map(s).unwrap_or_default(),
+                                Some(v) => s(v),
+                                None => String::new(),
+                            };
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -188,6 +215,8 @@ pub fn to_environment(v: &Value) -> Environment {
                         enabled: x.get("enabled").and_then(Value::as_bool).unwrap_or(true),
                         key: s(&x["key"]),
                         value: s(&x["value"]),
+                        is_file: false,
+                        secret: false,
                     })
                     .collect()
             })

@@ -142,6 +142,7 @@ pub fn from_curl(text: &str) -> Result<Request, String> {
     let mut user: Option<String> = None;
     let mut data: Vec<String> = Vec::new();
     let mut form: Vec<KeyValue> = Vec::new();
+    let mut multipart = false;
     let mut as_get = false;
 
     while let Some(w) = it.next() {
@@ -166,8 +167,18 @@ pub fn from_curl(text: &str) -> Result<Request, String> {
                         .unwrap_or(d.clone()),
                 );
             }
-            "--data-urlencode" | "-F" | "--form" | "--form-string" => {
-                form.push(split_kv(&value(&mut it, &w)?))
+            "--data-urlencode" => form.push(split_kv(&value(&mut it, &w)?)),
+            "-F" | "--form" | "--form-string" => {
+                let mut kv = split_kv(&value(&mut it, &w)?);
+                if w != "--form-string" {
+                    if let Some(p) = kv.value.strip_prefix('@') {
+                        // @path 后面可能跟 ;type=... ;filename=...，只要路径
+                        kv.value = p.split(';').next().unwrap_or("").to_string();
+                        kv.is_file = true;
+                    }
+                }
+                multipart = true;
+                form.push(kv);
             }
             "-u" | "--user" => user = Some(value(&mut it, &w)?),
             "--url" => url = Some(value(&mut it, &w)?),
@@ -244,7 +255,11 @@ pub fn from_curl(text: &str) -> Result<Request, String> {
             req.params.push(kv);
         }
     } else if !form.is_empty() {
-        req.body_type = BodyType::Form;
+        req.body_type = if multipart {
+            BodyType::Multipart
+        } else {
+            BodyType::Form
+        };
         req.form = form;
         for kv in joined.split('&').filter(|s| !s.is_empty()) {
             req.form.push(split_kv(kv));
@@ -281,6 +296,18 @@ pub fn from_curl(text: &str) -> Result<Request, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn form_file_becomes_multipart() {
+        let r =
+            super::from_curl("curl -F name=bob -F doc=@/tmp/a.png;type=image/png https://x.io/up")
+                .unwrap();
+        assert_eq!(r.body_type, super::BodyType::Multipart);
+        assert_eq!(r.form.len(), 2);
+        assert!(!r.form[0].is_file);
+        assert!(r.form[1].is_file);
+        assert_eq!(r.form[1].value, "/tmp/a.png");
+    }
+
     use super::*;
 
     #[test]

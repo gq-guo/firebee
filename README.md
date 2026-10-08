@@ -24,12 +24,18 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 ## 功能
 
 **请求**
-- 全部常用方法；Params / Headers / Body（JSON、Text、Form）/ Auth（Bearer、Basic、API Key）
+- 全部常用方法；Params / Headers / Body（JSON、Text、Form、Multipart 文件上传、Binary 整文件）/ Auth（Bearer、Basic、API Key、OAuth 2.0 Client Credentials——发送前自动换 token，内存缓存到过期）
 - GraphQL：新建时选 New GraphQL request，Query + Variables（JSON）编辑，按 `{"query","variables"}` POST；Postman 的 GraphQL body 可导入
 - Params / Headers 表格末尾常驻空白行，直接输入即新增；Header 名与 Content-Type / Accept 值自动补全；JSON body 一键格式化并定位错误
+- 信任系统钥匙串里的 CA（企业 CA、Charles / mitmproxy 根证书直接生效）；Request settings 里可切 System / None / Custom 代理（带 bypass 列表）、加自定义 CA（PEM）、配 mTLS 客户端证书（PEM，证书 + 私钥）、自签名环境打开 Allow invalid certificates
+- 响应耗时拆 TTFB（连接 + 服务端）与下载，接口慢时一眼分清是服务端慢还是响应大
+- SSE / NDJSON 流式响应边收边显示，不用等连接关闭
+- Preview 标签：变量替换、继承的 header/auth、默认 Content-Type、会话 Cookie 全算完之后真正发出去的请求，调 401 不用猜
 - 可取消、超时可配；多个请求可同时在飞，响应按请求保留（切换不丢，内存中最多 50 条）
+- Tests：每个请求可写声明式断言，一行一条（`status = 200`、`$.data.id exists`、`time < 1000 ms`、`header content-type contains json`），发送后响应区显示通过 / 失败与实际值，不引入 JS 运行时
+- Run collection / folder：右键集合或文件夹按顺序全部发送，Capture 传给后面的请求，Tests 决定 PASS / FAIL，发布前冒烟一键跑
 - Capture：2xx 响应后按 JSONPath 把值写进当前环境变量（`token` ← `$.data.token`），登录拿 token 不用手动复制
-- Cookie 在会话内自动保持，登录后可连着调会话接口；Environment › Manage… 里可清除
+- Cookie 在会话内自动保持，登录后可连着调会话接口；Environment › Manage… › Cookies… 可逐条查看 / 删除，也可一键清空
 - 重定向：顶栏可关；开着时也只跟同一 host（换 host 必停）。跟过的每一跳都在响应区列出来，停下来时显示 Location 并可一键填进 URL。reqwest 换 host 时只剥 Authorization / Cookie，`X-API-Key` 这类自定义头会原样发过去，被控制的接口一个 302 就能取走密钥
 
 **响应**
@@ -39,6 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - HTML 沙箱预览、图片预览、保存到文件
 
 **变量与环境**
+- 环境变量可标 🔒 Secret：值存 macOS 钥匙串，不进 environments.json / 导出 / 项目目录 / 历史，界面遮罩
 - 多环境切换，`{{variable}}` 在 URL / 参数 / 头 / 体 / 认证中替换；URL 里的变量实时着色（可解析绿、未解析橙），Send 旁显示未解析数量，再点一次强制发送
 - 输入 `{{` 自动补全环境变量与动态变量
 - 动态变量：`{{$uuid}}`、`{{$timestamp}}`、`{{$randomEmail}}`、`{{$randomFullName}}` 等 29 个（名字与 Postman 一致），
@@ -52,8 +59,21 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - 历史最近 500 条，点击回填；最近 100 条连响应体一起留着（单条上限 64KB），点回去直接看当时的返回，不用重发
 - 集合 / 文件夹可配公共 header 与 auth（右键 → Shared headers & auth…），下属请求自动带上；请求自己同名的覆盖它，选 **No auth** 则一条凭据都不带（含继承来的 Authorization 头）
 - 导入集合时，里面带的 capture 规则一律先关掉——它们会改写你的环境变量，看过再开
-- 导入：把 curl 粘贴到 URL 框即覆盖到当前请求（保留名字）；集合菜单可导入为新请求；文件导入 Firebee 导出 / Postman Collection v2.x / Postman Environment
+- 导入：把 curl 粘贴到 URL 框即覆盖到当前请求（保留名字）；集合菜单可导入为新请求；文件导入 Firebee 导出 / Postman Collection v2.x / Postman Environment / OpenAPI 3.x 与 Swagger 2.0（JSON 或 YAML：按 tag 分文件夹，path 参数变 `{{var}}`，body 按 schema 生成示例，servers[0] 落到环境变量 `baseUrl`，安全方案落到集合级 auth）
 - 导出：curl（JSON 压成一行，方便粘贴终端）、Python (requests)；集合导出为 Firebee JSON
+
+**项目目录（可进 Git）**
+- 集合右键 → Save as project folder…：集合写成一个目录——`firebee.json` 放树的骨架和共享 header / auth，`requests/` 下每个请求一个文件，diff 一眼能看、多人改不同请求不冲突；之后每次改动自动同步进去
+- 侧栏 + → Open project folder…：clone 下来的目录直接打开；git pull 后重启 Firebee 以目录为准
+- 环境变量不进项目目录（里面有 token）
+
+**命令行（`firebee-cli`，和 GUI 共用同一份请求定义）**
+```bash
+firebee-cli list -p ./api                                   # 列出项目目录里的请求
+firebee-cli send "Auth/Login" -p ./api --env dev --json     # 发一个，--env 用 app 里的环境（含钥匙串里的 secret）
+firebee-cli run -p ./api --env-file ci.env.json --var base=https://staging.x   # 按顺序全跑，Capture 的值传给后面的请求
+```
+不带 `-p` 读 app 自己的集合（`--collection NAME`）。`run` 有一个非 2xx/3xx 退出码 1，适合放 CI；`--json` 给脚本和 AI Agent 用。从源码 `cargo build --release --bin firebee-cli` 得到二进制。
 
 **界面**
 - 标签页：多个请求同时开着来回切，关了重开还在。⌘W 关标签，⌥⌘←/→ 切换，中键点标签也能关

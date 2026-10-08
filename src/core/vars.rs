@@ -309,6 +309,16 @@ pub fn substitute_request(req: &Request, vars: &HashMap<String, String>) -> (Req
             *key = apply(key, vars, &mut missing);
             *value = apply(value, vars, &mut missing);
         }
+        Auth::OAuth2 {
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+        } => {
+            for f in [token_url, client_id, client_secret, scope] {
+                *f = apply(f, vars, &mut missing);
+            }
+        }
         Auth::None | Auth::Off => {}
     }
     (out, missing)

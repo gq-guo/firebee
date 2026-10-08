@@ -11,7 +11,7 @@ fn py(s: &str) -> String {
 }
 
 /// 收集最终生效的 header（含认证与 Content-Type），供 curl/python 共用。
-fn effective_headers(req: &Request) -> Vec<(String, String)> {
+pub fn effective_headers(req: &Request) -> Vec<(String, String)> {
     let mut hs: Vec<(String, String)> = req
         .headers
         .iter()
@@ -20,6 +20,11 @@ fn effective_headers(req: &Request) -> Vec<(String, String)> {
         .collect();
     match &req.auth {
         Auth::Bearer { token } => hs.push(("Authorization".into(), format!("Bearer {token}"))),
+        // token 是发送时才换的，导出只能放占位
+        Auth::OAuth2 { .. } => hs.push((
+            "Authorization".into(),
+            "Bearer <OAuth2 access token>".into(),
+        )),
         Auth::ApiKey {
             key,
             value,
@@ -89,6 +94,21 @@ pub fn to_curl(req: &Request, url: &str) -> String {
                 ));
             }
         }
+        BodyType::Multipart => {
+            for f in req.form.iter().filter(|f| f.enabled && !f.key.is_empty()) {
+                let v = if f.is_file {
+                    format!("@{}", f.value)
+                } else {
+                    f.value.clone()
+                };
+                parts.push(format!("-F {}", sh(&format!("{}={v}", f.key))));
+            }
+        }
+        BodyType::Binary => {
+            if !req.body.trim().is_empty() {
+                parts.push(format!("--data-binary @{}", sh(req.body.trim())));
+            }
+        }
         BodyType::None => {}
     }
     parts.join(" \\\n  ")
@@ -126,6 +146,36 @@ pub fn to_python(req: &Request, url: &str) -> String {
                 s.push_str(&format!("        {}: {},\n", py(&f.key), py(&f.value)));
             }
             s.push_str("    },\n");
+        }
+        BodyType::Multipart => {
+            let (texts, files): (Vec<_>, Vec<_>) = req
+                .form
+                .iter()
+                .filter(|f| f.enabled && !f.key.is_empty())
+                .partition(|f| !f.is_file);
+            if !texts.is_empty() {
+                s.push_str("    data={\n");
+                for f in texts {
+                    s.push_str(&format!("        {}: {},\n", py(&f.key), py(&f.value)));
+                }
+                s.push_str("    },\n");
+            }
+            if !files.is_empty() {
+                s.push_str("    files={\n");
+                for f in files {
+                    s.push_str(&format!(
+                        "        {}: open({}, 'rb'),\n",
+                        py(&f.key),
+                        py(&f.value)
+                    ));
+                }
+                s.push_str("    },\n");
+            }
+        }
+        BodyType::Binary => {
+            if !req.body.trim().is_empty() {
+                s.push_str(&format!("    data=open({}, 'rb'),\n", py(req.body.trim())));
+            }
         }
         BodyType::None => {}
     }

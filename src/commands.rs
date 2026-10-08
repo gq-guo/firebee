@@ -6,11 +6,12 @@ use std::time::Duration;
 
 use base64::Engine;
 use serde::Serialize;
-use tauri::State;
+use tauri::{Emitter, State};
 use tokio::sync::watch;
 
-use crate::core::export::{to_curl, to_python};
-use crate::core::http::{build_url, execute};
+use crate::core::export::{effective_headers, to_curl, to_python};
+use crate::core::http::{build_url, execute_streaming, fetch_client_credentials, Net, StreamEvent};
+use crate::core::models::Auth;
 use crate::core::models::{
     merge_inherited, Collection, Environment, HistoryEntry, Inherited, Request,
 };
@@ -21,12 +22,58 @@ use crate::core::vars::substitute_request;
 #[derive(Default)]
 pub struct Pending(Mutex<HashMap<u64, watch::Sender<bool>>>);
 
-/// 应用生命周期内共享的 Cookie 罐（登录后会话接口能连着调）；Clear 即换新罐
-pub struct Cookies(pub Mutex<Arc<reqwest::cookie::Jar>>);
-impl Default for Cookies {
-    fn default() -> Self {
-        Self(Mutex::new(Arc::new(reqwest::cookie::Jar::default())))
-    }
+/// 应用生命周期内共享的 Cookie 罐（登录后会话接口能连着调）
+#[derive(Default)]
+pub struct Cookies(pub Arc<crate::core::cookies::Cookies>);
+
+/// OAuth2 access_token 缓存：key = token_url + client_id + scope → (token, 过期时刻)。只在内存。
+#[derive(Default)]
+pub struct Tokens(Mutex<HashMap<String, (String, std::time::Instant)>>);
+
+/// 请求用的是 OAuth2 时换成 Bearer：缓存没过期直接用，否则去 token_url 取
+async fn resolve_oauth(
+    req: &mut Request,
+    tokens: &Tokens,
+    timeout: Duration,
+    net: &Net,
+    mut cancel: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let Auth::OAuth2 {
+        token_url,
+        client_id,
+        client_secret,
+        scope,
+    } = &req.auth
+    else {
+        return Ok(());
+    };
+    // secret 也进 key：换了 secret 不能还拿旧 token；map 只在内存，不怕
+    let key = format!("{token_url}\n{client_id}\n{client_secret}\n{scope}");
+    let cached = tokens
+        .0
+        .lock()
+        .unwrap()
+        .get(&key)
+        .filter(|(_, exp)| *exp > std::time::Instant::now())
+        .map(|(t, _)| t.clone());
+    let token = match cached {
+        Some(t) => t,
+        None => {
+            let fetch =
+                fetch_client_credentials(token_url, client_id, client_secret, scope, timeout, net);
+            let (t, ttl) = tokio::select! {
+                r = fetch => r.map_err(|e| e.to_string())?,
+                _ = cancel.wait_for(|c| *c) => return Err("Request cancelled".into()),
+            };
+            // 提前 30 秒当过期，别拿着快过期的 token 去撞 401
+            let exp =
+                std::time::Instant::now() + Duration::from_secs(ttl.saturating_sub(30).max(1));
+            tokens.0.lock().unwrap().insert(key, (t.clone(), exp));
+            t
+        }
+    };
+    req.auth = Auth::Bearer { token };
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -44,6 +91,7 @@ pub struct ResponseDto {
     body: String,
     body_base64: Option<String>,
     duration_ms: u128,
+    ttfb_ms: Option<u128>,
     size_bytes: usize,
     redirects: Vec<String>,
 }
@@ -111,13 +159,16 @@ pub struct SendOptions {
     #[serde(default)]
     pub inherited: Option<Vec<Inherited>>,
     #[serde(default)]
-    pub follow_redirects: Option<bool>,
+    pub net: Net,
 }
 
 #[tauri::command(rename_all = "snake_case")]
+#[allow(clippy::too_many_arguments)] // Tauri 注入的 State 也算参数
 pub async fn send_request(
+    app: tauri::AppHandle,
     pending: State<'_, Pending>,
     cookies: State<'_, Cookies>,
+    tokens: State<'_, Tokens>,
     job_id: u64,
     request: Request,
     env: Option<Environment>,
@@ -126,21 +177,33 @@ pub async fn send_request(
     let SendOptions {
         timeout_secs,
         inherited,
-        follow_redirects,
+        net,
     } = options;
     let request = merge_inherited(&request, &inherited.unwrap_or_default());
-    let (req, _) = substitute_request(&request, &vars(&env));
+    let (mut req, _) = substitute_request(&request, &vars(&env));
+    let timeout = Duration::from_secs(timeout_secs.max(1));
     let (tx, rx) = watch::channel(false);
+    // 先登记再取 token：取 token 期间点 Cancel 也要能停
     pending.0.lock().unwrap().insert(job_id, tx);
-    let jar = cookies.0.lock().unwrap().clone();
-    let result = execute(
-        &req,
-        Duration::from_secs(timeout_secs.max(1)),
-        rx,
-        Some(jar),
-        follow_redirects.unwrap_or(true),
-    )
-    .await;
+    if let Err(e) = resolve_oauth(&mut req, &tokens, timeout, &net, rx.clone()).await {
+        pending.0.lock().unwrap().remove(&job_id);
+        return Err(e);
+    }
+    let jar: Arc<dyn reqwest::cookie::CookieStore> = cookies.0.clone();
+    // SSE / NDJSON：每个 chunk 立刻推给界面（事件 "stream"），完整响应仍走返回值
+    let on_stream = Box::new(move |ev: StreamEvent| {
+        let _ = match ev {
+            StreamEvent::Start(status, headers) => app.emit(
+                "stream",
+                serde_json::json!({ "job_id": job_id, "kind": "start", "status": status, "headers": headers }),
+            ),
+            StreamEvent::Chunk(text) => app.emit(
+                "stream",
+                serde_json::json!({ "job_id": job_id, "kind": "chunk", "text": text }),
+            ),
+        };
+    });
+    let result = execute_streaming(&req, timeout, rx, Some(jar), &net, Some(on_stream)).await;
     pending.0.lock().unwrap().remove(&job_id);
     result
         .map(|r| {
@@ -165,6 +228,7 @@ pub async fn send_request(
                 body,
                 body_base64,
                 duration_ms: r.duration_ms,
+                ttfb_ms: Some(r.ttfb_ms),
                 size_bytes: r.size_bytes,
                 redirects: r.redirects,
             }
@@ -172,9 +236,159 @@ pub async fn send_request(
         .map_err(|e| e.to_string())
 }
 
+/// 最终实际会发出去的请求：变量替换、继承的 header/auth、默认 Content-Type、
+/// 会话 Cookie 全部算完之后的样子。调"为什么 401 / 为什么没带上"用。
+#[derive(Serialize)]
+pub struct FinalRequest {
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    cookies: Vec<String>,
+    body: String,
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn final_request(
+    cookies: State<Cookies>,
+    tokens: State<Tokens>,
+    request: Request,
+    env: Option<Environment>,
+    inherited: Option<Vec<Inherited>>,
+) -> Result<FinalRequest, String> {
+    use crate::core::models::{Auth, BodyType};
+    use reqwest::cookie::CookieStore;
+    let request = merge_inherited(&request, &inherited.unwrap_or_default());
+    let (mut req, _) = substitute_request(&request, &vars(&env));
+    if let Auth::OAuth2 {
+        token_url,
+        client_id,
+        client_secret,
+        scope,
+    } = &req.auth
+    {
+        let key = format!("{token_url}\n{client_id}\n{client_secret}\n{scope}");
+        if let Some((t, _)) = tokens.0.lock().unwrap().get(&key) {
+            req.auth = Auth::Bearer { token: t.clone() };
+        }
+    }
+    let url = build_url(&req).map_err(|e| e.to_string())?;
+    let mut headers = effective_headers(&req);
+    if let Auth::Basic { username, password } = &req.auth {
+        let cred =
+            base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+        headers.push(("Authorization".into(), format!("Basic {cred}")));
+    }
+    let parsed = reqwest::Url::parse(&url).map_err(|e| e.to_string())?;
+    let cookies = cookies
+        .0
+        .cookies(&parsed)
+        .map(|v| {
+            v.to_str()
+                .unwrap_or("")
+                .split("; ")
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let on = |rows: &[crate::core::models::KeyValue]| {
+        rows.iter()
+            .filter(|f| f.enabled && !f.key.is_empty())
+            .map(|f| format!("{}={}{}", f.key, if f.is_file { "@" } else { "" }, f.value))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let body = match req.body_type {
+        BodyType::None => String::new(),
+        BodyType::Json | BodyType::Text => req.body.clone(),
+        BodyType::GraphQL => req.graphql_payload().unwrap_or_default(),
+        BodyType::Form => {
+            headers.push((
+                "Content-Type".into(),
+                "application/x-www-form-urlencoded".into(),
+            ));
+            on(&req.form)
+        }
+        BodyType::Multipart => {
+            headers.push((
+                "Content-Type".into(),
+                "multipart/form-data; boundary=…".into(),
+            ));
+            on(&req.form)
+        }
+        BodyType::Binary => format!("@{}", req.body.trim()),
+    };
+    Ok(FinalRequest {
+        method: req.effective_method().as_str().into(),
+        url,
+        headers,
+        cookies,
+        body,
+    })
+}
+
+/// 打开一个项目目录（含 firebee.json）读成集合；前端负责去重并加进列表
 #[tauri::command]
-pub fn clear_cookies(cookies: State<Cookies>) {
-    *cookies.0.lock().unwrap() = Arc::new(reqwest::cookie::Jar::default());
+pub fn open_project(dir: String) -> Result<Collection, String> {
+    let p = std::path::Path::new(&dir);
+    if !crate::core::project::is_project_dir(p) {
+        return Err(format!("No {} in {dir}", crate::core::project::MANIFEST));
+    }
+    crate::core::project::read(p).map_err(|e| e.to_string())
+}
+
+/// 把集合关联到目录并立刻写一次。目录里已有别的项目就拒绝，免得覆盖
+#[tauri::command(rename_all = "snake_case")]
+pub fn link_project(collection: Collection, dir: String) -> Result<Collection, String> {
+    let p = std::path::Path::new(&dir);
+    if crate::core::project::is_project_dir(p) {
+        let existing = crate::core::project::read(p).map_err(|e| e.to_string())?;
+        if existing.id != collection.id {
+            return Err(format!(
+                "{dir} already holds project “{}” — open it instead, or pick an empty folder",
+                existing.name
+            ));
+        }
+    }
+    let mut c = collection;
+    crate::core::project::write(p, &c).map_err(|e| e.to_string())?;
+    c.project_dir = Some(dir);
+    Ok(c)
+}
+
+/// 响应回来后跑请求上的断言；body 在前端手里，所以由前端传进来
+#[tauri::command(rename_all = "snake_case")]
+pub fn check_asserts(
+    rules: Vec<crate::core::models::KeyValue>,
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: String,
+    duration_ms: u64,
+) -> Vec<crate::core::assert::Outcome> {
+    crate::core::assert::check_all(
+        &rules,
+        &crate::core::assert::Resp {
+            status,
+            headers: &headers,
+            body: &body,
+            duration_ms: duration_ms as u128,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn clear_cookies(cookies: State<Cookies>, tokens: State<Tokens>) {
+    cookies.0.clear();
+    tokens.0.lock().unwrap().clear();
+}
+
+#[tauri::command]
+pub fn list_cookies(cookies: State<Cookies>) -> Vec<crate::core::cookies::CookieView> {
+    cookies.0.list()
+}
+
+#[tauri::command]
+pub fn delete_cookie(cookies: State<Cookies>, domain: String, path: String, name: String) -> bool {
+    cookies.0.remove(&domain, &path, &name)
 }
 
 /// 把响应体保存到文件：文本直接写，二进制走 base64 解码
@@ -203,6 +417,9 @@ pub fn cancel_request(pending: State<Pending>, job_id: u64) {
 /// 导出单个集合到文件（Firebee 原生格式，带版本号便于以后迁移）
 #[tauri::command]
 pub fn export_collection(collection: Collection, path: String) -> Result<(), String> {
+    // 导出不带本机目录：导回来 / 给别人会变成两个集合写同一个目录，互相清掉对方的文件
+    let mut collection = collection;
+    collection.project_dir = None;
     let doc = serde_json::json!({ "firebee": 1, "collection": collection });
     let data = serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?;
     std::fs::write(&path, data).map_err(|e| format!("Couldn't write {path}: {e}"))
@@ -218,8 +435,13 @@ pub struct Imported {
 #[tauri::command]
 pub fn import_file(path: String) -> Result<Imported, String> {
     let bytes = std::fs::read(&path).map_err(|e| format!("Couldn't read {path}: {e}"))?;
-    let v: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|e| format!("Not valid JSON: {e}"))?;
+    // JSON 优先；不是 JSON 再按 YAML 读（OpenAPI 常见）。YAML 是 JSON 的超集，所以错误信息按 JSON 的报
+    let v: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(je) => {
+            serde_yaml::from_slice(&bytes).map_err(|_| format!("Not valid JSON or YAML: {je}"))?
+        }
+    };
     if v.get("firebee").is_some() {
         let mut collection: Collection = serde_json::from_value(v["collection"].clone())
             .map_err(|e| format!("Not a Firebee collection file: {e}"))?;
@@ -242,7 +464,14 @@ pub fn import_file(path: String) -> Result<Imported, String> {
             ..Default::default()
         });
     }
-    Err("Unrecognised file — expected a Firebee export, a Postman collection (v2.x) or a Postman environment".into())
+    if crate::core::openapi::is_openapi(&v) {
+        let (collection, environment) = crate::core::openapi::to_collection(&v);
+        return Ok(Imported {
+            collection: Some(collection),
+            environment,
+        });
+    }
+    Err("Unrecognised file — expected a Firebee export, a Postman collection (v2.x) / environment, or an OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML)".into())
 }
 
 #[tauri::command]

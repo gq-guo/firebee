@@ -41,6 +41,12 @@ pub struct KeyValue {
     pub enabled: bool,
     pub key: String,
     pub value: String,
+    /// 仅 Multipart body 用：true 时 value 是本机文件路径，作为文件 part 发送
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_file: bool,
+    /// 仅环境变量用：值存钥匙串，不进 JSON / 导出 / 项目目录；界面遮罩
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
 }
 
 impl KeyValue {
@@ -49,6 +55,8 @@ impl KeyValue {
             enabled: true,
             key: key.into(),
             value: value.into(),
+            is_file: false,
+            secret: false,
         }
     }
 }
@@ -59,6 +67,10 @@ pub enum BodyType {
     Json,
     Text,
     Form,
+    /// multipart/form-data：form 里 is_file 的行按文件发
+    Multipart,
+    /// body 是本机文件路径，整个文件作为 body 原样发送
+    Binary,
     /// body 是 GraphQL query，变量在 graphql_variables；发送时组装成 JSON
     GraphQL,
 }
@@ -85,6 +97,14 @@ pub enum Auth {
         value: String,
         in_query: bool,
     },
+    /// OAuth 2.0 Client Credentials：发送前先去 token_url 换 access_token，当 Bearer 用。
+    /// token 只在内存里缓存到过期，不进存档。
+    OAuth2 {
+        token_url: String,
+        client_id: String,
+        client_secret: String,
+        scope: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +125,9 @@ pub struct Request {
     /// 响应后把值提取到环境变量：key = 变量名，value = JSONPath（复用 KeyValue，前端表格直接沿用）
     #[serde(default)]
     pub captures: Vec<KeyValue>,
+    /// 响应断言：key = subject（status / time / header x / $.path），value = "op expected"，见 core::assert
+    #[serde(default)]
+    pub asserts: Vec<KeyValue>,
     /// GraphQL 变量（JSON 文本），仅 body_type == GraphQL 时使用
     #[serde(default)]
     pub graphql_variables: String,
@@ -126,6 +149,7 @@ impl Request {
             pinned: false,
             graphql_variables: String::new(),
             captures: vec![],
+            asserts: vec![],
         }
     }
 
@@ -196,6 +220,9 @@ pub struct Collection {
     /// 下属请求的默认认证；请求自己设了非 None 就用自己的
     #[serde(default)]
     pub auth: Auth,
+    /// 关联的项目目录（见 core::project）：保存时同步写进去，启动时从那里读回来
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_dir: Option<String>,
 }
 
 impl Collection {
@@ -214,6 +241,8 @@ impl Collection {
             }
         }
         self.id = Uuid::new_v4();
+        // 副本不能继承目录关联，否则和原件轮流改写同一个目录
+        self.project_dir = None;
         walk(&mut self.folders, &mut self.requests);
     }
 
@@ -225,6 +254,7 @@ impl Collection {
             requests: vec![],
             headers: vec![],
             auth: Auth::None,
+            project_dir: None,
         }
     }
 }
@@ -268,6 +298,8 @@ pub fn merge_inherited(req: &Request, chain: &[Inherited]) -> Request {
                 enabled: true,
                 key: h.key.trim().to_string(),
                 value: h.value.clone(),
+                is_file: false,
+                secret: false,
             })
             .collect();
         headers.retain(|kept| {
@@ -353,6 +385,8 @@ pub struct ResponseMeta {
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     pub duration_ms: u128,
+    /// 发出到收到响应头的时间；和 duration_ms 的差就是下载时间
+    pub ttfb_ms: u128,
     pub size_bytes: usize,
     /// 实际跟过的重定向目标，按顺序；没有重定向就是空的
     pub redirects: Vec<String>,
@@ -366,6 +400,9 @@ pub struct StoredResponse {
     pub headers: Vec<(String, String)>,
     pub body: String,
     pub duration_ms: u128,
+    /// 老历史没有这个字段：None，界面不显示 TTFB
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttfb_ms: Option<u128>,
     pub size_bytes: usize,
     #[serde(default)]
     pub truncated: bool,
@@ -486,6 +523,8 @@ mod tests {
                     enabled: false,
                     key: "X-Off".into(),
                     value: "x".into(),
+                    is_file: false,
+                    secret: false,
                 },
             ],
             auth: Auth::None,
@@ -728,6 +767,8 @@ mod tests {
                     enabled: false,
                     key: "skip".into(),
                     value: "x".into(),
+                    is_file: false,
+                    secret: false,
                 },
                 KeyValue::new("", "no-key"),
             ],

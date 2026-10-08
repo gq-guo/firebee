@@ -27,6 +27,11 @@ function setActiveEnv(id) {
 }
 const pref = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch { return d; } };
 let followRedirects = pref('firebee.follow', true);
+let insecure = pref('firebee.insecure', false);
+// 网络层设置（代理 / CA / 客户端证书）：一份 JSON 存本机，和 follow / insecure 一起随每次发送传给后端
+const NET_DEFAULT = { proxy: 'system', proxy_url: '', no_proxy: '', ca_path: '', cert_path: '' };
+let net = (() => { try { return { ...NET_DEFAULT, ...JSON.parse(localStorage.getItem('firebee.net') || '{}') }; } catch { return { ...NET_DEFAULT }; } })();
+const saveNet = () => { try { localStorage.setItem('firebee.net', JSON.stringify(net)); } catch { /* private mode */ } };
 // 主题：'light' | 'dark' | 'system'。<html data-theme> 永远是解析后的 light / dark
 let theme = (() => { try { return localStorage.getItem('firebee.theme') || 'system'; } catch { return 'system'; } })();
 const lightMq = matchMedia('(prefers-color-scheme: light)');
@@ -70,7 +75,7 @@ const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘
 function newRequest(name = 'Untitled request', kind = 'http') {
   const gql = kind === 'graphql';
   return { id: crypto.randomUUID(), name, method: gql ? 'Post' : 'Get', url: '', params: [], headers: [],
-           body_type: gql ? 'GraphQL' : 'None', body: '', form: [], auth: 'None', pinned: false, graphql_variables: '', captures: [] };
+           body_type: gql ? 'GraphQL' : 'None', body: '', form: [], auth: 'None', pinned: false, graphql_variables: '', captures: [], asserts: [] };
 }
 const isGql = (r) => r.body_type === 'GraphQL';
 const newContainer = (name) => ({ id: crypto.randomUUID(), name, folders: [], requests: [], headers: [], auth: 'None' });
@@ -82,10 +87,11 @@ function dirty() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    saving = (async () => {
-      await invoke('save_collections', { collections: data.collections });
-      await invoke('save_environments', { environments: data.environments });
-    })();
+    // 两个文件各存各的：项目目录写不进去不能连带着让环境（含刚抓到的 token）也存不上
+    saving = Promise.all([
+      invoke('save_collections', { collections: data.collections }),
+      invoke('save_environments', { environments: data.environments }),
+    ]);
     saving.catch((e) => toast(`Couldn't save your changes. ${e}`, { error: true, action: ['Retry', dirty] }));
   }, 500);
 }
@@ -195,7 +201,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 /** 通用 key-value 表格；增删行时调 rerender 重建，输入只写模型不重绘（保焦点）。 */
-function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = null } = {}) {
+function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = null, files = false, secrets = false } = {}) {
   const table = h('table', { class: 'kv' });
   const listFor = (key) => (valList && /^(content-type|accept)$/i.test(key.trim()) ? valList : null);
   // 最后一行永远是空白"幽灵行"：一敲字就变成真实行并追加新的幽灵行，不用点 Add
@@ -211,13 +217,30 @@ function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = n
       if (cell) { cell.focus(); cell.setSelectionRange(cell.value.length, cell.value.length); }
     };
     const val = h('input', { placeholder: valHint, value: ghost ? '' : r.value, 'aria-label': valHint, spellcheck: 'false', list: ghost ? null : listFor(r.key),
-      oninput: (e) => { if (ghost) return promote('value', e.target.value); r.value = e.target.value; dirty(); } });
+      type: !ghost && r.secret ? 'password' : 'text', autocomplete: 'off',
+      oninput: (e) => { if (ghost) return promote('value', e.target.value); r.value = e.target.value; if (!files) r.is_file = false; dirty(); } });
+    // 文件行：值是本机路径，用系统文件框选；Text/File 按钮切换
+    const fileCell = () => h('span', { class: 'row' },
+      btn(r.value ? r.value.split('/').pop() : 'Choose file…', async () => {
+        const path = await dialog.open({ multiple: false });
+        if (path) { r.value = path; dirty(); rerender(); }
+      }, 'small').withAttr('title', r.value || ''),
+      r.value ? h('span', { class: 'muted' }, r.value) : null);
+    // Secret：值进钥匙串不进 JSON，输入框遮罩
+    const secretBtn = !secrets || ghost ? null : btn(r.secret ? '🔒' : '🔓', () => { r.secret = !r.secret; dirty(); rerender(); }, 'small ghost')
+      .withAttr('title', r.secret ? 'Secret — stored in the keychain, masked, never exported. Click to make plain.' : 'Plain — click to make secret')
+      .withAttr('aria-label', 'Toggle secret');
+    const typeBtn = !files || ghost ? null : btn(r.is_file ? 'File' : 'Text', () => {
+      r.is_file = !r.is_file; r.value = ''; dirty(); rerender();
+    }, 'small ghost').withAttr('aria-label', 'Field type');
     const tr = h('tr', { class: ghost ? 'ghost' : (r.enabled ? '' : 'off') },
       h('td', { class: 'ctl' }, h('input', { type: 'checkbox', checked: ghost ? false : r.enabled, 'aria-label': 'Enabled', tabindex: ghost ? -1 : null,
         onchange: (e) => { if (ghost) return; r.enabled = e.target.checked; tr.classList.toggle('off', !r.enabled); dirty(); renderTabCounts(); } })),
       h('td', { class: 'key' }, h('input', { placeholder: keyHint, value: ghost ? '' : r.key, 'aria-label': keyHint, spellcheck: 'false', list: keyList,
         oninput: (e) => { if (ghost) return promote('key', e.target.value); r.key = e.target.value; const l = listFor(r.key); l ? val.setAttribute('list', l) : val.removeAttribute('list'); dirty(); renderTabCounts(); } })),
-      h('td', { class: 'val' }, val),
+      files ? h('td', { class: 'ctl type' }, typeBtn) : null,
+      secrets ? h('td', { class: 'ctl type' }, secretBtn) : null,
+      h('td', { class: 'val' }, !ghost && r.is_file && files ? fileCell() : val),
       h('td', { class: 'ctl' }, ghost ? null : btn('×', () => { rows.splice(i, 1); dirty(); rerender(); renderTabCounts(); }, 'small ghost').withAttr('aria-label', 'Remove row')),
     );
     table.append(tr);
@@ -266,7 +289,7 @@ function renderUrlMirror() {
 /** URL 下方的"解析后"预览：环境变量换成值，$动态变量和未定义的原样（后者标红） */
 function renderResolved() {
   const env = activeEnv(), url = current.url;
-  const vals = new Map(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.value]) : []);
+  const vals = new Map(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.secret ? '••••••' : v.value]) : []);
   const out = $('#resolved-url');
   out.replaceChildren();
   // enc：query 里的键值要按 URL 编码显示，复制出来才是能直接用的地址
@@ -440,7 +463,11 @@ function containerNode(c, parentArr, isFolder = false) {
     ['New folder', () => { c.folders.push(newContainer('New folder')); collapsed.delete(c.id); dirty(); renderSidebar(); }],
     ['Shared headers & auth…', () => openSettings(c, isFolder)],
     ['Import from curl…', () => openImport(c)],
+    ['Run ' + (isFolder ? 'folder' : 'collection') + '…', () => runCollection(c)],
     !isFolder && ['Export collection…', () => exportCollection(c)],
+    !isFolder && (c.project_dir
+      ? ['Unlink project folder', () => { delete c.project_dir; dirty(); renderSidebar(); toast(`“${c.name}” is no longer synced to a folder. The files there are untouched.`); }]
+      : ['Save as project folder…', () => linkProject(c)]),
     ['Rename', startRename(c)],
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
@@ -451,7 +478,7 @@ function containerNode(c, parentArr, isFolder = false) {
     h('summary', { oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
       ondragover: (e) => { if (dragging) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
       ondragleave: (e) => e.currentTarget.classList.remove('dropping'), ondrop: dropOnContainer },
-      nameNode(c), btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
+      nameNode(c), c.project_dir ? h('span', { class: 'proj', title: `Synced to ${c.project_dir}` }, '⎇') : null, btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
     !q() && !c.folders.length && !c.requests.length && h('div', { class: 'empty-hint' }, 'Empty — right-click to add a request, or paste a curl into the URL field'),
     ...view.folders.map((f) => containerNode(f, c.folders, true)),
     ...view.requests.map((r) => requestRow(r, c.requests)),
@@ -672,6 +699,10 @@ function inheritedHeaders(r) {
 /** 链上生效的 auth（最内层非 None）；请求自己设了就返回 null */
 function inheritedAuth(r) {
   if (r.auth !== 'None' && r.auth !== 'Off') return null; // 自己设了具体认证
+  return chainAuth(r);
+}
+/** 链上最内层的 auth，不管请求自己有没有覆盖——Auth 标签的选项要按它定（Inherit / No auth 是否出现） */
+function chainAuth(r) {
   return [...(chainFor(r) || [])].reverse().find((l) => l.auth !== 'None')?.auth || null;
 }
 
@@ -741,6 +772,74 @@ function openImport(into = null) {
 }
 
 /** 集合导出为 Firebee JSON 文件 */
+/** Runner：按顺序发送容器里的所有请求（含子文件夹），Capture 传给后面的，Tests 决定 PASS/FAIL */
+let runAbort = false, running = false;
+async function runCollection(container) {
+  if (running) { toast('A run is already in progress — stop it first.'); return; }
+  const flat = [];
+  (function walk(n, path) { for (const r of n.requests) flat.push({ r, path: path ? `${path}/${r.name}` : r.name }); for (const f of n.folders) walk(f, path ? `${path}/${f.name}` : f.name); })(container, '');
+  if (!flat.length) { toast('Nothing to run — the container is empty.'); return; }
+  const dlg = $('#run-dialog'), list = $('#run-list'), summary = $('#run-summary');
+  $('#run-title').textContent = `Run “${container.name}”`;
+  runAbort = false; running = true; $('#run-stop').classList.remove('hidden');
+  const rows = flat.map(({ path }) => h('div', { class: 'run-row' }, h('span', { class: 'st muted' }, '·'), h('span', { class: 'name' }, path), h('span', { class: 'meta muted' }, '')));
+  put(list, ...rows); summary.textContent = `0 / ${flat.length}`; dlg.showModal();
+  const env = activeEnv();
+  let pass = 0, fail = 0;
+  for (let i = 0; i < flat.length; i++) {
+    if (runAbort) break;
+    const { r, path } = flat[i], row = rows[i];
+    row.firstChild.textContent = '…'; row.firstChild.className = 'st';
+    const req = structuredClone(r), chain = chainFor(r) || [];
+    const unresolved = unresolvedVars(r);
+    let ok, meta;
+    try {
+      const dto = await invoke('send_request', { job_id: ++jobSeq, request: req, env: activeEnv(),
+        options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
+      const asserts = await runAsserts(req, dto);
+      ok = asserts ? asserts.every((a) => a.ok) : dto.status < 400;
+      const cap = dto.status < 300 ? runCaptures(req, dto, env) : null;
+      meta = `${dto.status} · ${dto.duration_ms} ms` + (cap?.ok ? ' · captured' : '') + (asserts ? ` · ${asserts.filter((a) => a.ok).length}/${asserts.length} tests` : '')
+        + (unresolved.length ? ` · unresolved {{${unresolved.join('}}, {{')}}}` : '');
+      const failed = (asserts || []).filter((a) => !a.ok);
+      if (failed.length) row.append(...failed.map((a) => h('div', { class: 'fail' }, `✗ ${a.rule} — ${a.message}`)));
+      setResponse(r.id, { ok: { ...dto, asserts } });
+    } catch (e) { ok = false; meta = String(e); }
+    ok ? pass++ : fail++;
+    row.firstChild.textContent = ok ? '✓' : '✗'; row.firstChild.className = 'st ' + (ok ? 'ok' : 'bad');
+    row.querySelector('.meta').textContent = meta; row.classList.add(ok ? 'pass' : 'fail');
+    summary.textContent = `${pass + fail} / ${flat.length} · ${pass} passed${fail ? ` · ${fail} failed` : ''}`;
+  }
+  $('#run-stop').classList.add('hidden'); running = false;
+  if (runAbort) summary.textContent += ' · stopped';
+  if (current && responses.has(current.id)) renderResponse();
+  renderRequest(); renderSidebar();
+}
+
+/** 项目目录：集合与目录双向同步（见 core/project.rs），目录可以进 git */
+async function linkProject(c) {
+  const dir = await dialog.open({ directory: true, title: 'Choose an empty folder (or the project folder of this collection)' });
+  if (!dir) return;
+  try {
+    if (data.collections.some((x) => x !== c && x.project_dir === dir)) { toast('Another collection is already synced to that folder.', { error: true }); return; }
+    const linked = await invoke('link_project', { collection: c, dir });
+    Object.assign(c, linked); dirty(); renderSidebar();
+    toast(`“${c.name}” now lives in ${dir}. Commit that folder; teammates open it with Open project folder…`);
+  } catch (e) { toast(String(e), { error: true }); }
+}
+async function openProject() {
+  const dir = await dialog.open({ directory: true, title: 'Open a folder containing firebee.json' });
+  if (!dir) return;
+  try {
+    const c = await invoke('open_project', { dir });
+    const existing = data.collections.find((x) => x.id === c.id);
+    if (existing) { Object.assign(existing, c); dirty(); renderSidebar(); toast(`Reloaded “${c.name}” from ${dir}.`); return; }
+    const n = disarmCaptures(c); // 仓库里的东西和导入文件一样不可信
+    data.collections.push(c); dirty(); renderSidebar();
+    toast(`Opened “${c.name}”. Changes you make are written back to ${dir}.` + (n ? ` ${n} capture rule${n > 1 ? 's were' : ' was'} turned off — review before enabling.` : ''));
+  } catch (e) { toast(String(e), { error: true }); }
+}
+
 async function exportCollection(c) {
   const path = await dialog.save({ defaultPath: `${c.name}.firebee.json`, filters: [{ name: 'JSON', extensions: ['json'] }] });
   if (!path) return;
@@ -749,7 +848,7 @@ async function exportCollection(c) {
 }
 /** 导入 Firebee 导出 / Postman collection / Postman environment */
 async function importFile() {
-  const path = await dialog.open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] });
+  const path = await dialog.open({ multiple: false, filters: [{ name: 'JSON / YAML', extensions: ['json', 'yaml', 'yml'] }] });
   if (!path) return;
   try {
     const r = await invoke('import_file', { path });
@@ -805,18 +904,21 @@ function renderRequestHeader() {
 function renderTabCounts() {
   const count = (rows) => rows.filter((r) => r.enabled && r.key).length;
   const n = { params: count(current.params), headers: count(current.headers),
-    body: current.body_type === 'None' ? 0 : current.body_type === 'Form' ? count(current.form) : (current.body.trim() ? 1 : 0),
-    auth: current.auth === 'None' ? 0 : 1, capture: count(current.captures || []) };
+    body: current.body_type === 'None' ? 0 : ['Form', 'Multipart'].includes(current.body_type) ? count(current.form) : (current.body.trim() ? 1 : 0),
+    auth: current.auth === 'None' ? 0 : 1, capture: count(current.captures || []), tests: count(current.asserts || []) };
   document.querySelectorAll('[data-req]').forEach((b) => {
-    const key = b.dataset.req, countable = key === 'params' || key === 'headers' || key === 'capture' || (key === 'body' && current.body_type === 'Form');
+    const key = b.dataset.req, countable = key === 'params' || key === 'headers' || key === 'capture' || key === 'tests' || (key === 'body' && ['Form', 'Multipart'].includes(current.body_type));
     const label = key === 'body' && isGql(current) ? 'Query' : key[0].toUpperCase() + key.slice(1);
     put(b, label, n[key] ? h('span', { class: countable ? 'n' : 'n dot' }, countable ? n[key] : '•') : null);
     if (key === 'capture') b.classList.toggle('hidden', !n.capture && reqTab !== 'capture');
+    if (key === 'tests') b.classList.toggle('hidden', !n.tests && reqTab !== 'tests');
   });
 }
 
 function renderRequest() {
   setTab('req', reqTab);
+  // Preview 里已经有完整的最终 URL，URL 栏下那行就不重复显示了
+  $('#resolved').classList.toggle('hidden', reqTab === 'preview');
   renderRequestHeader();
   const body = $('#req-body');
   body.replaceChildren();
@@ -832,12 +934,15 @@ function renderRequest() {
   }
   else if (reqTab === 'body') body.append(bodyEditor());
   else if (reqTab === 'capture') body.append(captureEditor());
+  else if (reqTab === 'tests') body.append(testsEditor());
+  else if (reqTab === 'preview') body.append(previewEditor());
   else {
     const ia = inheritedAuth(current);
     if (current.auth === 'Off') body.append(h('div', { class: 'helper' }, ia
       ? `${authKind(ia)} auth from the collection or folder is turned off for this request. Inherited Authorization, Cookie and Proxy-Authorization headers are dropped too; other inherited headers still apply.`
       : 'No credentials are sent. Inherited Authorization, Cookie and Proxy-Authorization headers are dropped; other inherited headers still apply.'));
     else if (ia) body.append(h('div', { class: 'helper' }, `Inheriting ${authKind(ia)} auth from the collection or folder. Pick another option to override it, or “No auth” to send nothing.`));
+    else if (chainAuth(current)) body.append(h('div', { class: 'helper' }, `Overriding the ${authKind(chainAuth(current))} auth from the collection or folder. Pick “Inherit” to use that instead.`));
     body.append(authEditor());
   }
 }
@@ -864,7 +969,7 @@ function graphqlEditor() {
 
 function bodyEditor() {
   if (isGql(current)) return graphqlEditor();
-  const wrap = h('div', { class: 'fill' }, radios('body_type', [['None', 'None'], ['Json', 'JSON'], ['Text', 'Text'], ['Form', 'Form']],
+  const wrap = h('div', { class: 'fill' }, radios('body_type', [['None', 'None'], ['Json', 'JSON'], ['Text', 'Text'], ['Form', 'Form'], ['Multipart', 'Multipart'], ['Binary', 'Binary']],
     current.body_type, (v) => { current.body_type = v; dirty(); renderRequest(); }));
   if (current.body_type === 'Json' || current.body_type === 'Text') {
     const helper = h('div', { class: 'helper' });
@@ -879,7 +984,48 @@ function bodyEditor() {
     }
   } else if (current.body_type === 'Form') {
     wrap.append(kvTable(current.form, 'Field', 'Value', renderRequest));
+  } else if (current.body_type === 'Multipart') {
+    wrap.append(h('div', { class: 'helper' }, 'Sent as multipart/form-data. Switch a field to File to attach a file from disk.'),
+      kvTable(current.form, 'Field', 'Value', renderRequest, { files: true }));
+  } else if (current.body_type === 'Binary') {
+    const name = current.body.trim();
+    wrap.append(h('div', { class: 'row' },
+      btn(name ? name.split('/').pop() : 'Choose file…', async () => {
+        const path = await dialog.open({ multiple: false });
+        if (path) { current.body = path; dirty(); renderRequest(); renderTabCounts(); }
+      }, 'small'),
+      name ? h('span', { class: 'muted' }, name) : null,
+      name ? btn('×', () => { current.body = ''; dirty(); renderRequest(); renderTabCounts(); }, 'small ghost').withAttr('aria-label', 'Clear file') : null),
+      h('div', { class: 'helper' }, 'The whole file is sent as the request body. Set Content-Type in Headers if the server needs it.'));
   }
+  return wrap;
+}
+
+/** Cookie 管理：列出会话里的 cookie，可单删 */
+async function renderCookies() {
+  const list = $('#cookie-list');
+  const rows = await invoke('list_cookies');
+  if (!rows.length) { put(list, h('div', { class: 'ready' }, h('strong', {}, 'No cookies'), h('span', {}, 'Send a request to a server that sets one.'))); return; }
+  put(list, h('table', { class: 'kv ro cookies' }, h('tr', {}, h('th', {}, 'Host'), h('th', {}, 'Name'), h('th', {}, 'Value'), h('th', {}, 'Expires'), h('th', {})),
+    ...rows.map((c) => h('tr', {},
+      h('td', {}, h('code', {}, c.domain + (c.path !== '/' ? c.path : '')), c.secure ? h('span', { class: 'muted', title: 'Secure' }, ' 🔒') : null),
+      h('td', {}, h('code', {}, c.name)),
+      h('td', { class: 'val' }, h('code', { title: c.value }, c.value)),
+      h('td', { class: 'muted' }, c.expires ? new Date(c.expires).toLocaleString() : 'Session'),
+      h('td', { class: 'ctl' }, btn('×', async () => { await invoke('delete_cookie', { domain: c.domain, path: c.path, name: c.name }); renderCookies(); renderRequest(); }, 'small ghost').withAttr('aria-label', 'Delete cookie'))))));
+}
+
+/** Actual Request：变量、继承 header/auth、默认 Content-Type、会话 Cookie 全算完之后真正会发出去的请求。只读。 */
+function previewEditor() {
+  const wrap = h('div', { class: 'preview' }, h('div', { class: 'helper' }, 'Exactly what will be sent: variables resolved, inherited headers and auth applied, session cookies attached.'));
+  invoke('final_request', { request: current, env: activeEnv(), inherited: chainFor(current) || [] }).then((f) => {
+    const kvs = (rows) => h('table', { class: 'kv ro' }, ...rows.map(([k, v]) => h('tr', {}, h('td', { class: 'key' }, h('code', {}, k)), h('td', { class: 'val' }, h('code', {}, v)))));
+    put(wrap, wrap.firstChild,
+      h('div', { class: 'row' }, h('code', { class: 'method' }, f.method), h('code', { class: 'url' }, f.url)),
+      h('h4', {}, `Headers (${f.headers.length})`), f.headers.length ? kvs(f.headers) : h('div', { class: 'muted' }, 'None'),
+      f.cookies.length ? h('h4', {}, `Cookies (${f.cookies.length})`) : null, f.cookies.length ? kvs(f.cookies.map((c) => c.split(/=(.*)/s).slice(0, 2))) : null,
+      f.body ? h('h4', {}, 'Body') : null, f.body ? h('pre', {}, f.body) : null);
+  }, (e) => put(wrap, wrap.firstChild, h('div', { class: 'helper error' }, String(e))));
   return wrap;
 }
 
@@ -892,6 +1038,23 @@ function captureEditor() {
       ? `After a 2xx response, each path below is read from the JSON body and written into “${env.name}”. Use it to carry a login token into the next request.`
       : 'Select an environment first — captured values are written into the active environment.'),
     kvTable(current.captures, 'Variable', 'JSONPath, e.g. $.data.token', renderRequest));
+}
+
+/** 声明式断言：一行一条，subject + 条件；发送后在响应区显示通过 / 失败 */
+function testsEditor() {
+  current.asserts ||= [];
+  return h('div', {},
+    h('div', { class: 'helper' }, 'Checked after every send. Subject: status · time · body · header <name> · $.json.path. Condition: = != < <= > >= contains !contains exists !exists matches (with * wildcards).'),
+    kvTable(current.asserts, 'status  /  $.data.id', '= 200  /  exists  /  < 500 ms', renderRequest),
+    h('div', { class: 'helper' }, h('code', {}, 'status = 200'), ' · ', h('code', {}, '$.success = true'), ' · ', h('code', {}, '$.data.id exists'), ' · ', h('code', {}, 'time < 1000 ms'), ' · ', h('code', {}, 'header content-type contains json')));
+}
+
+/** 跑一个请求的 asserts；没有规则返回 null */
+async function runAsserts(req, dto) {
+  const rules = (req.asserts || []).filter((a) => a.enabled && a.key.trim());
+  if (!rules.length) return null;
+  try { return await invoke('check_asserts', { rules, status: dto.status, headers: dto.headers, body: dto.body || '', duration_ms: dto.duration_ms }); }
+  catch (e) { return [{ rule: 'tests', ok: false, message: String(e) }]; }
 }
 
 /** 跑一个请求的 captures；没有可跑的规则返回 null */
@@ -930,14 +1093,15 @@ const authKind = (a) => (typeof a === 'string' ? a : Object.keys(a)[0]); // 'Non
 /** container=true 时是集合 / 文件夹的编辑器：那里没有"继承"，也就没有 Off */
 function authEditor(obj = current, rerender = renderRequest, container = false) {
   const kind = authKind(obj.auth);
-  const inh = container ? null : inheritedAuth(obj);
+  const inh = container ? null : chainAuth(obj); // 自己设了 Basic 时也要知道上层有东西，选项才不会来回变
   // 有东西可继承时，None 的语义就是"跟随上层"，标签跟着变；并多给一个明确不带凭据的选项
   const opts = [['None', inh ? 'Inherit' : 'None'],
     ...(inh || kind === 'Off' ? [['Off', 'No auth']] : []), // 已经是 Off 就一直显示，否则会四个都不选中
-    ['Bearer', 'Bearer token'], ['Basic', 'Basic auth'], ['ApiKey', 'API key']];
+    ['Bearer', 'Bearer token'], ['Basic', 'Basic auth'], ['ApiKey', 'API key'], ['OAuth2', 'OAuth 2.0']];
   const wrap = h('div', {}, radios(`auth-${obj.id}`, opts, kind, (v) => {
     obj.auth = { None: 'None', Off: 'Off', Bearer: { Bearer: { token: '' } }, Basic: { Basic: { username: '', password: '' } },
-                 ApiKey: { ApiKey: { key: '', value: '', in_query: false } } }[v];
+                 ApiKey: { ApiKey: { key: '', value: '', in_query: false } },
+                 OAuth2: { OAuth2: { token_url: '', client_id: '', client_secret: '', scope: '' } } }[v];
     dirty(); rerender();
   }));
   // 字段标签走 .field（文字在上、输入框在下）——inline-flex 的 label 在窄容器里
@@ -951,6 +1115,11 @@ function authEditor(obj = current, rerender = renderRequest, container = false) 
     h('div', { class: 'row fields' }, field(a, 'key', 'Name'), field(a, 'value', 'Value')),
     h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: a.in_query, onchange: (e) => { a.in_query = e.target.checked; dirty(); } }),
       'Send as a query parameter instead of a header'));
+  else if (kind === 'OAuth2') wrap.append(
+    h('div', { class: 'helper' }, 'Client Credentials grant. On Send the token is fetched from the token URL (client ID and secret as Basic auth) and sent as a Bearer token; it is cached in memory until it expires. Environment › Manage… › Clear cookies also clears cached tokens.'),
+    h('div', { class: 'row fields' }, field(a, 'token_url', 'Token URL')),
+    h('div', { class: 'row fields' }, field(a, 'client_id', 'Client ID'), field(a, 'client_secret', 'Client secret', 'password')),
+    h('div', { class: 'row fields' }, field(a, 'scope', 'Scope (optional)')));
   return wrap;
 }
 
@@ -969,12 +1138,13 @@ async function send() {
   let status = null, duration_ms = null, result;
   try {
     const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(),
-      options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, follow_redirects: followRedirects } });
+      options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
     result = { ok: r }; status = r.status; duration_ms = r.duration_ms;
   } catch (e) {
     result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
   }
-  pendings.delete(rid); setResponse(rid, result);
+  pendings.delete(rid); streams.delete(rid); setResponse(rid, result);
+  if (result.ok) result.ok.asserts = await runAsserts(req, result.ok);
   if (result.ok && result.ok.status < 300) {
     const cap = runCaptures(req, result.ok, capEnv);
     if (cap) toast(cap.ok || cap.error, { error: !cap.ok });
@@ -990,6 +1160,23 @@ async function send() {
   renderSidebar(); renderTabs();
 }
 const sentAt = new Map(); // request.id → 发出时刻，Waiting 计时用
+// SSE / NDJSON 边收边显示：request.id → {status, headers, text}；请求结束即删，最终响应走 responses
+const streams = new Map();
+window.__TAURI__.event.listen('stream', ({ payload }) => {
+  const rid = [...pendings].find(([, job]) => job === payload.job_id)?.[0];
+  if (!rid) return;
+  if (payload.kind === 'start') { streams.set(rid, { status: payload.status, headers: payload.headers, text: '', bytes: 0 }); if (current.id === rid) renderResponse(); return; }
+  const live = streams.get(rid);
+  if (!live) return;
+  live.text += payload.text; live.bytes += new TextEncoder().encode(payload.text).length;
+  if (current.id !== rid) return;
+  // 已经在流式视图里：只追加，不重建（每个 chunk 重画整段文本是 O(n²)，而且会抢走滚动位置）
+  const pre = $('#resp-body pre.stream'), size = $('#resp-meta .stream-size');
+  if (!pre) return renderResponse();
+  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 4;
+  pre.append(payload.text); if (size) size.textContent = fmtSize(live.bytes);
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+});
 
 /** URL 栏右侧的瞬时结果：亮 1.5s 后变淡，切请求 / 再次发送时清掉 */
 let flashTimer = null;
@@ -1017,7 +1204,7 @@ function storedResponse(dto) {
   if (!dto) return null;
   const [body, truncated] = clipBytes(dto.body_base64 ? '' : dto.body || '', HISTORY_BODY_MAX);
   return { status: dto.status, headers: dto.headers.filter(([k]) => !SECRET_RESP_HEADERS.has(k.toLowerCase())),
-    body, duration_ms: dto.duration_ms, size_bytes: dto.size_bytes, truncated };
+    body, duration_ms: dto.duration_ms, ttfb_ms: dto.ttfb_ms, size_bytes: dto.size_bytes, truncated };
 }
 
 // 历史现在带响应体（最多 100 条 × 64KB），每次发送都全量序列化 + 重写整个文件太贵。
@@ -1153,6 +1340,15 @@ function renderResponse() {
   if (response) $('#split').classList.add('has-resp');
   clearInterval(waitTick);
   if (!response) {
+    const live = streams.get(current.id);
+    if (pending && live) {
+      put(meta, h('span', { class: `status s${Math.floor(live.status / 100)}` }, live.status), REASON[live.status] && h('span', { class: 'reason' }, REASON[live.status]),
+        h('span', { class: 'sep' }, '·'), h('span', { class: 'spinner' }), h('span', { class: 'waiting' }, 'Streaming…'),
+        h('span', { class: 'sep' }, '·'), h('span', { class: 'meta stream-size' }, fmtSize(live.bytes)));
+      const pre = h('pre', { class: 'stream' }, live.text);
+      body.append(pre); pre.scrollTop = pre.scrollHeight;
+      return;
+    }
     if (pending) {
       const el = h('span', { class: 'muted waiting' });
       const t0 = sentAt.get(current.id) ?? performance.now();
@@ -1175,13 +1371,20 @@ function renderResponse() {
   // put 会过滤掉 null/undefined/false；append 不会——它会把 null 当文本渲染成 "null"
   put(meta,
     h('span', { class: `status s${Math.floor(r.status / 100)}` }, r.status), REASON[r.status] && h('span', { class: 'reason' }, REASON[r.status]),
-    h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: 'Time from request start to last byte received' }, `${r.duration_ms} ms`),
+    h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: r.ttfb_ms != null ? `Time to first byte ${r.ttfb_ms} ms (connect + server), then ${r.duration_ms - r.ttfb_ms} ms downloading` : 'Time from request start to last byte received' }, `${r.duration_ms} ms`),
+    r.ttfb_ms != null && r.duration_ms - r.ttfb_ms >= 50 ? h('span', { class: 'meta muted', title: 'Time to first byte' }, `TTFB ${r.ttfb_ms} ms`) : null,
     h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: 'Body size' }, fmtSize(r.size_bytes)),
     r.from_history ? h('span', { class: 'meta from-history', title: `Kept from ${new Date(r.from_history).toLocaleString()} — press Send for a fresh one` },
       r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null,
     h('span', { class: 'spacer' }), r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost'),
   );
   // 跟过的每一跳都列出来；3xx 说明停下了，说清为什么并给一键跟进
+  if (r.asserts?.length) {
+    const failed = r.asserts.filter((a) => !a.ok).length;
+    body.append(h('div', { class: 'asserts ' + (failed ? 'bad' : 'good') },
+      h('strong', {}, failed ? `${failed} of ${r.asserts.length} test${r.asserts.length > 1 ? 's' : ''} failed` : `${r.asserts.length} test${r.asserts.length > 1 ? 's' : ''} passed`),
+      ...r.asserts.map((a) => h('div', { class: a.ok ? 'ok' : 'fail' }, h('span', {}, a.ok ? '✓' : '✗'), h('code', {}, a.rule), a.ok ? null : h('span', { class: 'muted' }, ` — ${a.message}`)))));
+  }
   if (r.redirects?.length) body.append(h('div', { class: 'helper redirects' },
     h('span', {}, `Followed ${r.redirects.length} redirect${r.redirects.length > 1 ? 's' : ''}: `),
     ...r.redirects.flatMap((u, i) => [i ? h('span', { class: 'muted' }, ' → ') : null, h('code', {}, u)])));
@@ -1397,8 +1600,9 @@ function renderEnvDialog() {
       btn('Duplicate', () => { const d = structuredClone(env); d.id = crypto.randomUUID(); d.name += ' copy'; data.environments.splice(data.environments.indexOf(env) + 1, 0, d); envSel = d; dirty(); renderEnvDialog(); renderTopbar(); }),
       btn('Delete', del, 'small ghost'),
     ),
-    h('div', { class: 'vars-head' }, h('span'), h('span', {}, 'Name'), h('span', {}, 'Value'), h('span')),
-    h('div', { class: 'vars' }, kvTable(env.variables, 'e.g. base_url', 'e.g. https://api.example.com', renderEnvDialog)),
+    h('div', { class: 'vars-head' }, h('span'), h('span', {}, 'Name'), h('span'), h('span', {}, 'Value'), h('span')),
+    h('div', { class: 'vars' }, kvTable(env.variables, 'e.g. base_url', 'e.g. https://api.example.com', renderEnvDialog, { secrets: true })),
+    h('div', { class: 'helper' }, '🔒 Secret values are kept in the macOS keychain, masked in the UI, and left out of exports, project folders and history.'),
   );
 }
 
@@ -1429,7 +1633,7 @@ function acUpdate(el) {
   if (!m) return acHide();
   const prefix = m[1].toLowerCase();
   const env = activeEnv();
-  const names = [...(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.value]) : []), ...DYNAMIC_VARS]
+  const names = [...(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.secret ? '••••••' : v.value]) : []), ...DYNAMIC_VARS]
     .filter(([k]) => k.toLowerCase().startsWith(prefix));
   if (!names.length) return acHide();
   Object.assign(ac, { field: el, items: names, cur: 0, start: el.selectionStart - m[1].length });
@@ -1476,7 +1680,12 @@ function acBind() {
 // ---------- 事件绑定 ----------
 function bind() {
   acBind();
-  $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies cleared for this session.'); };
+  $('#run-close').onclick = () => { runAbort = true; $('#run-dialog').close(); };
+  $('#run-stop').onclick = () => { runAbort = true; };
+  $('#run-dialog').onclose = () => { runAbort = true; }; // Esc 关掉也要停
+  $('#cookies-btn').onclick = () => { renderCookies(); $('#cookie-dialog').showModal(); };
+  $('#cookie-close').onclick = () => $('#cookie-dialog').close();
+  $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies and cached OAuth2 tokens cleared.'); };
   $('#method').replaceChildren(...METHODS.map((m) => h('option', { value: m }, m.toUpperCase())));
   $('#method').onchange = (e) => { current.method = e.target.value; e.target.className = `m-${current.method.toLowerCase()}`; dirty(); renderSidebar(); renderTabs(); };
   $('#url').oninput = (e) => { current.url = e.target.value; dirty(); renderUrlMirror(); renderMissing(); };
@@ -1497,13 +1706,16 @@ function bind() {
     ['New request', () => { createRequest(); $('#url').focus(); }, { kbd: `${MOD}N` }],
     ['New collection', addCollection],
     ['Import file…', importFile],
+    ['Open project folder…', openProject],
     ['Import from curl…', () => openImport()],
   ]);
   // Capture 有规则时本身就是一个标签；只有标签藏起来时，菜单里才放入口
   $('#req-more').onclick = (e) => {
     const tabHidden = document.querySelector('[data-req=capture]').classList.contains('hidden');
+    const testsHidden = document.querySelector('[data-req=tests]').classList.contains('hidden');
     openMenu(e, [
       tabHidden && ['Capture', () => { reqTab = 'capture'; renderRequest(); }],
+      testsHidden && ['Tests', () => { reqTab = 'tests'; renderRequest(); }],
       ['Request settings…', () => toggleSettings(true)],
       ...exportItems(current),
     ]);
@@ -1527,6 +1739,27 @@ function bind() {
   for (const ev of ['input', 'change']) $('#req-body').addEventListener(ev, () => { if (reqTab === 'params' || reqTab === 'auth') renderResolved(); });
   $('#theme-btn').onclick = (e) => openMenu(e, [['Light', 'light'], ['Dark', 'dark'], ['System', 'system']].map(([label, v]) =>
     [label, () => setTheme(v), { kbd: theme === v ? '✓' : '' }]));
+  // 代理 / CA / 客户端证书
+  const pick = async (key, filters) => { const p = await dialog.open({ multiple: false, filters }); if (p) { net[key] = p; saveNet(); renderNet(); } };
+  const renderNet = () => {
+    $('#proxy-mode').value = net.proxy;
+    $('#proxy-custom').classList.toggle('hidden', net.proxy !== 'custom');
+    $('#proxy-url').value = net.proxy_url; $('#no-proxy').value = net.no_proxy;
+    for (const [key, id] of [['ca_path', 'ca-file'], ['cert_path', 'cert-file']]) {
+      const el = $(`#${id}`);
+      put(el, net[key] ? h('span', { class: 'file', title: net[key] }, net[key].split('/').pop()) : null,
+        btn(net[key] ? '×' : 'Choose…', () => { if (net[key]) { net[key] = ''; saveNet(); renderNet(); } else pick(key, [{ name: 'PEM', extensions: ['pem', 'crt', 'cer', 'key'] }]); }, 'small ghost'));
+    }
+  };
+  $('#proxy-mode').onchange = (e) => { net.proxy = e.target.value; saveNet(); renderNet(); };
+  $('#proxy-url').oninput = (e) => { net.proxy_url = e.target.value; saveNet(); };
+  $('#no-proxy').oninput = (e) => { net.no_proxy = e.target.value; saveNet(); };
+  renderNet();
+  $('#insecure').checked = insecure;
+  $('#insecure').onchange = (e) => {
+    insecure = e.target.checked;
+    try { localStorage.setItem('firebee.insecure', insecure ? '1' : '0'); } catch { /* private mode */ }
+  };
   $('#follow').checked = followRedirects;
   $('#follow').onchange = (e) => {
     followRedirects = e.target.checked;

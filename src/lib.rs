@@ -13,6 +13,7 @@ pub fn run() {
         .manage(Storage::new(Storage::default_dir()))
         .manage(commands::Pending::default())
         .manage(commands::Cookies::default())
+        .manage(commands::Tokens::default())
         .setup(|app| {
             // 默认菜单（App / Edit 的复制粘贴等）+ 我们自己的 Request 菜单，快捷键在菜单栏可见
             let menu = Menu::default(app.handle())?;
@@ -62,6 +63,12 @@ pub fn run() {
             commands::save_history,
             commands::missing_vars,
             commands::send_request,
+            commands::final_request,
+            commands::check_asserts,
+            commands::open_project,
+            commands::link_project,
+            commands::list_cookies,
+            commands::delete_cookie,
             commands::cancel_request,
             commands::export_code,
             commands::import_curl,
