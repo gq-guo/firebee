@@ -50,12 +50,13 @@ jobs:
           node-version: 20
       # 开 createUpdaterArtifacts 额外产出 Firebee.app.tar.gz + .sig（用 updater 私钥签名）；
       # 只在这里开，本地 cargo tauri build 不需要私钥。
-      # beforeBundleCommand：universal 模式下 tauri-cli 不会 lipo 第二个 bin（firebee-cli），打包前自己补上
+      # beforeBundleCommand：universal 模式下 tauri-cli 不会 lipo 第二个 bin（firebee-cli），打包前自己补上。
+      # hook 的默认工作目录不是仓库根（上次就是在那儿 No such file），cwd 必须显式给
       - name: Build universal .app
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx --yes @tauri-apps/cli@2.11.5 build --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":true},"build":{"beforeBundleCommand":"scripts/lipo-cli.sh"}}'
+        run: npx --yes @tauri-apps/cli@2.11.5 build --target universal-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":true},"build":{"beforeBundleCommand":{"script":"sh scripts/lipo-cli.sh","cwd":"${{ github.workspace }}"}}}'
       - name: Package .dmg, .app.zip and updater files
         env:
           GH_TOKEN: ${{ github.token }}
