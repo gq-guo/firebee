@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
@@ -40,10 +40,10 @@ fn create_private(path: &std::path::Path) -> std::io::Result<File> {
 
 pub struct Storage {
     dir: PathBuf,
-    /// 启动时读不出来（权限 / IO / 被锁，不含"文件不存在"）的文件。
+    /// 启动时读不出来（权限 / IO / 被锁 / 新版写的字段，不含"文件不存在"）的文件 → 给用户看的原因。
     /// 这些文件拒绝写入：前端拿到空数据会立刻存盘，那就把还在磁盘上的
     /// 集合和凭据原地抹掉了 —— 宁可这次不保存，也不能覆盖。
-    unreadable: Mutex<HashSet<String>>,
+    unreadable: Mutex<HashMap<String, String>>,
     secrets: Box<dyn SecretStore>,
     /// CLI 用：只读。解析失败不把文件挪成 .bak —— 旧版 CLI 认不得新版 GUI 写的字段时不能动用户数据
     read_only: bool,
@@ -90,7 +90,11 @@ impl Storage {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return T::default(),
             Err(e) => {
                 tracing::error!("{name} 读不出来（{e}）；本次运行拒绝写入该文件，避免覆盖");
-                self.unreadable.lock().unwrap().insert(name.to_string());
+                self.refuse_writes(
+                    name,
+                    "couldn't be read at startup, so Firebee won't overwrite it. \
+                     Fix the file's permissions and restart.",
+                );
                 return T::default();
             }
         };
@@ -100,6 +104,18 @@ impl Storage {
                 tracing::warn!("{name} 解析失败（{e}）；只读模式，不动文件");
                 T::default()
             }
+            // JSON 本身是好的，只是字段 / 变体认不得：是新版 Firebee 写的，旧版在读
+            // （比如系统重启后 macOS 重新打开的是 /Applications 里的旧包）。
+            // 不能按损坏处理——挪成 .bak 后前端见到空数据会立刻存盘，新版数据就被原地盖掉了。
+            Err(e) if serde_json::from_slice::<serde::de::IgnoredAny>(&bytes).is_ok() => {
+                tracing::error!("{name} 是更新版本的 Firebee 写的（{e}）；本次运行拒绝写入该文件");
+                self.refuse_writes(
+                    name,
+                    "was saved by a newer Firebee, so this version won't overwrite it. \
+                     Update Firebee, or open it with the build that wrote it.",
+                );
+                T::default()
+            }
             Err(e) => {
                 let bak = self.free_backup_name(name);
                 tracing::warn!("{name} 解析失败（{e}），备份为 {bak} 并以空数据启动");
@@ -107,6 +123,13 @@ impl Storage {
                 T::default()
             }
         }
+    }
+
+    fn refuse_writes(&self, name: &str, why: &str) {
+        self.unreadable
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), format!("{name} {why}"));
     }
 
     /// 损坏文件的备份名：带时间戳，且不覆盖已有的备份——
@@ -143,11 +166,8 @@ impl Storage {
         if self.read_only {
             return Err(std::io::Error::other("storage opened read-only"));
         }
-        if self.unreadable.lock().unwrap().contains(name) {
-            return Err(std::io::Error::other(format!(
-                "{name} couldn't be read at startup, so Firebee won't overwrite it. \
-                 Fix the file's permissions and restart."
-            )));
+        if let Some(why) = self.unreadable.lock().unwrap().get(name) {
+            return Err(std::io::Error::other(why.clone()));
         }
         fs::create_dir_all(&self.dir)?;
         restrict(&self.dir, 0o700)?;
@@ -461,6 +481,34 @@ mod tests {
         assert!(String::from_utf8(std::fs::read(&path).unwrap())
             .unwrap()
             .contains("keep-me"));
+    }
+
+    #[test]
+    fn file_from_newer_version_is_never_overwritten_or_backed_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("collections.json");
+        // 合法 JSON，但 body_type 是这个版本不认识的变体
+        let mut c = Collection::new("keep-me");
+        c.requests.push(crate::core::models::Request::new("r"));
+        let mut v = serde_json::to_value(vec![c]).unwrap();
+        v[0]["requests"][0]["body_type"] = "FromTheFuture".into();
+        std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+
+        let s = Storage::with_secrets(
+            tmp.path().to_path_buf(),
+            Box::new(crate::core::secrets::Memory::default()),
+        );
+        assert!(s.load_collections().is_empty());
+        let err = s.save_collections(&[Collection::new("empty")]).unwrap_err();
+        assert!(err.to_string().contains("newer Firebee"), "{err}");
+        // 文件原地未动，也没有被挪成 .bak
+        assert!(std::fs::read_to_string(&path).unwrap().contains("keep-me"));
+        let baks = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".bak"))
+            .count();
+        assert_eq!(baks, 0, "新版数据不该被当成损坏备份");
     }
 
     #[test]
