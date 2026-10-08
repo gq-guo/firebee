@@ -1,6 +1,6 @@
 [package]
 name = "firebee"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "0BSD"
 default-run = "firebee"
