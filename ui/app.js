@@ -358,6 +358,14 @@ function setTab(attr, value) {
   });
 }
 
+/** 历史分组标题：Today / Yesterday / 周几+日期（跨年带年份）；固定英文，跟界面其他文字一致 */
+function dayLabel(t) {
+  const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(t).setHours(0, 0, 0, 0)) / 86_400_000);
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  return t.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: t.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+}
+
 function emptyState(title, why, action) {
   return h('div', { class: 'empty' }, h('strong', {}, title), h('span', {}, why), action && btn(action[0], action[1], ''));
 }
@@ -376,6 +384,7 @@ function renderSidebar() {
         // Undo 时把清空之后新产生的记录接在后面，别把它们一起丢了
         toast(`Cleared ${old.length} history entries.`, { action: ['Undo', () => { data.history = [...old, ...data.history]; saveHistory(); renderSidebar(); }] });
       }, 'small ghost')));
+    let lastDay = null;
     for (const hist of shown.reverse()) {
       const hmenu = (e) => openMenu(e, [['Delete entry', () => {
         const idx = data.history.indexOf(hist);
@@ -385,6 +394,9 @@ function renderSidebar() {
       }, { danger: true }]]);
       const t = new Date(hist.timestamp);
       const hhmm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+      // 新的在前，日期变了就插一行分组标题
+      const day = t.toDateString();
+      if (day !== lastDay) { lastDay = day; body.append(h('div', { class: 'hist-day' }, dayLabel(t))); }
       body.append(h('div', { class: 'hist', role: 'button', tabindex: 0, title: `${hist.request.method.toUpperCase()} ${hist.request.url}`,
         onclick: () => openFromHistory(hist), onkeydown: activate, oncontextmenu: hmenu },
         h('span', { class: 'muted' }, hhmm), reqTag(hist.request),
