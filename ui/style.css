@@ -236,6 +236,11 @@ details[open] > summary::before { transform: rotate(90deg); }
 .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .more { opacity: 0; height: 22px; width: 22px; padding: 0; line-height: 1; background: none; color: var(--muted); flex: none; transition: opacity 100ms; }
 summary:hover .more, .req:hover .more, .hist:hover .more, .more:focus-visible, summary:focus-within .more, .req:focus-within .more { opacity: 1; }
+/* 侧栏 1000+ 行时滚动卡顿：跳过屏幕外行的布局和绘制（Chromium 实测整树渲染 ~50ms → ~12ms） */
+.req, .hist { content-visibility: auto; contain-intrinsic-size: auto 28px; }
+.hist { contain-intrinsic-size: auto 30px; }
+/* content-visibility 带 paint containment，外扩的焦点光环会被裁掉，改成内描 */
+.req:focus-visible, .hist:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
 .req { position: relative; display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px 0 24px; cursor: pointer; border-radius: 5px; font-size: 13px; color: var(--text-2); transition: background-color 100ms; }
 .req.active { background: var(--active); color: var(--text); }
 .req.active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; border-radius: 2px; background: var(--text); }
