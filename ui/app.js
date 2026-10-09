@@ -846,7 +846,7 @@ async function exportCollection(c) {
   try { await invoke('export_collection', { collection: c, path }); toast(`Exported “${c.name}” to ${path}`); }
   catch (e) { toast(String(e), { error: true }); }
 }
-/** 导入 Firebee 导出 / Postman collection / Postman environment */
+/** 导入 Firebee 导出 / Postman collection / Postman environment / Insomnia v5 导出 / OpenAPI */
 async function importFile() {
   const path = await dialog.open({ multiple: false, filters: [{ name: 'JSON / YAML', extensions: ['json', 'yaml', 'yml'] }] });
   if (!path) return;
@@ -858,7 +858,11 @@ async function importFile() {
       toast(`Imported collection “${r.collection.name}”.`
         + (n ? ` ${n} capture ${n === 1 ? 'rule was' : 'rules were'} turned off — they rewrite environment variables, so review them in a request's Capture tab before enabling.` : ''));
     }
-    if (r.environment) { data.environments.push(r.environment); dirty(); renderTopbar(); toast(`Imported environment “${r.environment.name}” — pick it in the Environment menu.`); }
+    if (r.environments.length) {
+      data.environments.push(...r.environments); dirty(); renderTopbar();
+      toast(r.environments.length === 1 ? `Imported environment “${r.environments[0].name}” — pick it in the Environment menu.`
+        : `Imported ${r.environments.length} environments — pick one in the Environment menu.`);
+    }
   } catch (e) { toast(String(e), { error: true }); }
 }
 

@@ -428,10 +428,10 @@ pub fn export_collection(collection: Collection, path: String) -> Result<(), Str
 #[derive(Serialize, Default)]
 pub struct Imported {
     collection: Option<Collection>,
-    environment: Option<Environment>,
+    environments: Vec<Environment>,
 }
 
-/// 导入文件：Firebee 导出、Postman Collection v2.x、Postman Environment
+/// 导入文件：Firebee 导出、Postman Collection v2.x / Environment、Insomnia v5 导出、OpenAPI
 #[tauri::command]
 pub fn import_file(path: String) -> Result<Imported, String> {
     let bytes = std::fs::read(&path).map_err(|e| format!("Couldn't read {path}: {e}"))?;
@@ -460,18 +460,27 @@ pub fn import_file(path: String) -> Result<Imported, String> {
     }
     if crate::core::postman::is_environment(&v) {
         return Ok(Imported {
-            environment: Some(crate::core::postman::to_environment(&v)),
+            environments: vec![crate::core::postman::to_environment(&v)],
             ..Default::default()
+        });
+    }
+    if crate::core::insomnia::is_export(&v) {
+        return Ok(Imported {
+            // environment.insomnia.rest / mock.insomnia.rest 导出没有 collection，别多出一个空集合
+            collection: v
+                .get("collection")
+                .map(|_| crate::core::insomnia::to_collection(&v)),
+            environments: crate::core::insomnia::to_environments(&v),
         });
     }
     if crate::core::openapi::is_openapi(&v) {
         let (collection, environment) = crate::core::openapi::to_collection(&v);
         return Ok(Imported {
             collection: Some(collection),
-            environment,
+            environments: environment.into_iter().collect(),
         });
     }
-    Err("Unrecognised file — expected a Firebee export, a Postman collection (v2.x) / environment, or an OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML)".into())
+    Err("Unrecognised file — expected a Firebee export, a Postman collection (v2.x) / environment, an Insomnia v5 export, or an OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML)".into())
 }
 
 #[tauri::command]
