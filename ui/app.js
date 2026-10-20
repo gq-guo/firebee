@@ -46,6 +46,34 @@ function setTheme(v) {
 }
 lightMq.addEventListener('change', applyTheme);
 applyTheme();
+// 请求体 / 响应体的等宽字体和字号。只能从这张表里选（名字会写进 CSS，不接受任意值）
+const CODE_FONTS = ['Menlo', 'Monaco', 'SF Mono', 'JetBrains Mono', 'Fira Code', 'Source Code Pro', 'Cascadia Code', 'IBM Plex Mono',
+  'Hack', 'Roboto Mono', 'Ubuntu Mono', 'Inconsolata', 'Consolas', 'Courier New'];
+const CODE_SIZES = [11, 12, 13, 14, 15, 16, 18, 20];
+let codeFont = (() => { try { const v = localStorage.getItem('firebee.codeFont'); return CODE_FONTS.includes(v) ? v : ''; } catch { return ''; } })();
+let codeSize = (() => { try { const v = Number(localStorage.getItem('firebee.codeSize')); return CODE_SIZES.includes(v) ? v : 13; } catch { return 13; } })();
+function applyCodeFont() {
+  const st = document.documentElement.style;
+  if (codeFont) st.setProperty('--font-code', `"${codeFont}", var(--font-mono)`); else st.removeProperty('--font-code');
+  st.setProperty('--code-size', `${codeSize}px`);
+  st.setProperty('--code-lh', `${Math.round(codeSize * 20 / 13)}px`); // 13px/20px 是原来的比例
+}
+function setCodeFont(font, size) {
+  codeFont = CODE_FONTS.includes(font) ? font : '';
+  codeSize = CODE_SIZES.includes(size) ? size : 13;
+  applyCodeFont();
+  try { localStorage.setItem('firebee.codeFont', codeFont); localStorage.setItem('firebee.codeSize', String(codeSize)); } catch { /* private mode */ }
+}
+/** 系统里装没装这个字体：和三种通用字体分别比宽度，有一个不同就说明用上了它 */
+function fontInstalled(name) {
+  const ctx = (fontInstalled.ctx ||= document.createElement('canvas').getContext('2d'));
+  const text = 'mmmmmmmmmmlli10OQ@#{}';
+  return ['monospace', 'sans-serif', 'serif'].some((base) => {
+    ctx.font = `72px ${base}`; const w = ctx.measureText(text).width;
+    ctx.font = `72px "${name}", ${base}`; return ctx.measureText(text).width !== w;
+  });
+}
+applyCodeFont();
 let current = newRequest();
 // 响应按请求 id 保留在内存里（切换请求不丢），最多 50 条；进行中的请求按 id 记 job_id，互不阻塞
 const responses = new Map(); // request.id → { ok: dto } | { error: string } | { cancelled: true }
@@ -66,10 +94,16 @@ let saveTimer = null;
 let saving = Promise.resolve(); // 已经在写盘的那次保存；更新后重启前要等它写完
 let filter = '';       // 侧栏搜索关键字（匹配集合/文件夹/请求名、URL）
 let respQuery = '';    // 响应区的查询框，跨请求保留：以 $ 开头是 JSONPath 过滤，否则是正文查找
+let bodyQuery = '';    // 请求体的查找框，跨请求保留
+// JSON 请求体的视图：'edit' 文本编辑 / 'tree' 只读可折叠树
+let bodyView = (() => { try { return localStorage.getItem('firebee.bodyView') === 'tree' ? 'tree' : 'edit'; } catch { return 'edit'; } })();
 const showAll = new Set();     // 已点过 Show all 的 request.id
 const selected = new Set();    // 侧栏多选（⌘点击）的请求
 let dragging = null;           // { arr, r } 正在拖动的请求
 const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘时保持）
+// 搜索时默认全展开，但用户在搜索结果里手动收起的要记住——否则发送请求等任何重绘都会把它们全部弹开。
+// 换了关键字就清空：新结果按新结果展开
+const searchCollapsed = new Set();
 
 /** kind: 'http' | 'graphql'。GraphQL 请求固定 POST，body 存 query，变量在 graphql_variables */
 function newRequest(name = 'Untitled request', kind = 'http') {
@@ -167,6 +201,7 @@ function openMenu(e, items) {
   e.preventDefault(); e.stopPropagation();
   // 这里 stopPropagation 了，document 上关设置弹窗的监听收不到，手动关
   $('#req-settings').classList.add('hidden'); $('#settings-btn').setAttribute('aria-expanded', 'false');
+  $('#appearance').classList.add('hidden'); $('#theme-btn').setAttribute('aria-expanded', 'false');
   const menu = $('#menu');
   items = items.filter(Boolean);
   menu.replaceChildren(...items.map(([label, fn, opt = {}]) =>
@@ -411,9 +446,9 @@ function renderSidebar() {
     return;
   }
   const shown = data.collections.filter((c) => filterView(c).show);
-  if (q() && !shown.length) { body.append(emptyState(`Nothing matches “${filter.trim()}”`, 'Names of collections, folders and requests are searched, and request URLs.')); return; }
   const pins = pinnedNode();
   if (pins) body.append(pins);
+  if (q() && !shown.length) { body.append(emptyState(`Nothing matches “${filter.trim()}”`, 'Names of collections, folders and requests are searched, and request URLs.')); return; }
   shown.forEach((c) => body.append(containerNode(c, data.collections)));
   body.querySelector('input.rename')?.focus();
 }
@@ -471,8 +506,14 @@ const remove = (arr, obj, what) => () => {
 function containerNode(c, parentArr, isFolder = false) {
   const menu = (e) => openMenu(e, [
     ...[['http', 'New HTTP request'], ['graphql', 'New GraphQL request']].map(([kind, label]) =>
-      [label, () => { const r = newRequest(undefined, kind); c.requests.push(r); collapsed.delete(c.id); dirty(); selectRequest(r); }]),
-    ['New folder', () => { c.folders.push(newContainer('New folder')); collapsed.delete(c.id); dirty(); renderSidebar(); }],
+      [label, () => { const r = newRequest(undefined, kind); c.requests.push(r); collapsed.delete(c.id); searchCollapsed.delete(c.id); dirty(); selectRequest(r); }]),
+    // 新文件夹放最上面，并直接进入重命名（放在末尾时文件夹多了要往下翻才找得到）
+    ['New folder', () => {
+      const f = newContainer('New folder'); c.folders.unshift(f); collapsed.delete(c.id);
+      // 搜索中新文件夹会被过滤掉，重命名框出不来、还会留着等下次重绘抢焦点：先清掉搜索
+      if (filter) { filter = $('#search').value = ''; searchCollapsed.clear(); }
+      renaming = f; dirty(); renderSidebar();
+    }],
     ['Shared headers & auth…', () => openSettings(c, isFolder)],
     ['Import from curl…', () => openImport(c)],
     ['Run ' + (isFolder ? 'folder' : 'collection') + '…', () => runCollection(c)],
@@ -485,8 +526,9 @@ function containerNode(c, parentArr, isFolder = false) {
   ]);
   const view = filterView(c);
   // 拖到容器标题上 → 追加到该容器末尾
-  const dropOnContainer = (e) => { e.preventDefault(); e.currentTarget.classList.remove('dropping'); moveDragged(c.requests, c.requests.length); collapsed.delete(c.id); };
-  return h('details', { open: q() ? true : !collapsed.has(c.id), ontoggle: (e) => { if (!q()) e.target.open ? collapsed.delete(c.id) : collapsed.add(c.id); } },
+  const dropOnContainer = (e) => { e.preventDefault(); e.currentTarget.classList.remove('dropping'); collapsed.delete(c.id); searchCollapsed.delete(c.id); moveDragged(c.requests, c.requests.length); };
+  const set = q() ? searchCollapsed : collapsed;
+  return h('details', { open: !set.has(c.id), ontoggle: (e) => { e.target.open ? set.delete(c.id) : set.add(c.id); } },
     h('summary', { oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
       ondragover: (e) => { if (dragging) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
       ondragleave: (e) => e.currentTarget.classList.remove('dropping'), ondrop: dropOnContainer },
@@ -530,12 +572,13 @@ function allRequests(nodes = data.collections, out = []) {
   return out;
 }
 
-/** 侧栏顶部的 Pinned 区；没有置顶请求时不占位 */
+/** 侧栏顶部的 Pinned 区；没有置顶请求时不占位。
+ *  始终显示全部置顶请求（不受搜索过滤），并吸顶——搜索结果再长、往下滚也看得到 */
 function pinnedNode() {
-  const pins = allRequests().filter((r) => r.pinned && (!q() || hit(r.name) || hit(r.url)));
+  const pins = allRequests().filter((r) => r.pinned);
   if (!pins.length) return null;
-  return h('details', { class: 'pinned', open: q() ? true : !collapsed.has('pinned'),
-      ontoggle: (e) => { if (!q()) e.target.open ? collapsed.delete('pinned') : collapsed.add('pinned'); } },
+  return h('details', { class: 'pinned', open: !collapsed.has('pinned'),
+      ontoggle: (e) => { e.target.open ? collapsed.delete('pinned') : collapsed.add('pinned'); } },
     h('summary', {}, h('span', { class: 'name' }, 'Pinned'), h('span', { class: 'muted' }, String(pins.length))),
     ...pins.map((r) => requestRow(r, locateArr(r) || [], false)));
 }
@@ -765,7 +808,7 @@ const exportItems = (req) => [['Export as curl', () => exportCode(req, 'curl')],
 async function importCurl(text, onError, into = null) {
   try {
     const r = await invoke('import_curl', { text });
-    if (into) { into.requests.push(r); collapsed.delete(into.id); dirty(); selectRequest(r); return true; }
+    if (into) { into.requests.push(r); collapsed.delete(into.id); searchCollapsed.delete(into.id); dirty(); selectRequest(r); return true; }
     const keepName = !/^(Untitled request|New Request)/i.test(current.name);
     // import_curl 返回的是全新的 Request，captures / pinned 是空的——
   // 直接 assign 会把用户配好的提取规则和置顶状态静默抹掉
@@ -987,18 +1030,8 @@ function bodyEditor() {
   if (isGql(current)) return graphqlEditor();
   const wrap = h('div', { class: 'fill' }, radios('body_type', [['None', 'None'], ['Json', 'JSON'], ['Text', 'Text'], ['Form', 'Form'], ['Multipart', 'Multipart'], ['Binary', 'Binary']],
     current.body_type, (v) => { current.body_type = v; dirty(); renderRequest(); }));
-  if (current.body_type === 'Json' || current.body_type === 'Text') {
-    const helper = h('div', { class: 'helper' });
-    const ta = h('textarea', { spellcheck: 'false', 'aria-label': 'Request body', placeholder: current.body_type === 'Json' ? '{ "key": "value" }' : 'Raw text body',
-      oninput: (e) => { current.body = e.target.value; ta.removeAttribute('aria-invalid'); helper.className = 'helper'; helper.textContent = ''; dirty(); renderTabCounts(); } }, current.body);
-    wrap.append(ta, helper);
-    if (current.body_type === 'Json') {
-      wrap.firstChild.append(h('span', { class: 'spacer' }), btn('Format JSON', () => {
-        try { current.body = ta.value = JSON.stringify(JSON.parse(ta.value), null, 2); dirty(); helper.className = 'helper'; helper.textContent = ''; ta.removeAttribute('aria-invalid'); }
-        catch (err) { ta.setAttribute('aria-invalid', 'true'); helper.className = 'helper error'; helper.textContent = `Not valid JSON — ${err.message}. Fix it, then format again.`; }
-      }));
-    }
-  } else if (current.body_type === 'Form') {
+  if (current.body_type === 'Json' || current.body_type === 'Text') wrap.append(...textBodyEditor(wrap.firstChild));
+  else if (current.body_type === 'Form') {
     wrap.append(kvTable(current.form, 'Field', 'Value', renderRequest));
   } else if (current.body_type === 'Multipart') {
     wrap.append(h('div', { class: 'helper' }, 'Sent as multipart/form-data. Switch a field to File to attach a file from disk.'),
@@ -1015,6 +1048,105 @@ function bodyEditor() {
       h('div', { class: 'helper' }, 'The whole file is sent as the request body. Set Content-Type in Headers if the server needs it.'));
   }
   return wrap;
+}
+
+/** JSON.parse，但容忍字符串外面的 {{var}}（"id": {{id}} 这种写法很常见）：当成字符串显示 */
+function parseLoose(text) {
+  try { return JSON.parse(text); } catch (err) {
+    try { return JSON.parse(text.replace(/"(?:\\.|[^"\\])*"|\{\{[^{}]*\}\}/g, (m) => (m[0] === '"' ? m : JSON.stringify(m)))); }
+    catch { throw err; }
+  }
+}
+
+const HL_STYLES = ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight',
+  'letterSpacing', 'wordSpacing', 'tabSize', 'textIndent', 'fontVariantLigatures', 'fontFeatureSettings', 'whiteSpace', 'overflowWrap', 'wordBreak'];
+/** JSON / Text 请求体：查找框 + 文本编辑（高亮层叠在 textarea 下面）；JSON 另有只读可折叠的 Tree 视图。
+ *  toolbar 是 body 类型那一行，Edit / Tree 切换和 Format JSON 挂在它右边 */
+function textBodyEditor(toolbar) {
+  const json = current.body_type === 'Json', tree = json && bodyView === 'tree';
+  const helper = h('div', { class: 'helper' });
+  const count = h('span', { class: 'meta' });
+  let marks = [], cur = -1, t;
+  const setView = (v) => { bodyView = v; try { localStorage.setItem('firebee.bodyView', v); } catch { /* private mode */ } renderRequest(); };
+  if (json) {
+    put(toolbar, ...toolbar.childNodes, h('span', { class: 'spacer' }),
+      h('div', { class: 'seg', role: 'group', 'aria-label': 'Body view' },
+        h('button', { class: 'small', 'aria-pressed': String(!tree), onclick: () => setView('edit') }, 'Edit'),
+        h('button', { class: 'small', 'aria-pressed': String(tree), title: 'Read-only view — fold and unfold objects and arrays', onclick: () => setView('tree') }, 'Tree')),
+      tree ? null : btn('Format JSON', () => {
+        try { current.body = ta.value = JSON.stringify(JSON.parse(ta.value), null, 2); dirty(); helper.className = 'helper'; helper.textContent = ''; ta.removeAttribute('aria-invalid'); paint(); }
+        catch (err) { ta.setAttribute('aria-invalid', 'true'); helper.className = 'helper error'; helper.textContent = `Not valid JSON — ${err.message}. Fix it, then format again.`; }
+      }));
+  }
+
+  // Edit：textarea 背景透明，下面垫一层同字体同换行的 .hl，查找命中在那一层上画底色
+  const hl = h('div', { class: 'hl', 'aria-hidden': 'true' });
+  const sync = () => { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; };
+  const ta = h('textarea', { spellcheck: 'false', 'aria-label': 'Request body', placeholder: json ? '{ "key": "value" }' : 'Raw text body',
+    onscroll: sync,
+    oninput: (e) => {
+      current.body = e.target.value; ta.removeAttribute('aria-invalid'); helper.className = 'helper'; helper.textContent = ''; dirty(); renderTabCounts();
+      if (bodyQuery.trim()) { clearTimeout(t); t = setTimeout(() => paint(false), 150); }
+    } }, current.body);
+  // Tree：和响应区同一个可折叠树
+  const out = h('div', { class: 'out body-tree' });
+
+  const paint = (jump = true) => {
+    const q = bodyQuery.trim().toLowerCase();
+    if (tree) {
+      marks.forEach((m) => m.replaceWith(...m.childNodes));
+      out.normalize();
+    } else {
+      // 会影响换行位置的样式全部照抄 textarea 的计算值，别靠两边 CSS 碰巧一致
+      const cs = getComputedStyle(ta);
+      for (const k of HL_STYLES) hl.style[k] = cs[k];
+      hl.textContent = q ? `${ta.value} ` : ''; // 末尾补空格：textarea 以换行结尾时多出的那一行，div 里不会占高度
+    }
+    marks = q ? markMatches(tree ? out : hl, q) : [];
+    count.textContent = !q ? '' : marks.length ? `${marks.length} found` : 'No matches';
+    const keep = cur;
+    cur = -1;
+    // 编辑后重画：留在原来那一个（越界就最后一个）；之前没有命中就从第一个开始
+    if (marks.length) jump || keep < 0 ? go(1, jump) : go(Math.min(keep, marks.length - 1) + 1, false);
+    sync();
+  };
+  const go = (dir, scroll = true) => {
+    if (!marks.length) return;
+    marks[cur]?.classList.remove('cur');
+    cur = (cur + dir + marks.length) % marks.length;
+    const m = marks[cur];
+    m.classList.add('cur');
+    count.textContent = `${cur + 1} / ${marks.length}`;
+    if (!scroll) return;
+    if (tree) {
+      for (let d = m.closest('details'); d; d = d.parentElement.closest('details')) d.open = true;
+      m.scrollIntoView({ block: 'center' });
+    } else { ta.scrollTop = m.offsetTop - ta.clientHeight / 2; sync(); }
+  };
+  const find = h('div', { class: 'jp' },
+    h('input', { id: 'body-find', value: bodyQuery, spellcheck: 'false', 'aria-label': 'Find in request body', placeholder: `Find in body (${MOD}F)`,
+      oninput: (e) => { bodyQuery = e.target.value; clearTimeout(t); t = setTimeout(paint, 150); },
+      onkeydown: (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); go(e.shiftKey ? -1 : 1); }
+        else if (e.key === 'Escape' && bodyQuery) { e.stopPropagation(); clearTimeout(t); bodyQuery = e.target.value = ''; paint(); }
+      } }),
+    count);
+
+  if (tree) {
+    try {
+      const value = current.body.trim() ? parseLoose(current.body) : null;
+      if (value === null && !current.body.trim()) out.append(h('span', { class: 'muted' }, 'Empty body.'));
+      // 和响应区一样：>1MB 不建树（DOM 节点太多会卡住每次切换请求）
+      else if (current.body.length > 1_000_000) out.append(h('span', { class: 'muted' }, `This body is ${fmtSize(current.body.length)} — too large for Tree. Switch to Edit.`));
+      else out.append(jsonTree(value, null, 0, current.body.length > 50_000));
+    } catch (err) {
+      helper.className = 'helper error'; helper.textContent = `Not valid JSON — ${err.message}. Switch to Edit to fix it.`;
+    }
+    queueMicrotask(() => paint());
+    return [find, out, helper];
+  }
+  queueMicrotask(() => paint());
+  return [find, h('div', { class: 'editor' }, hl, ta), helper];
 }
 
 /** Cookie 管理：列出会话里的 cookie，可单删 */
@@ -1525,19 +1657,70 @@ function markMatches(root, q) {
   return marks;
 }
 
+/** 选区克隆出来的 JSON 树片段 → 带缩进的文本。折叠节点的子节点也在 DOM 里，一样拼进去；
+ *  .fold（"…}"）和 .n（"5 keys"）只是折叠时的提示，不算内容 */
+function treeText(frag) {
+  const lines = [];
+  const text = (el) => {
+    let s = '';
+    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n; (n = w.nextNode());) if (!n.parentElement?.closest('.fold, .n, .idx')) s += n.nodeValue;
+    return s;
+  };
+  const closing = (s) => /^\s*[\]}],?\s*$/.test(s);
+  // 容器内：标题行在 depth，子项 depth+1，收尾的 } / ] 回到 depth
+  const walk = (node, depth) => {
+    for (const n of node.childNodes) {
+      if (n.nodeType === Node.TEXT_NODE) { if (n.nodeValue.trim()) lines.push([depth + 1, n.nodeValue]); continue; }
+      if (n.nodeType !== Node.ELEMENT_NODE) continue;
+      // 选区起点在行尾 / 终点在行首时，克隆出来的是空行，丢掉
+      if (n.tagName === 'SUMMARY') { const s = text(n); if (s.trim()) lines.push([depth, s]); }
+      else if (n.tagName === 'DETAILS') walk(n, depth + 1);
+      else { const s = text(n); if (s.trim()) lines.push([closing(s) ? depth : depth + 1, s]); }
+    }
+  };
+  walk(frag, 0);
+  if (!lines.length) return '';
+  // 树上每一项都带逗号；粘出去要是合法 JSON：收尾括号前、以及整段最后一项的逗号去掉
+  lines.forEach((ln, i) => { if (!lines[i + 1] || closing(lines[i + 1][1])) ln[1] = ln[1].replace(/,\s*$/, ''); });
+  const min = Math.min(...lines.map(([d]) => d));
+  return lines.map(([d, s]) => '  '.repeat(d - min) + s).join('\n');
+}
+// 浏览器只复制看得见的文字，折叠的节点会整段丢掉。选区落在 JSON 树里时自己拼文本
+document.addEventListener('copy', (e) => {
+  const sel = getSelection();
+  if (!sel.rangeCount || sel.isCollapsed) return;
+  const range = sel.getRangeAt(0).cloneRange();
+  const anc = range.commonAncestorContainer;
+  const out = (anc.nodeType === Node.ELEMENT_NODE ? anc : anc.parentElement)?.closest('.out');
+  if (!out) return;
+  // 终点落在折叠节点的标题行里：看到的是 "key": { …}，要复制的是整个节点
+  const end = range.endContainer.nodeType === Node.ELEMENT_NODE ? range.endContainer : range.endContainer.parentElement;
+  const summary = end?.closest('summary'), folded = summary?.parentElement;
+  // 只双击了标题行里的一个词（起点也在这行、没碰到 …}）就按普通文字复制
+  const whole = summary && (!summary.contains(range.startContainer) || range.intersectsNode(summary.querySelector('.fold')));
+  if (folded && !folded.open && out.contains(folded) && whole) range.setEndAfter(folded);
+  const frag = range.cloneContents();
+  if (!frag.querySelector('details, summary, .tl')) return; // 只选了一行里的几个字：默认行为就对
+  e.clipboardData.setData('text/plain', treeText(frag));
+  e.preventDefault();
+});
+
 /** JSON → 可折叠树（原生 <details>）。big 时深度 ≥ 2 默认折叠。 */
 function jsonTree(v, key, depth, big) {
-  const label = key === null ? null : h('span', { class: Array.isArray(key) ? 'num' : 'key' }, Array.isArray(key) ? `${key[0]}` : `"${key}"`);
+  // 数组下标只是显示用（复制时跳过 .idx），对象键是内容
+  const label = key === null ? null : Array.isArray(key) ? h('span', { class: 'idx' }, h('span', { class: 'num' }, `${key[0]}`), ': ')
+    : h('span', {}, h('span', { class: 'key' }, `"${key}"`), ': ');
   const isObj = v !== null && typeof v === 'object';
   if (!isObj) {
     const cls = v === null ? 'null' : typeof v === 'string' ? 'str' : typeof v === 'boolean' ? 'bool' : 'num';
-    return h('div', { class: 'tl' }, label, label && ': ', h('span', { class: cls }, JSON.stringify(v)), ',');
+    return h('div', { class: 'tl' }, label, h('span', { class: cls }, JSON.stringify(v)), ',');
   }
   const entries = Array.isArray(v) ? v.map((x, i) => [[i], x]) : Object.entries(v);
   const open = Array.isArray(v) ? '[' : '{', close = Array.isArray(v) ? ']' : '}';
   const d = h('details', { class: depth === 0 ? 'tree' : null, open: !(big && depth >= 2) },
     // 折叠时显示成 "key": { … }, 5 keys —— .fold 和 .n 只在折叠状态下可见（见 CSS）
-    h('summary', {}, label, label && ': ', open,
+    h('summary', {}, label, open,
       h('span', { class: 'fold' }, `…${close}${depth ? ',' : ''}`),
       h('span', { class: 'n' }, `${entries.length} ${Array.isArray(v) ? (entries.length === 1 ? 'item' : 'items') : (entries.length === 1 ? 'key' : 'keys')}`)),
     ...entries.map(([k, x]) => jsonTree(x, k, depth + 1, big)),
@@ -1694,6 +1877,18 @@ function acBind() {
 }
 
 // ---------- 事件绑定 ----------
+/** ⌘F：焦点在请求面板里就查请求体（选中的文字直接当关键字），否则查响应体，都没有就是侧栏搜索 */
+function focusFind() {
+  const el = document.activeElement;
+  const inReq = el?.closest('#request') && $('#body-find');
+  const f = inReq ? $('#body-find') : $('#find') || $('#search');
+  if (inReq && el.tagName === 'TEXTAREA') {
+    const picked = el.value.slice(el.selectionStart, el.selectionEnd);
+    if (picked && !picked.includes('\n')) { f.value = picked; f.dispatchEvent(new Event('input')); }
+  }
+  f.focus(); f.select();
+}
+
 function bind() {
   acBind();
   $('#run-close').onclick = () => { runAbort = true; $('#run-dialog').close(); };
@@ -1753,8 +1948,27 @@ function bind() {
   };
   $('.search .hint').textContent = `${MOD}K`;
   for (const ev of ['input', 'change']) $('#req-body').addEventListener(ev, () => { if (reqTab === 'params' || reqTab === 'auth') renderResolved(); });
-  $('#theme-btn').onclick = (e) => openMenu(e, [['Light', 'light'], ['Dark', 'dark'], ['System', 'system']].map(([label, v]) =>
-    [label, () => setTheme(v), { kbd: theme === v ? '✓' : '' }]));
+  // 外观：主题 + 请求体 / 响应体的字体和字号
+  const look = $('#appearance'), lookBtn = $('#theme-btn');
+  const toggleLook = (open = look.classList.contains('hidden')) => {
+    look.classList.toggle('hidden', !open); lookBtn.setAttribute('aria-expanded', open);
+    if (open) {
+      $('#theme-select').value = theme;
+      // 只列本机装了的；当前选中的即使后来卸了也留着，不然下拉框会显示成别的
+      const fonts = CODE_FONTS.filter((f) => f === codeFont || fontInstalled(f));
+      put($('#code-font'), h('option', { value: '' }, 'Default'), ...fonts.map((f) => h('option', { value: f, style: `font-family: "${f}"` }, f)));
+      $('#code-font').value = codeFont;
+      $('#code-size').value = String(codeSize);
+      $('#theme-select').focus();
+    }
+  };
+  lookBtn.onclick = () => toggleLook();
+  document.addEventListener('click', (e) => { if (!look.contains(e.target) && !lookBtn.contains(e.target)) toggleLook(false); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !look.classList.contains('hidden')) { toggleLook(false); lookBtn.focus(); } });
+  $('#theme-select').onchange = (e) => setTheme(e.target.value);
+  $('#code-size').replaceChildren(...CODE_SIZES.map((n) => h('option', { value: String(n) }, `${n} px`)));
+  $('#code-font').onchange = (e) => setCodeFont(e.target.value, codeSize);
+  $('#code-size').onchange = (e) => setCodeFont(codeFont, Number(e.target.value));
   // 代理 / CA / 客户端证书
   const pick = async (key, filters) => { const p = await dialog.open({ multiple: false, filters }); if (p) { net[key] = p; saveNet(); renderNet(); } };
   const renderNet = () => {
@@ -1794,7 +2008,7 @@ function bind() {
   window.__TAURI__.event?.listen('menu', ({ payload }) => {
     if (payload === 'send') send();
     else if (payload === 'new') { createRequest(); $('#url').focus(); }
-    else if (payload === 'find') { const f = $('#find') || $('#search'); f.focus(); f.select(); }
+    else if (payload === 'find') focusFind();
     else if (payload === 'filter') { $('#search').focus(); $('#search').select(); }
     else if (payload === 'check-updates') checkForUpdates(true);
   });
@@ -1802,8 +2016,8 @@ function bind() {
   $('#env-dialog').addEventListener('close', renderRequestHeader); // 对话框里改过的变量要反映到 URL 预览
 
   document.querySelectorAll('[data-side]').forEach((b) => b.onclick = () => { sideTab = b.dataset.side; renderSidebar(); });
-  $('#search').oninput = (e) => { filter = e.target.value; renderSidebar(); };
-  $('#search').onkeydown = (e) => { if (e.key === 'Escape' && filter) { e.stopPropagation(); filter = e.target.value = ''; renderSidebar(); } };
+  $('#search').oninput = (e) => { filter = e.target.value; searchCollapsed.clear(); renderSidebar(); };
+  $('#search').onkeydown = (e) => { if (e.key === 'Escape' && filter) { e.stopPropagation(); filter = e.target.value = ''; searchCollapsed.clear(); renderSidebar(); } };
   document.querySelectorAll('[data-req]').forEach((b) => b.onclick = () => { reqTab = b.dataset.req; renderRequest(); });
   document.querySelectorAll('[data-resp]').forEach((b) => b.onclick = () => { respTab = b.dataset.resp; renderResponse(); });
   // 全局快捷键：⌘↩ 发送 · ⌘S 保存到集合 · ⌘N 新请求
@@ -1816,7 +2030,7 @@ function bind() {
     else if (e.key === 'n' || e.key === 't') { e.preventDefault(); createRequest(); $('#url').focus(); }
     else if (e.key === 'k') { e.preventDefault(); sideTab = 'collections'; renderSidebar(); $('#search').focus(); $('#search').select(); }
     else if (e.key === '/') { e.preventDefault(); $('#url').focus(); }
-    else if (e.key === 'f') { e.preventDefault(); const f = $('#find') || $('#search'); f.focus(); f.select(); }
+    else if (e.key === 'f') { e.preventDefault(); focusFind(); }
     else if (e.key === 'w') { e.preventDefault(); closeTab(current.id); }
     else if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
       e.preventDefault();
