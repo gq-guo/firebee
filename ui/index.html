@@ -9,12 +9,18 @@
 <header id="topbar">
   <select id="env-select" aria-label="Active environment" title="Active environment"></select>
   <span class="spacer"></span>
-  <button id="theme-btn" class="icon" aria-label="Theme" title="Theme">
+  <button id="theme-btn" class="icon" aria-label="Appearance" title="Appearance" aria-expanded="false" aria-controls="appearance">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
   </button>
   <button id="settings-btn" class="icon" aria-label="Request settings" title="Request settings" aria-expanded="false" aria-controls="req-settings">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>
   </button>
+  <div id="appearance" class="popover hidden" role="dialog" aria-label="Appearance">
+    <div><strong>Appearance</strong></div>
+    <label class="setting">Theme <select id="theme-select" aria-label="Theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+    <label class="setting" title="Used for request and response bodies">Body font <select id="code-font" aria-label="Body font"></select></label>
+    <label class="setting" title="Used for request and response bodies">Body font size <select id="code-size" aria-label="Body font size"></select></label>
+  </div>
   <div id="req-settings" class="popover hidden" role="dialog" aria-label="Request settings">
     <div><strong>Request settings</strong><div class="muted">Applies to every request you send.</div></div>
     <label class="setting" title="Off: stop at the first 3xx and show its Location. Redirects to a different host are never followed.">Follow redirects <input id="follow" type="checkbox" class="switch" checked></label>

@@ -15,6 +15,7 @@
 
   --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --font-code: var(--font-mono); --code-size: 13px; --code-lh: 20px; /* 请求体 / 响应体，外观里可改 */
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --z-dropdown: 100; --z-toast: 500;
 
@@ -261,7 +262,8 @@ summary.dropping { background: var(--active); }
 .rename { flex: 1; min-width: 0; height: 24px; font-size: 13px; }
 .empty { padding: 16px 8px; color: var(--muted); font-size: 13px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; max-width: 32ch; }
 .empty strong { color: var(--text-2); font-weight: 500; font-size: 14px; }
-details.pinned { margin-bottom: 4px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+/* 吸顶：搜索结果滚动时置顶区不跟着滚走；太多时自己滚，不把下面的树挤没 */
+details.pinned { position: sticky; top: 0; z-index: 2; max-height: 40vh; overflow-y: auto; background: var(--bg-sidebar); margin: 0 -8px 4px; padding: 0 8px 4px; border-bottom: 1px solid var(--border); }
 details.pinned > summary .name { flex: none; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
 .empty-hint { margin-left: 24px; padding: 2px 4px; color: var(--muted); font-size: 12px; }
 .hist .more { margin-left: auto; }
@@ -416,3 +418,20 @@ summary .proj { flex: none; margin-left: 4px; font-size: 11px; color: var(--mute
 .run-row { display: grid; grid-template-columns: 20px 1fr auto; gap: 8px; align-items: baseline; padding: 6px 4px; border-top: 1px solid var(--border); font-size: 13px; }
 .run-row .st.ok { color: var(--ok); } .run-row .st.bad { color: var(--err); }
 .run-row .fail { grid-column: 2 / -1; font-size: 12px; color: var(--err); font-family: var(--font-mono); }
+
+/* ---- 请求体：查找高亮层 + Tree 视图 ---- */
+/* 背景画在 .editor 上，textarea 和 .hl 都透明：文字是 textarea 的，命中的底色是 .hl 的 */
+.editor { position: relative; flex: 1; display: flex; min-height: 240px; background: var(--input); border-radius: 6px; }
+.editor textarea { position: relative; z-index: 1; flex: 1; background: transparent; overflow-y: scroll; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; tab-size: 8; }
+/* 两层都 overflow-y: scroll：常驻滚动条时文本宽度一样，换行才对得上 */
+.editor .hl { position: absolute; inset: 0; overflow-y: scroll; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: break-word; color: transparent; pointer-events: none; }
+.editor .hl mark { color: transparent; border-radius: 2px; }
+.editor .hl mark.cur { background: var(--hl); box-shadow: 0 0 0 1.5px var(--warn); }
+.body-tree { flex: 1; min-height: 240px; overflow: auto; padding: 10px 12px; background: var(--input); border-radius: 6px; }
+.seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: 6px; background: var(--input); margin-right: 8px; }
+.seg button { height: 22px; background: none; color: var(--text-2); }
+.seg button[aria-pressed="true"] { background: var(--active); color: var(--text); }
+#req-body .jp { margin: 4px 0 8px; }
+
+/* 外观里选的字体 / 字号：请求体和响应体 */
+.fill textarea, .editor .hl, #resp-body pre, .tree { font-family: var(--font-code); font-size: var(--code-size); line-height: var(--code-lh); }
