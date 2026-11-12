@@ -28,6 +28,9 @@ function setActiveEnv(id) {
 const pref = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch { return d; } };
 let followRedirects = pref('firebee.follow', true);
 let insecure = pref('firebee.insecure', false);
+// 请求超时（秒），1–300。发送时读这个值而不是输入框：框里打到一半或越界的数不会发出去
+const clampTimeout = (v) => Math.min(300, Math.max(1, Math.round(Number(v)) || 30));
+let timeoutSecs = (() => { try { return clampTimeout(localStorage.getItem('firebee.timeout')); } catch { return 30; } })();
 // 网络层设置（代理 / CA / 客户端证书）：一份 JSON 存本机，和 follow / insecure 一起随每次发送传给后端
 const NET_DEFAULT = { proxy: 'system', proxy_url: '', no_proxy: '', ca_path: '', cert_path: '' };
 let net = (() => { try { return { ...NET_DEFAULT, ...JSON.parse(localStorage.getItem('firebee.net') || '{}') }; } catch { return { ...NET_DEFAULT }; } })();
@@ -37,6 +40,7 @@ function renderNetFlags() {
   const off = [
     insecure && 'Allow invalid certificates: on',
     !followRedirects && 'Follow redirects: off',
+    timeoutSecs !== 30 && `Timeout: ${timeoutSecs} s`,
     net.proxy !== 'system' && `Proxy: ${net.proxy === 'none' ? 'None' : 'Custom'}`,
     net.ca_path && 'Custom CA',
     net.cert_path && 'Client certificate',
@@ -881,7 +885,7 @@ async function runCollection(container) {
     let ok, meta;
     try {
       const dto = await invoke('send_request', { job_id: ++jobSeq, request: req, env: activeEnv(),
-        options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
+        options: { timeout_secs: timeoutSecs, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
       const asserts = await runAsserts(req, dto);
       ok = asserts ? asserts.every((a) => a.ok) : dto.status < 400;
       const cap = dto.status < 300 ? runCaptures(req, dto, env) : null;
@@ -1321,7 +1325,7 @@ async function send() {
   let status = null, duration_ms = null, result;
   try {
     const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(),
-      options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
+      options: { timeout_secs: timeoutSecs, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
     result = { ok: r }; status = r.status; duration_ms = r.duration_ms;
   } catch (e) {
     result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
@@ -2036,6 +2040,14 @@ function bind() {
     try { localStorage.setItem('firebee.follow', followRedirects ? '1' : '0'); } catch { /* private mode */ }
     renderNetFlags();
   };
+  $('#timeout').value = timeoutSecs;
+  // input 时就存，不等失焦；框里的数到 change 才换成夹紧后的值，免得打字到一半被改写
+  $('#timeout').oninput = (e) => {
+    timeoutSecs = clampTimeout(e.target.value);
+    try { localStorage.setItem('firebee.timeout', timeoutSecs); } catch { /* private mode */ }
+    renderNetFlags();
+  };
+  $('#timeout').onchange = (e) => { e.target.value = timeoutSecs; };
   $('#send').onclick = send;
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pendings.get(current.id) });
   $('#export-copy').onclick = (e) => copyText($('#export-text').textContent, e.currentTarget);
