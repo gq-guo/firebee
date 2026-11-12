@@ -55,7 +55,7 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - 文件夹嵌套；右键 / `⋯` 菜单重命名、复制、删除，删除可撤销
 - 拖拽排序与跨文件夹移动；⌘点击多选，批量删除
 - 请求可 Pin，置顶到侧栏 Pinned 区，常用接口不用再翻文件夹
-- 侧栏搜索：按集合 / 文件夹 / 请求名和 URL 过滤（⌘F 聚焦）
+- 侧栏搜索：按集合 / 文件夹 / 请求名和 URL 过滤（⌘F 聚焦；↑ / ↓ 选结果，Enter 打开）
 - 历史最近 500 条，点击回填；最近 100 条连响应体一起留着（单条上限 64KB），点回去直接看当时的返回，不用重发
 - 集合 / 文件夹可配公共 header 与 auth（右键 → Shared headers & auth…），下属请求自动带上；请求自己同名的覆盖它，选 **No auth** 则一条凭据都不带（含继承来的 Authorization 头）
 - 导入集合时，里面带的 capture 规则一律先关掉——它们会改写你的环境变量，看过再开

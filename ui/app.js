@@ -93,6 +93,7 @@ let envSel = null;     // env 对话框中选中的环境
 let saveTimer = null;
 let saving = Promise.resolve(); // 已经在写盘的那次保存；更新后重启前要等它写完
 let filter = '';       // 侧栏搜索关键字（匹配集合/文件夹/请求名、URL）
+let searchIdx = -1;    // 搜索框里 ↑/↓ 选中的是第几条可见结果；-1 = 没有高亮
 let respQuery = '';    // 响应区的查询框，跨请求保留：以 $ 开头是 JSONPath 过滤，否则是正文查找
 let bodyQuery = '';    // 请求体的查找框，跨请求保留
 // JSON 请求体的视图：'edit' 文本编辑 / 'tree' 只读可折叠树
@@ -464,6 +465,28 @@ function filterView(c) {
   const folders = c.folders.filter((f) => filterView(f).show);
   const requests = c.requests.filter((r) => hit(r.name) || hit(r.url));
   return { folders, requests, show: folders.length + requests.length > 0 };
+}
+
+/** 搜索框键盘导航能走到的行，按 DOM 顺序。收起的容器里的行还在 DOM 里，要排除；
+ *  有关键字时 Pinned 区不算——它不受过滤，排在最前会抢走"第一条匹配" */
+function searchRows() {
+  return [...$('#side-body').querySelectorAll('.req, .hist')]
+    .filter((el) => !el.closest('details:not([open])') && !(q() && el.closest('.pinned')));
+}
+/** 给第 searchIdx 条结果加高亮。做成渲染之后的一步而不是写进行模板：
+ *  侧栏任何重绘（发送完成、打开请求）都会重建这些行，由 bind() 里的 MutationObserver 补回来 */
+function markSearchHit(scroll) {
+  $('#side-body').querySelector('.search-hit')?.classList.remove('search-hit');
+  if (searchIdx < 0 || document.activeElement !== $('#search')) return null;
+  const rows = searchRows();
+  const row = rows[searchIdx = Math.min(searchIdx, rows.length - 1)];
+  row?.classList.add('search-hit');
+  if (scroll && row) {
+    // Pinned 区吸顶，往上滚时会盖住刚滚进来的行，给它让出高度
+    row.style.scrollMarginTop = `${row.closest('.pinned') ? 0 : $('#side-body .pinned')?.offsetHeight || 0}px`;
+    row.scrollIntoView({ block: 'nearest' });
+  }
+  return row;
 }
 
 /** Enter / Space 触发点击（给 role=button 的 div 用） */
@@ -2016,8 +2039,17 @@ function bind() {
   $('#env-dialog').addEventListener('close', renderRequestHeader); // 对话框里改过的变量要反映到 URL 预览
 
   document.querySelectorAll('[data-side]').forEach((b) => b.onclick = () => { sideTab = b.dataset.side; renderSidebar(); });
-  $('#search').oninput = (e) => { filter = e.target.value; searchCollapsed.clear(); renderSidebar(); };
-  $('#search').onkeydown = (e) => { if (e.key === 'Escape' && filter) { e.stopPropagation(); filter = e.target.value = ''; searchCollapsed.clear(); renderSidebar(); } };
+  $('#search').oninput = (e) => { filter = e.target.value; searchIdx = q() ? 0 : -1; searchCollapsed.clear(); renderSidebar(); };
+  $('#search').onkeydown = (e) => {
+    if (e.key === 'Escape' && filter) { e.stopPropagation(); filter = e.target.value = ''; searchIdx = -1; searchCollapsed.clear(); renderSidebar(); }
+    // 输入法选词时的 ↑/↓/Enter 归输入法；WebKit 上确认选词的那次 keydown isComposing 已经是 false，只能看 229
+    if (e.isComposing || e.keyCode === 229 || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); searchIdx = Math.max(0, searchIdx + (e.key === 'ArrowDown' ? 1 : -1)); markSearchHit(true); }
+    else if (e.key === 'Enter') { e.preventDefault(); markSearchHit()?.click(); }
+  };
+  $('#search').onfocus = () => { searchIdx = q() ? 0 : -1; markSearchHit(); };
+  $('#search').onblur = () => markSearchHit();
+  new MutationObserver(() => markSearchHit()).observe($('#side-body'), { childList: true });
   document.querySelectorAll('[data-req]').forEach((b) => b.onclick = () => { reqTab = b.dataset.req; renderRequest(); });
   document.querySelectorAll('[data-resp]').forEach((b) => b.onclick = () => { respTab = b.dataset.resp; renderResponse(); });
   // 全局快捷键：⌘↩ 发送 · ⌘S 保存到集合 · ⌘N 新请求
