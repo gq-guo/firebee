@@ -1151,14 +1151,26 @@ function textBodyEditor(toolbar) {
 
   // Edit：textarea 背景透明，下面垫一层同字体同换行的 .hl，查找命中在那一层上画底色
   const hl = h('div', { class: 'hl', 'aria-hidden': 'true' });
-  const sync = () => { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; };
+  const sync = () => { for (const el of [hl, tintEl]) if (el) { el.scrollTop = ta.scrollTop; el.scrollLeft = ta.scrollLeft; } };
   const ta = h('textarea', { ...CODE_TA, spellcheck: 'false', 'aria-label': 'Request body', placeholder: json ? '{ "key": "value" }' : 'Raw text body',
     onscroll: sync,
     oninput: (e) => {
-      current.body = e.target.value; lint?.(); dirty(); renderTabCounts();
+      current.body = e.target.value; lint?.(); dirty(); renderTabCounts(); tint();
       if (bodyQuery.trim()) { clearTimeout(t); t = setTimeout(() => paint(false), 150); }
     } }, current.body);
   const lint = json ? jsonLint(ta, helper) : null;
+  // JSON 着色：再垫一层 .tint 画带颜色的文字，textarea 自己的字变透明（和 URL 栏的镜像一个做法）。
+  // 不和 .hl 合成一层：markMatches 按文本节点找，着色把节点切碎后跨 token 的命中会丢。
+  // 字体不像 .hl 那样抄成内联样式：外观设置改字号不会重画，抄了就过期，这一层的字是看得见的
+  const tintEl = json ? h('div', { class: 'tint', 'aria-hidden': 'true' }) : null;
+  const editor = h('div', { class: 'editor' }, hl, tintEl, ta);
+  const tint = () => {
+    if (!tintEl) return;
+    const on = ta.value.length <= 50_000; // 每次输入都同步重画，太大就不着色，textarea 的字恢复可见
+    editor.classList.toggle('tinted', on);
+    if (on) tintEl.innerHTML = `${highlightJson(ta.value)} `; else tintEl.textContent = ''; // 末尾空格同 .hl
+    sync();
+  };
   // Tree：和响应区同一个可折叠树
   const out = h('div', { class: 'out body-tree' });
 
@@ -1172,6 +1184,7 @@ function textBodyEditor(toolbar) {
       const cs = getComputedStyle(ta);
       for (const k of HL_STYLES) hl.style[k] = cs[k];
       hl.textContent = q ? `${ta.value} ` : ''; // 末尾补空格：textarea 以换行结尾时多出的那一行，div 里不会占高度
+      tint();
     }
     marks = q ? markMatches(tree ? out : hl, q) : [];
     count.textContent = !q ? '' : marks.length ? `${marks.length} found` : 'No matches';
@@ -1218,7 +1231,7 @@ function textBodyEditor(toolbar) {
   }
   queueMicrotask(() => paint());
   lint?.(true);
-  return [find, h('div', { class: 'editor' }, hl, ta), helper];
+  return [find, editor, helper];
 }
 
 /** Cookie 管理：列出会话里的 cookie，可单删 */

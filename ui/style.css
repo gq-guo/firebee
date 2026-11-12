@@ -420,11 +420,15 @@ summary .proj { flex: none; margin-left: 4px; font-size: 11px; color: var(--mute
 .run-row .fail { grid-column: 2 / -1; font-size: 12px; color: var(--err); font-family: var(--font-mono); }
 
 /* ---- 请求体：查找高亮层 + Tree 视图 ---- */
-/* 背景画在 .editor 上，textarea 和 .hl 都透明：文字是 textarea 的，命中的底色是 .hl 的 */
+/* 背景画在 .editor 上，textarea 和 .hl 都透明：文字是 textarea 的，命中的底色是 .hl 的。
+   JSON 着色时（.tinted）文字改由 .tint 画，textarea 只剩光标和选区 */
 .editor { position: relative; flex: 1; display: flex; min-height: 240px; background: var(--input); border-radius: 6px; }
 .editor textarea { position: relative; z-index: 1; flex: 1; background: transparent; overflow-y: scroll; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; tab-size: 8; }
 /* 两层都 overflow-y: scroll：常驻滚动条时文本宽度一样，换行才对得上 */
-.editor .hl { position: absolute; inset: 0; overflow-y: scroll; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: break-word; color: transparent; pointer-events: none; }
+.editor .hl, .editor .tint { position: absolute; inset: 0; overflow-y: scroll; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: break-word; color: transparent; pointer-events: none; }
+.editor .tint { color: var(--text); }
+.editor.tinted textarea { color: transparent; caret-color: var(--text); }
+.editor.tinted textarea::selection { background: oklch(60% 0.12 250 / 0.45); }
 .editor .hl mark { color: transparent; border-radius: 2px; }
 .editor .hl mark.cur { background: var(--hl); box-shadow: 0 0 0 1.5px var(--warn); }
 .body-tree { flex: 1; min-height: 240px; overflow: auto; padding: 10px 12px; background: var(--input); border-radius: 6px; }
@@ -434,4 +438,4 @@ summary .proj { flex: none; margin-left: 4px; font-size: 11px; color: var(--mute
 #req-body .jp { margin: 4px 0 8px; }
 
 /* 外观里选的字体 / 字号：请求体和响应体 */
-.fill textarea, .editor .hl, #resp-body pre, .tree { font-family: var(--font-code); font-size: var(--code-size); line-height: var(--code-lh); }
+.fill textarea, .editor .hl, .editor .tint, #resp-body pre, .tree { font-family: var(--font-code); font-size: var(--code-size); line-height: var(--code-lh); }
