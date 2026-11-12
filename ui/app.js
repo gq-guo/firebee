@@ -994,7 +994,7 @@ function openFromHistory(hist) {
     }];
     // 这条只是提示，不是待撤销的操作：连着点几条历史时直接换掉上一条，
     // 走 toast() 排队的话每条要等前一条的 8 秒，轮到时用户早就在看别的请求了
-    (pendingUndo === histNotice ? showToast : toast)(`“${found.name}” has changed since this was sent.`, { action });
+    (pendingUndo?.[1].action === histNotice ? showToast : toast)(`“${found.name}” has changed since this was sent.`, { action });
     histNotice = action;
   }
 }
