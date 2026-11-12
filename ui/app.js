@@ -1141,18 +1141,52 @@ function radios(name, options, value, onchange) {
     h('label', {}, h('input', { type: 'radio', name, value: v, checked: v === value, onchange: () => onchange(v) }), label)));
 }
 
+/** 代码 textarea 的按键：Tab 缩进 2 空格（选区跨行就整体缩进）、Shift+Tab 反缩进、Enter 沿用当前行的缩进。
+ *  Esc 之后紧跟的那次 Tab 不拦，照常移走焦点 —— 否则只用键盘的人出不去。
+ *  {{ 补全列表开着时 Enter / Tab 在捕获阶段就被 acBind 吃掉，到不了这里 */
+let tabOut = null;
+function codeKeys(e) {
+  const ta = e.target, leave = tabOut === ta;
+  tabOut = e.key === 'Escape' ? ta : null;
+  // keyCode 229：WebKit 里结束输入法组合的那次 Enter，isComposing 已经是 false
+  if (e.isComposing || e.keyCode === 229 || e.metaKey || e.ctrlKey || e.altKey) return;
+  if ((e.key !== 'Tab' || leave) && e.key !== 'Enter') return;
+  e.preventDefault();
+  const v = ta.value, s = ta.selectionStart, end = ta.selectionEnd, multi = v.slice(s, end).includes('\n');
+  const ls = v.lastIndexOf('\n', s - 1) + 1; // 选区第一行的行首
+  // execCommand 而不是直接改 value：保住原生撤销栈，也照常触发 input
+  const type = (text) => document.execCommand(text ? 'insertText' : 'delete', false, text)
+    || (ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, 'end'), ta.dispatchEvent(new Event('input', { bubbles: true })));
+  if (e.key === 'Enter') return type('\n' + /^[ \t]*/.exec(v.slice(ls, s))[0]);
+  if (!e.shiftKey && !multi) return type('  ');
+  // 选区停在某一行行首时，那一行不算选中
+  let le = v.indexOf('\n', multi && v[end - 1] === '\n' ? end - 1 : end);
+  if (le < 0) le = v.length;
+  const block = v.slice(ls, le);
+  const out = e.shiftKey ? block.replace(/^(?: {1,2}|\t)/gm, '') : block.replace(/^(?=.)/gm, '  ');
+  if (out === block) return;
+  ta.setSelectionRange(ls, le);
+  type(out);
+  const cut = block.length - out.length; // 单行反缩进：光标跟着往回退，不越过行首
+  if (multi) ta.setSelectionRange(ls, ls + out.length);
+  else ta.setSelectionRange(Math.max(ls, s - cut), Math.max(ls, end - cut));
+}
+const CODE_TA = { onkeydown: codeKeys, 'aria-description': 'Tab indents. Press Escape, then Tab, to move focus out.' };
+
 /** GraphQL：上面 query，下面 variables（JSON，可格式化） */
 function graphqlEditor() {
   const helper = h('div', { class: 'helper' });
-  const query = h('textarea', { spellcheck: 'false', 'aria-label': 'GraphQL query', placeholder: 'query {\n  viewer { id }\n}',
+  const query = h('textarea', { ...CODE_TA, spellcheck: 'false', 'aria-label': 'GraphQL query', placeholder: 'query {\n  viewer { id }\n}',
     oninput: (e) => { current.body = e.target.value; dirty(); renderTabCounts(); } }, current.body);
-  const vars = h('textarea', { class: 'gql-vars', spellcheck: 'false', 'aria-label': 'GraphQL variables', placeholder: '{ "id": 1 }',
-    oninput: (e) => { current.graphql_variables = e.target.value; vars.removeAttribute('aria-invalid'); helper.className = 'helper'; helper.textContent = ''; dirty(); } }, current.graphql_variables || '');
+  const vars = h('textarea', { ...CODE_TA, class: 'gql-vars', spellcheck: 'false', 'aria-label': 'GraphQL variables', placeholder: '{ "id": 1 }',
+    oninput: (e) => { current.graphql_variables = e.target.value; lint(); dirty(); } }, current.graphql_variables || '');
+  const lint = jsonLint(vars, helper);
+  lint(true);
   return h('div', { class: 'fill' }, h('div', { class: 'row' }, h('strong', {}, 'Query')), query,
     h('div', { class: 'row' }, h('strong', {}, 'Variables'), h('span', { class: 'muted' }, 'JSON'), h('span', { class: 'spacer' }), btn('Format JSON', () => {
-      if (!vars.value.trim()) return;
-      try { current.graphql_variables = vars.value = JSON.stringify(JSON.parse(vars.value), null, 2); dirty(); helper.className = 'helper'; helper.textContent = ''; vars.removeAttribute('aria-invalid'); }
-      catch (err) { vars.setAttribute('aria-invalid', 'true'); helper.className = 'helper error'; helper.textContent = `Not valid JSON — ${err.message}. Fix it, then format again.`; }
+      // 不合法时 lint 已经把错误写到 helper 了
+      if (!vars.value.trim() || !lint(true)) return;
+      current.graphql_variables = vars.value = formatLoose(vars.value); dirty();
     })), vars, helper);
 }
 
@@ -1181,11 +1215,46 @@ function bodyEditor() {
 }
 
 /** JSON.parse，但容忍字符串外面的 {{var}}（"id": {{id}} 这种写法很常见）：当成字符串显示 */
+const LOOSE_RE = /"(?:\\.|[^"\\])*"|\{\{[^{}]*\}\}/g;
+/** 把字符串外面的每个 {{var}} 换成 sub(m) 再 JSON.parse */
+const parseSub = (text, sub) => JSON.parse(text.replace(LOOSE_RE, (m) => (m[0] === '"' ? m : sub(m))));
 function parseLoose(text) {
-  try { return JSON.parse(text); } catch (err) {
-    try { return JSON.parse(text.replace(/"(?:\\.|[^"\\])*"|\{\{[^{}]*\}\}/g, (m) => (m[0] === '"' ? m : JSON.stringify(m)))); }
-    catch { throw err; }
+  try { return JSON.parse(text); } catch {
+    try { return parseSub(text, (m) => JSON.stringify(m)); }
+    // 还是不行就真有语法错。严格解析的报错会指到第一个 {{，误导人；
+    // 占位符换成等长的字符串（{{id}} → "{id}"）再解析一遍（必然再抛），报错位置才对得上原文
+    catch { return parseSub(text, (m) => `"${m.slice(1, -1).replace(/["\\\x00-\x1f]/g, ' ')}"`); }
   }
+}
+
+/** JSON.stringify(…, null, 2)，字符串外面的 {{var}} 原样留着不加引号。
+ *  做法：占位符先换成带编号的哨兵字符串（"\u0000N"，正常内容里不会有），格式化完再换回来 */
+function formatLoose(text) {
+  const held = [];
+  const value = parseSub(text, (m) => JSON.stringify(`\0${held.push(m) - 1}`));
+  // 按整个字符串 token 匹配再换回，免得撞上别的字符串里恰好长得像哨兵的片段
+  return JSON.stringify(value, null, 2).replace(/"(?:\\.|[^"\\])*"/g, (m) => held[/^"\\u0000(\d+)"$/.exec(m)?.[1]] ?? m);
+}
+// 自检：加载时跑一遍，不过只在控制台报
+for (const [src, want] of [
+  ['{"a":[1,{"b":null}]}', '{\n  "a": [\n    1,\n    {\n      "b": null\n    }\n  ]\n}'],          // 普通 JSON、嵌套
+  ['{"id":{{id}},"n":"x"}', '{\n  "id": {{id}},\n  "n": "x"\n}'],                                   // 字符串外的占位符不加引号
+  ['{"s":"a {{v}} b","t":"{{v}}"}', '{\n  "s": "a {{v}} b",\n  "t": "{{v}}"\n}'],                   // 字符串内的原样保留
+  ['{"a":{"b":[{{x}},{"c":{{$uuid}}}]}}', '{\n  "a": {\n    "b": [\n      {{x}},\n      {\n        "c": {{$uuid}}\n      }\n    ]\n  }\n}'],
+]) console.assert(formatLoose(src) === want, 'formatLoose', src);
+
+/** JSON 实时校验：输入停顿 300ms 后检查，结果写进 helper 行；只提示，不拦发送。
+ *  返回的函数不带参数是"过一会儿查"，传 true 是立刻查并返回是否合法 */
+function jsonLint(ta, helper) {
+  let t;
+  const check = () => {
+    let msg = '';
+    if (ta.value.trim()) try { parseLoose(ta.value); } catch (err) { msg = `Not valid JSON — ${err.message}`; }
+    helper.className = msg ? 'helper error' : 'helper'; helper.textContent = msg;
+    msg ? ta.setAttribute('aria-invalid', 'true') : ta.removeAttribute('aria-invalid');
+    return !msg;
+  };
+  return (now) => { clearTimeout(t); if (now) return check(); t = setTimeout(check, 300); };
 }
 
 const HL_STYLES = ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight',
@@ -1204,20 +1273,34 @@ function textBodyEditor(toolbar) {
         h('button', { class: 'small', 'aria-pressed': String(!tree), onclick: () => setView('edit') }, 'Edit'),
         h('button', { class: 'small', 'aria-pressed': String(tree), title: 'Read-only view — fold and unfold objects and arrays', onclick: () => setView('tree') }, 'Tree')),
       tree ? null : btn('Format JSON', () => {
-        try { current.body = ta.value = JSON.stringify(JSON.parse(ta.value), null, 2); dirty(); helper.className = 'helper'; helper.textContent = ''; ta.removeAttribute('aria-invalid'); paint(); }
-        catch (err) { ta.setAttribute('aria-invalid', 'true'); helper.className = 'helper error'; helper.textContent = `Not valid JSON — ${err.message}. Fix it, then format again.`; }
+        // 不合法时 lint 已经把错误写到 helper 了
+        if (!ta.value.trim() || !lint(true)) return;
+        current.body = ta.value = formatLoose(ta.value); dirty(); paint();
       }));
   }
 
   // Edit：textarea 背景透明，下面垫一层同字体同换行的 .hl，查找命中在那一层上画底色
   const hl = h('div', { class: 'hl', 'aria-hidden': 'true' });
-  const sync = () => { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; };
-  const ta = h('textarea', { spellcheck: 'false', 'aria-label': 'Request body', placeholder: json ? '{ "key": "value" }' : 'Raw text body',
+  const sync = () => { for (const el of [hl, tintEl]) if (el) { el.scrollTop = ta.scrollTop; el.scrollLeft = ta.scrollLeft; } };
+  const ta = h('textarea', { ...CODE_TA, spellcheck: 'false', 'aria-label': 'Request body', placeholder: json ? '{ "key": "value" }' : 'Raw text body',
     onscroll: sync,
     oninput: (e) => {
-      current.body = e.target.value; ta.removeAttribute('aria-invalid'); helper.className = 'helper'; helper.textContent = ''; dirty(); renderTabCounts();
+      current.body = e.target.value; lint?.(); dirty(); renderTabCounts(); tint();
       if (bodyQuery.trim()) { clearTimeout(t); t = setTimeout(() => paint(false), 150); }
     } }, current.body);
+  const lint = json ? jsonLint(ta, helper) : null;
+  // JSON 着色：再垫一层 .tint 画带颜色的文字，textarea 自己的字变透明（和 URL 栏的镜像一个做法）。
+  // 不和 .hl 合成一层：markMatches 按文本节点找，着色把节点切碎后跨 token 的命中会丢。
+  // 字体不像 .hl 那样抄成内联样式：外观设置改字号不会重画，抄了就过期，这一层的字是看得见的
+  const tintEl = json ? h('div', { class: 'tint', 'aria-hidden': 'true' }) : null;
+  const editor = h('div', { class: 'editor' }, hl, tintEl, ta);
+  const tint = () => {
+    if (!tintEl) return;
+    const on = ta.value.length <= 50_000; // 每次输入都同步重画，太大就不着色，textarea 的字恢复可见
+    editor.classList.toggle('tinted', on);
+    if (on) tintEl.innerHTML = `${highlightJson(ta.value)} `; else tintEl.textContent = ''; // 末尾空格同 .hl
+    sync();
+  };
   // Tree：和响应区同一个可折叠树
   const out = h('div', { class: 'out body-tree' });
 
@@ -1231,6 +1314,7 @@ function textBodyEditor(toolbar) {
       const cs = getComputedStyle(ta);
       for (const k of HL_STYLES) hl.style[k] = cs[k];
       hl.textContent = q ? `${ta.value} ` : ''; // 末尾补空格：textarea 以换行结尾时多出的那一行，div 里不会占高度
+      tint();
     }
     marks = q ? markMatches(tree ? out : hl, q) : [];
     count.textContent = !q ? '' : marks.length ? `${marks.length} found` : 'No matches';
@@ -1276,7 +1360,8 @@ function textBodyEditor(toolbar) {
     return [find, out, helper];
   }
   queueMicrotask(() => paint());
-  return [find, h('div', { class: 'editor' }, hl, ta), helper];
+  lint?.(true);
+  return [find, editor, helper];
 }
 
 /** Cookie 管理：列出会话里的 cookie，可单删 */
