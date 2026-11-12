@@ -1049,7 +1049,9 @@ function graphqlEditor() {
   const query = h('textarea', { ...CODE_TA, spellcheck: 'false', 'aria-label': 'GraphQL query', placeholder: 'query {\n  viewer { id }\n}',
     oninput: (e) => { current.body = e.target.value; dirty(); renderTabCounts(); } }, current.body);
   const vars = h('textarea', { ...CODE_TA, class: 'gql-vars', spellcheck: 'false', 'aria-label': 'GraphQL variables', placeholder: '{ "id": 1 }',
-    oninput: (e) => { current.graphql_variables = e.target.value; vars.removeAttribute('aria-invalid'); helper.className = 'helper'; helper.textContent = ''; dirty(); } }, current.graphql_variables || '');
+    oninput: (e) => { current.graphql_variables = e.target.value; lint(); dirty(); } }, current.graphql_variables || '');
+  const lint = jsonLint(vars, helper);
+  lint(true);
   return h('div', { class: 'fill' }, h('div', { class: 'row' }, h('strong', {}, 'Query')), query,
     h('div', { class: 'row' }, h('strong', {}, 'Variables'), h('span', { class: 'muted' }, 'JSON'), h('span', { class: 'spacer' }), btn('Format JSON', () => {
       if (!vars.value.trim()) return;
@@ -1083,11 +1085,30 @@ function bodyEditor() {
 }
 
 /** JSON.parse，但容忍字符串外面的 {{var}}（"id": {{id}} 这种写法很常见）：当成字符串显示 */
+const LOOSE_RE = /"(?:\\.|[^"\\])*"|\{\{[^{}]*\}\}/g;
+/** 把字符串外面的每个 {{var}} 换成 sub(m) 再 JSON.parse */
+const parseSub = (text, sub) => JSON.parse(text.replace(LOOSE_RE, (m) => (m[0] === '"' ? m : sub(m))));
 function parseLoose(text) {
-  try { return JSON.parse(text); } catch (err) {
-    try { return JSON.parse(text.replace(/"(?:\\.|[^"\\])*"|\{\{[^{}]*\}\}/g, (m) => (m[0] === '"' ? m : JSON.stringify(m)))); }
-    catch { throw err; }
+  try { return JSON.parse(text); } catch {
+    try { return parseSub(text, (m) => JSON.stringify(m)); }
+    // 还是不行就真有语法错。严格解析的报错会指到第一个 {{，误导人；
+    // 占位符换成等长的字符串（{{id}} → "{id}"）再解析一遍（必然再抛），报错位置才对得上原文
+    catch { return parseSub(text, (m) => `"${m.slice(1, -1).replace(/["\\\x00-\x1f]/g, ' ')}"`); }
   }
+}
+
+/** JSON 实时校验：输入停顿 300ms 后检查，结果写进 helper 行；只提示，不拦发送。
+ *  返回的函数不带参数是"过一会儿查"，传 true 是立刻查并返回是否合法 */
+function jsonLint(ta, helper) {
+  let t;
+  const check = () => {
+    let msg = '';
+    if (ta.value.trim()) try { parseLoose(ta.value); } catch (err) { msg = `Not valid JSON — ${err.message}`; }
+    helper.className = msg ? 'helper error' : 'helper'; helper.textContent = msg;
+    msg ? ta.setAttribute('aria-invalid', 'true') : ta.removeAttribute('aria-invalid');
+    return !msg;
+  };
+  return (now) => { clearTimeout(t); if (now) return check(); t = setTimeout(check, 300); };
 }
 
 const HL_STYLES = ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight',
@@ -1117,9 +1138,10 @@ function textBodyEditor(toolbar) {
   const ta = h('textarea', { ...CODE_TA, spellcheck: 'false', 'aria-label': 'Request body', placeholder: json ? '{ "key": "value" }' : 'Raw text body',
     onscroll: sync,
     oninput: (e) => {
-      current.body = e.target.value; ta.removeAttribute('aria-invalid'); helper.className = 'helper'; helper.textContent = ''; dirty(); renderTabCounts();
+      current.body = e.target.value; lint?.(); dirty(); renderTabCounts();
       if (bodyQuery.trim()) { clearTimeout(t); t = setTimeout(() => paint(false), 150); }
     } }, current.body);
+  const lint = json ? jsonLint(ta, helper) : null;
   // Tree：和响应区同一个可折叠树
   const out = h('div', { class: 'out body-tree' });
 
@@ -1178,6 +1200,7 @@ function textBodyEditor(toolbar) {
     return [find, out, helper];
   }
   queueMicrotask(() => paint());
+  lint?.(true);
   return [find, h('div', { class: 'editor' }, hl, ta), helper];
 }
 
