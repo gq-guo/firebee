@@ -251,8 +251,12 @@ summary.dropping { background: var(--active); }
 .req[draggable] { cursor: grab; }
 .req .spinner { width: 10px; height: 10px; flex: none; }
 .req .method { width: 40px; min-width: 40px; flex: none; }
-.hist { display: grid; grid-template-columns: 38px 40px 30px 1fr auto; gap: 6px; align-items: center; padding: 0 8px; height: 30px; cursor: pointer; border-radius: 5px; font: 12px var(--font-mono); white-space: nowrap; color: var(--text-2); }
+.hist { display: grid; grid-template-columns: 40px 30px 1fr auto; gap: 6px; align-items: center; padding: 0 8px; height: 30px; cursor: pointer; border-radius: 5px; font: 12px var(--font-mono); white-space: nowrap; color: var(--text-2); }
 .hist > * { overflow: hidden; text-overflow: ellipsis; }
+.hist-label { font: 13px var(--font-body); color: var(--text); }
+/* 时间和 ⋯ 叠在同一格：⋯ 只在悬停时出现，常年给它留 28px 等于从名字里拿走四五个字符 */
+.hist .more, .hist-time { grid-area: 1 / 4; }
+.hist:hover .hist-time, .hist .more:focus-visible + .hist-time { visibility: hidden; }
 .hist-day { padding: 10px 8px 4px; font-size: 11px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
 .method { font: 600 10.5px var(--font-mono); min-width: 40px; display: inline-block; letter-spacing: 0.02em; }
 .m-get { color: var(--m-get); } .m-post { color: var(--m-post); } .m-put { color: var(--m-put); }

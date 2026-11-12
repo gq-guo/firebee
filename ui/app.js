@@ -401,6 +401,13 @@ function dayLabel(t) {
   return t.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: t.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
 }
 
+/** 历史行的主文字：起过名的显示名字，否则显示路径。开头的 {{var}} 或 scheme+host 每行都一样，
+ *  留着它侧栏那十几个字符就全被占掉，每一行看起来都是 `{{base_ur…` */
+function histLabel(req) {
+  if (req.name && !/^(Untitled request|New Request)/i.test(req.name)) return req.name;
+  return req.url.replace(/^(\{\{[^}]*\}\}|[a-z][a-z0-9+.-]*:\/\/[^/?#]*)/i, '') || req.url || '(no URL)';
+}
+
 function emptyState(title, why, action) {
   return h('div', { class: 'empty' }, h('strong', {}, title), h('span', {}, why), action && btn(action[0], action[1], ''));
 }
@@ -432,11 +439,14 @@ function renderSidebar() {
       // 新的在前，日期变了就插一行分组标题
       const day = t.toDateString();
       if (day !== lastDay) { lastDay = day; body.append(h('div', { class: 'hist-day' }, dayLabel(t))); }
-      body.append(h('div', { class: 'hist', role: 'button', tabindex: 0, title: `${hist.request.method.toUpperCase()} ${hist.request.url}`,
+      const label = histLabel(hist.request);
+      body.append(h('div', { class: 'hist', role: 'button', tabindex: 0,
+        title: `${label === hist.request.name ? label + '\n' : ''}${hist.request.method.toUpperCase()} ${hist.request.url}`,
         onclick: () => openFromHistory(hist), onkeydown: activate, oncontextmenu: hmenu },
-        h('span', { class: 'muted' }, hhmm), reqTag(hist.request),
+        reqTag(hist.request),
         h('span', { class: hist.status ? `s${Math.floor(hist.status / 100)}` : 's0' }, hist.status ?? 'ERR'),
-        h('span', {}, hist.request.url || '(no URL)'), btn('⋯', hmenu, 'small more').withAttr('aria-label', 'History entry actions')));
+        h('span', { class: 'hist-label' }, label), btn('⋯', hmenu, 'small more').withAttr('aria-label', 'History entry actions'),
+        h('span', { class: 'muted hist-time' }, hhmm)));
     }
     return;
   }
