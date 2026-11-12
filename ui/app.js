@@ -1934,6 +1934,7 @@ function bind() {
       tabHidden && ['Capture', () => { reqTab = 'capture'; renderRequest(); }],
       testsHidden && ['Tests', () => { reqTab = 'tests'; renderRequest(); }],
       ['Request settings…', () => toggleSettings(true)],
+      ['Cookies…', () => $('#cookies-btn').click()], // 复用 Environments 弹窗底部那个按钮的处理
       ...exportItems(current),
     ]);
   };
