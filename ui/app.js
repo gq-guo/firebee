@@ -411,6 +411,37 @@ function renderMissing() {
   m.title = armed ? '' : `Not defined in the active environment: ${list.join(', ')}`;
 }
 
+/** 变量卡片：点 URL 里的 {{var}} 弹出，看当前值、原地改；没定义的直接定义进当前环境。
+ *  不抢焦点：光标还留在 URL 里，接着打字卡片就收起 */
+function showVarCard(name, anchor) {
+  const card = $('#var-card'), env = activeEnv();
+  const dyn = DYNAMIC_VARS.find(([k]) => k === baseVarName(name));
+  const row = env?.variables.find((v) => v.key === name); // 停用的行也算：定义时启用它，不另加一行重名的
+  const live = row?.enabled ? row : null;
+  const refresh = () => { dirty(); renderUrlMirror(); renderMissing(); };
+  const define = () => {
+    if (row) { row.value = input.value; row.enabled = true; } else env.variables.push({ enabled: true, key: name, value: input.value });
+    refresh(); hideVarCard(); $('#url').focus();
+  };
+  const input = h('input', { type: live?.secret ? 'password' : 'text', value: live ? live.value : '', placeholder: 'Value',
+    'aria-label': `Value of ${name}`, spellcheck: 'false', autocomplete: 'off',
+    oninput: (e) => { if (live) { live.value = e.target.value; refresh(); } },
+    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); live ? hideVarCard() : define(); } } });
+  put(card,
+    h('div', { class: 'row' }, h('code', {}, `{{${name}}}`), h('span', { class: 'spacer' }),
+      h('span', { class: 'muted' }, live ? env.name : dyn ? 'Built-in' : env ? `Not defined in ${env.name}` : 'Not defined')),
+    live ? input
+      : dyn ? h('div', { class: 'muted' }, `${dyn[1]} — a new value on every send.`)
+      : env ? h('div', { class: 'row' }, input, btn('Define', define, 'small primary'))
+      : h('div', { class: 'row' }, h('span', { class: 'muted' }, 'No environment is active.'), h('span', { class: 'spacer' }),
+          btn('Environments…', () => { hideVarCard(); envSel = null; renderEnvDialog(); $('#env-dialog').showModal(); })));
+  card.classList.remove('hidden');
+  const r = anchor.getBoundingClientRect();
+  card.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - card.offsetWidth - 8))}px`;
+  card.style.top = `${r.bottom + 6}px`;
+}
+function hideVarCard() { $('#var-card').classList.add('hidden'); }
+
 // ---------- 顶栏 ----------
 function renderTopbar() {
   const sel = $('#env-select');
@@ -812,7 +843,7 @@ function deleteSelected() {
 
 /** 选中请求：来自集合时直接引用（编辑即写回集合并保存），来自历史时为副本。 */
 function selectRequest(r) {
-  current = r; missing = []; flash(null);
+  current = r; missing = []; flash(null); hideVarCard();
   if (!openTabs.includes(r.id)) openTabs.push(r.id);
   saveTabs();
   renderTabs(); renderRequest(); renderResponse(); renderSidebar();
@@ -2287,8 +2318,18 @@ function bind() {
     const auto = isAutoName(current); // 改 URL 之前判断：改完就对不上了
     current.url = e.target.value;
     if (auto) retitle();
-    dirty(); renderUrlMirror(); renderMissing();
+    dirty(); renderUrlMirror(); renderMissing(); hideVarCard();
   };
+  // 点在 {{var}} 里面：弹变量卡片。只认不带选区的单击，拖选 / 双击选词不算；点在两端（要接着打字）也不算
+  $('#url').onclick = (e) => {
+    const el = e.currentTarget, pos = el.selectionStart;
+    const hits = [...el.value.matchAll(VAR_RE)];
+    const i = pos === el.selectionEnd ? hits.findIndex((m) => pos > m.index && pos < m.index + m[0].length) : -1;
+    const span = $('#url-mirror').querySelectorAll('span')[i];
+    span ? showVarCard(hits[i][1], span) : hideVarCard();
+  };
+  document.addEventListener('mousedown', (e) => { if (!e.target.closest?.('#var-card, #url')) hideVarCard(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideVarCard(); });
   $('#url').onscroll = () => { $('#url-mirror').scrollLeft = $('#url').scrollLeft; };
   // ⌘↩ 交给全局快捷键处理；这里只管裸 Enter，否则一次按键触发两次 send，
   // 第二次会跳过"未解析变量先提示"这一步直接发出去

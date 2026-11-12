@@ -41,12 +41,14 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 **响应**
 - 状态码与原因短语、耗时、大小、响应头；JSON 语法高亮
 - JSONPath 过滤：`$.data.orders.*.app.key`、`$.data.orders.2.app.key`、`$..key`
+- JSON 节点右键：复制值、复制 JSONPath，或直接拿这个节点建 Capture / Test，不用手写路径
 - 体内查找（⌘F，Enter / Shift+Enter 跳转）；可折叠树视图；超大响应先截断再按需全量
 - HTML 沙箱预览、图片预览、保存到文件
 
 **变量与环境**
 - 环境变量可标 🔒 Secret：值存 macOS 钥匙串，不进 environments.json / 导出 / 项目目录 / 历史，界面遮罩
 - 多环境切换，`{{variable}}` 在 URL / 参数 / 头 / 体 / 认证中替换；URL 里的变量实时着色（可解析绿、未解析橙），Send 旁显示未解析数量，再点一次强制发送
+- 点 URL 里的 `{{var}}` 弹出变量卡片：看当前值、原地改；没定义的直接定义进当前环境
 - 输入 `{{` 自动补全环境变量与动态变量
 - 动态变量：`{{$uuid}}`、`{{$timestamp}}`、`{{$randomEmail}}`、`{{$randomFullName}}` 等 29 个（名字与 Postman 一致），
   部分支持参数：`{{$randomInt(1,100)}}`、`{{$randomString(8)}}`、`{{$randomPrice(10,50)}}`；输入 `{{` 有补全
@@ -55,6 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - 文件夹嵌套；右键 / `⋯` 菜单重命名、复制、删除，删除可撤销
 - 拖拽排序与跨文件夹移动；⌘点击多选，批量删除
 - 请求可 Pin，置顶到侧栏 Pinned 区，常用接口不用再翻文件夹
+- 没起过名字的请求按 URL 路径自动命名（`/v2/orders`），自己起的名字不会被改
 - 侧栏搜索：按集合 / 文件夹 / 请求名和 URL 过滤（⌘K 聚焦；↑ / ↓ 选结果，Enter 打开）
 - 历史最近 500 条，点击回填；最近 100 条连响应体一起留着（单条上限 64KB），点回去直接看当时的返回，不用重发
 - 集合 / 文件夹可配公共 header 与 auth（右键 → Shared headers & auth…），下属请求自动带上；请求自己同名的覆盖它，选 **No auth** 则一条凭据都不带（含继承来的 Authorization 头）

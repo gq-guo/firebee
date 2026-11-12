@@ -361,6 +361,12 @@ dialog[open] { animation: dialog-in 150ms var(--ease); }
 #ac .item { padding: 5px 10px; border-radius: 5px; cursor: pointer; display: flex; gap: 16px; justify-content: space-between; }
 #ac .item .muted { font: 12px var(--font-body); max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #ac .item.cur { background: var(--active); }
+/* 变量卡片：点 URL 里的 {{var}} 弹出 */
+#var-card { position: fixed; z-index: var(--z-dropdown); width: 320px; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--bg-popover); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); font-size: 13px; animation: menu-in 150ms var(--ease); }
+#var-card .row { margin: 0; }
+#var-card code { font: 13px var(--font-mono); color: var(--var); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#var-card input { flex: 1; min-width: 0; width: 100%; font: 13px var(--font-mono); }
+#var-card .muted { font-size: 12px; white-space: nowrap; }
 
 /* ---- response tree / find / preview ---- */
 .tree { font: 13px/20px var(--font-mono); color: var(--text-2); }
