@@ -164,6 +164,7 @@ textarea[aria-invalid="true"] { box-shadow: 0 0 0 2px var(--err-bg), inset 0 0 0
 .tab.active::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: 0; height: 2px; border-radius: 2px; background: var(--text); }
 .tab:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
 .tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.tab .rename { flex: none; width: 140px; }
 .tab .method { min-width: 0; font-size: 10px; opacity: .85; }
 .tab .close { width: 18px; height: 18px; padding: 0; border-radius: 4px; background: transparent; color: var(--text-2); opacity: 0; font-size: 13px; line-height: 1; }
 .tab:hover .close, .tab.active .close, .close:focus-visible { opacity: 1; }

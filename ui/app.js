@@ -88,7 +88,7 @@ function setResponse(rid, r) {
 let jobSeq = 0;
 let missing = [];
 let reqTab = 'params', respTab = 'body', sideTab = 'collections';
-let renaming = null;   // 正在重命名的对象（collection / folder / request）
+let renaming = null;   // 正在重命名的对象（collection / folder / request）；在标签上改名时是 { tab: request }
 let envSel = null;     // env 对话框中选中的环境
 let saveTimer = null;
 let saving = Promise.resolve(); // 已经在写盘的那次保存；更新后重启前要等它写完
@@ -455,6 +455,7 @@ function renderSidebar() {
   // 重绘把原来聚焦的行换成了新节点：焦点还给同一行，方向键才能接着走
   if (focused) allRows().filter((el) => el.dataset.id === focused[0])[focused[1]]?.focus();
   body.querySelector('input.rename')?.focus();
+  body.querySelector('input.rename')?.select(); // 全选：直接打字就是换名字
 }
 
 function addCollection() { data.collections.push(newContainer(`Collection ${data.collections.length + 1}`)); sideTab = 'collections'; dirty(); renderSidebar(); }
@@ -499,11 +500,13 @@ $('#side-body').addEventListener('keydown', (e) => {
   e.preventDefault();
 });
 
-/** 名称：正在重命名则显示输入框（Enter 提交 / Esc 取消 / 失焦提交）；双击也可重命名 */
-function nameNode(obj) {
-  if (renaming !== obj) return h('span', { class: 'name', title: obj.name, ondblclick: startRename(obj) }, obj.name);
+/** 名称：正在重命名则显示输入框（Enter 提交 / Esc 取消 / 失焦提交）；双击也可重命名。
+ *  tab=true 是标签上的名字：同一个请求在侧栏和标签上各有一个，输入框只出在发起重命名的那一处 */
+function nameNode(obj, tab = false) {
+  const on = () => (tab ? renaming?.tab === obj : renaming === obj);
+  if (!on()) return h('span', { class: tab ? 'tab-name' : 'name', title: tab ? null : obj.name, ondblclick: startRename(obj, tab) }, obj.name);
   const commit = (e) => {
-    if (renaming !== obj) return; // Enter 后 blur 会再触发一次
+    if (!on()) return; // Enter 后 blur 会再触发一次
     const v = e.target.value.trim();
     if (v) { obj.name = v; dirty(); }
     renaming = null; renderSidebar(); renderRequestHeader(); renderTabs();
@@ -514,11 +517,11 @@ function nameNode(obj) {
     onkeydown: (e) => {
       e.stopPropagation();
       if (e.key === 'Enter') commit(e);
-      else if (e.key === 'Escape') { renaming = null; renderSidebar(); }
+      else if (e.key === 'Escape') { renaming = null; renderSidebar(); renderTabs(); }
     } });
 }
 
-const startRename = (obj) => (e) => { e.stopPropagation(); renaming = obj; renderSidebar(); };
+const startRename = (obj, tab = false) => (e) => { e.stopPropagation(); renaming = tab ? { tab: obj } : obj; renderSidebar(); renderTabs(); };
 /** 乐观删除 + Undo toast，不弹确认框 */
 const remove = (arr, obj, what) => () => {
   const idx = arr.indexOf(obj);
@@ -693,7 +696,7 @@ let openTabs = (() => {
 const saveTabs = () => { try { localStorage.setItem('firebee.tabs', JSON.stringify(openTabs)); } catch { /* private mode */ } };
 
 /** 关掉一个标签；关的是当前标签时，焦点给右边的、没有就给左边的。
- *  全关完也没关系：标签条自己隐藏，请求面板继续显示当前请求（标签只是快捷入口）。 */
+ *  最后一个关不掉：renderTabs 会把当前请求的标签补回来。 */
 function closeTab(id) {
   const i = openTabs.indexOf(id);
   if (i < 0) return;
@@ -713,18 +716,22 @@ function closeTabsExcept(keep, focusId) {
 }
 
 function renderTabs() {
+  // 面板上显示着的请求至少留一个标签：标签是唯一能看到、改到请求名的地方
+  if (!openTabs.length) { openTabs = [current.id]; saveTabs(); }
   // 集合里已经没有的请求（被删了）顺手清掉
   const live = openTabs.map((id) => [id, findById(id)]).filter(([, r]) => r);
   if (live.length !== openTabs.length) { openTabs = live.map(([id]) => id); saveTabs(); }
   const bar = $('#tabs');
+  const only = live.length < 2;
   put(bar, ...live.map(([id, r]) => {
     const on = id === current.id;
     const i = openTabs.indexOf(id);
     const tmenu = (e) => openMenu(e, [
-      ['Close', () => closeTab(id), { kbd: `${MOD}W` }],
-      live.length > 1 && ['Close others', () => closeTabsExcept([id], id)],
+      !only && ['Close', () => closeTab(id), { kbd: `${MOD}W` }],
+      !only && ['Close others', () => closeTabsExcept([id], id)],
       i < live.length - 1 && ['Close to the right', () => closeTabsExcept(openTabs.slice(0, i + 1), id)],
-      ['Close all', () => closeTabsExcept([])],
+      !only && ['Close all', () => closeTabsExcept([])],
+      ['Rename', startRename(r, true)],
     ]);
     return h('div', { class: 'tab' + (on ? ' active' : ''), role: 'tab', tabindex: 0, 'aria-selected': on ? 'true' : 'false',
       title: [...(locate(r) || []), r.name].join(' / '),
@@ -732,11 +739,13 @@ function renderTabs() {
       onkeydown: activate,
       oncontextmenu: tmenu,
       onauxclick: (e) => { if (e.button === 1) { e.preventDefault(); closeTab(id); } } },
-      reqTag(r), h('span', { class: 'tab-name' }, r.name),
+      reqTag(r), nameNode(r, true),
       pendings.has(id) ? h('span', { class: 'spinner' }) : null,
-      btn('×', (e) => { e.stopPropagation(); closeTab(id); }, 'small more close')
+      !only && btn('×', (e) => { e.stopPropagation(); closeTab(id); }, 'small more close')
         .withAttr('aria-label', `Close ${r.name}`));
   }));
+  bar.querySelector('input.rename')?.focus();
+  bar.querySelector('input.rename')?.select();
   scrollTabIntoView(bar);
 }
 
