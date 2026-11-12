@@ -107,7 +107,7 @@ function setResponse(rid, r) {
 let jobSeq = 0;
 let missing = [];
 let reqTab = 'params', respTab = 'body', sideTab = 'collections';
-let renaming = null;   // 正在重命名的对象（collection / folder / request）
+let renaming = null;   // 正在重命名的对象（collection / folder / request）；在标签上改名时是 { tab: request }
 let envSel = null;     // env 对话框中选中的环境
 let saveTimer = null;
 let saving = Promise.resolve(); // 已经在写盘的那次保存；更新后重启前要等它写完
@@ -118,8 +118,9 @@ let bodyQuery = '';    // 请求体的查找框，跨请求保留
 // JSON 请求体的视图：'edit' 文本编辑 / 'tree' 只读可折叠树
 let bodyView = (() => { try { return localStorage.getItem('firebee.bodyView') === 'tree' ? 'tree' : 'edit'; } catch { return 'edit'; } })();
 const showAll = new Set();     // 已点过 Show all 的 request.id
-const selected = new Set();    // 侧栏多选（⌘点击）的请求
-let dragging = null;           // { arr, r } 正在拖动的请求
+const selected = new Set();    // 侧栏多选（⌘点击 / Shift 点击）的请求
+let anchor = null;             // 上次点击的请求：Shift 点击从它选到被点的那一行
+let dragging = null;           // { arr, r, kind } 正在拖动的请求；拖文件夹 / 集合时 kind 是 'folder' / 'collection'，r 是那个容器
 const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘时保持）
 // 搜索时默认全展开，但用户在搜索结果里手动收起的要记住——否则发送请求等任何重绘都会把它们全部弹开。
 // 换了关键字就清空：新结果按新结果展开
@@ -223,7 +224,7 @@ function showToast(text, { error = false, action = null } = {}) {
 }
 function hideToast() { clearTimeout(toastTimer); pendingUndo = null; toastQueue.length = 0; $('#toast').classList.add('hidden'); }
 
-/** 右键 / ⋯ 菜单：items = [[label, fn, {danger, kbd}], ...]，点击任意处或 Esc 关闭 */
+/** 右键 / ⋯ 菜单：items = [[label, fn, {danger, kbd}], ...]，其中的 '-' 是分隔线；点击任意处或 Esc 关闭 */
 function openMenu(e, items) {
   e.preventDefault(); e.stopPropagation();
   // 这里 stopPropagation 了，document 上关设置弹窗的监听收不到，手动关
@@ -231,15 +232,16 @@ function openMenu(e, items) {
   $('#appearance').classList.add('hidden'); $('#theme-btn').setAttribute('aria-expanded', 'false');
   const menu = $('#menu');
   items = items.filter(Boolean);
-  menu.replaceChildren(...items.map(([label, fn, opt = {}]) =>
+  // '-' 解构出来 label 也是 '-'
+  menu.replaceChildren(...items.map(([label, fn, opt = {}]) => (label === '-' ? h('div', { class: 'menu-sep', role: 'separator' }) :
     h('button', { class: 'menu-item' + (opt.danger ? ' danger-item' : ''), role: 'menuitem',
       onclick: (ev) => { ev.stopPropagation(); menu.classList.add('hidden'); fn(ev); } },
-      label, opt.kbd && h('span', { class: 'kbd' }, opt.kbd))));
+      label, opt.kbd && h('span', { class: 'kbd' }, opt.kbd)))));
   // 鼠标事件在光标处打开；按钮/键盘触发时贴按钮下方并右对齐
   const rect = e.currentTarget?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
   const x = e.clientX || Math.max(8, rect.right - 170), y = e.clientY || rect.bottom + 4;
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - items.length * 30 - 12)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - items.reduce((s, it) => s + (it === '-' ? 9 : 30), 0) - 12)}px`;
   menu.classList.remove('hidden');
   menu.firstElementChild?.focus();
 }
@@ -257,7 +259,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') menu.classList.add('hidden');
   if (!menu.classList.contains('hidden') && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
     e.preventDefault();
-    const items = [...menu.children], i = items.indexOf(document.activeElement);
+    const items = [...menu.querySelectorAll('.menu-item')], i = items.indexOf(document.activeElement); // 跳过分隔线
     items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
   }
 });
@@ -450,6 +452,7 @@ function emptyState(title, why, action) {
 }
 
 function renderSidebar() {
+  const focused = focusedRow();
   setTab('side', sideTab);
   const body = $('#side-body');
   body.replaceChildren();
@@ -497,7 +500,10 @@ function renderSidebar() {
   if (pins) body.append(pins);
   if (q() && !shown.length) { body.append(emptyState(`Nothing matches “${filter.trim()}”`, 'Names of collections, folders and requests are searched, and request URLs.')); return; }
   shown.forEach((c) => body.append(containerNode(c, data.collections)));
+  // 重绘把原来聚焦的行换成了新节点：焦点还给同一行，方向键才能接着走
+  if (focused) allRows().filter((el) => el.dataset.id === focused[0])[focused[1]]?.focus();
   body.querySelector('input.rename')?.focus();
+  body.querySelector('input.rename')?.select(); // 全选：直接打字就是换名字
 }
 
 function addCollection() { data.collections.push(newContainer(`Collection ${data.collections.length + 1}`)); sideTab = 'collections'; dirty(); renderSidebar(); }
@@ -538,11 +544,39 @@ function markSearchHit(scroll) {
 /** Enter / Space 触发点击（给 role=button 的 div 用） */
 function activate(e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); } }
 
-/** 名称：正在重命名则显示输入框（Enter 提交 / Esc 取消 / 失焦提交）；双击也可重命名 */
-function nameNode(obj) {
-  if (renaming !== obj) return h('span', { class: 'name', title: obj.name, ondblclick: startRename(obj) }, obj.name);
+/** 树里的行（请求行 + 集合 / 文件夹标题），按显示顺序 */
+const allRows = () => [...$('#side-body').querySelectorAll('summary, .req')];
+/** 其中看得见的：收起的 details 里的行不算 */
+const treeRows = () => allRows().filter((el) => !(el.matches('summary') ? el.parentElement.parentElement : el).closest('details:not([open])'));
+/** 重绘前记下焦点在树里的哪一行：[id, 同 id 的第几行]——置顶的请求在 Pinned 区和树里各有一行 */
+function focusedRow() {
+  const row = document.activeElement?.closest('#side-body summary, #side-body .req');
+  return row && [row.dataset.id, allRows().filter((el) => el.dataset.id === row.dataset.id).indexOf(row)];
+}
+/** 树的键盘操作：↑ / ↓ 在可见行之间移动，→ / ← 展开 / 收起，F2 重命名；Enter 打开请求是行自己的 activate */
+$('#side-body').addEventListener('keydown', (e) => {
+  const row = e.target;
+  // 只管焦点正好在行上的时候：⋯ 按钮和重命名输入框里的按键归它们自己
+  if (!row.matches('summary, .req') || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  const box = row.matches('summary') ? row.parentElement : null;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const rows = treeRows();
+    rows[rows.indexOf(row) + (e.key === 'ArrowDown' ? 1 : -1)]?.focus();
+  } else if (e.key === 'ArrowRight' && box) box.open = true;
+  else if (e.key === 'ArrowLeft' && box) box.open = false;
+  // 重命名的对象闭包在名字的双击处理里（startRename），借它触发，不另建 行 → 对象 的映射
+  else if (e.key === 'F2') row.querySelector('.name')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  else return;
+  e.preventDefault();
+});
+
+/** 名称：正在重命名则显示输入框（Enter 提交 / Esc 取消 / 失焦提交）；双击也可重命名。
+ *  tab=true 是标签上的名字：同一个请求在侧栏和标签上各有一个，输入框只出在发起重命名的那一处 */
+function nameNode(obj, tab = false) {
+  const on = () => (tab ? renaming?.tab === obj : renaming === obj);
+  if (!on()) return h('span', { class: tab ? 'tab-name' : 'name', title: tab ? null : obj.name, ondblclick: startRename(obj, tab) }, obj.name);
   const commit = (e) => {
-    if (renaming !== obj) return; // Enter 后 blur 会再触发一次
+    if (!on()) return; // Enter 后 blur 会再触发一次
     const v = e.target.value.trim();
     if (v) { obj.name = v; dirty(); }
     renaming = null; renderSidebar(); renderRequestHeader(); renderTabs();
@@ -553,11 +587,11 @@ function nameNode(obj) {
     onkeydown: (e) => {
       e.stopPropagation();
       if (e.key === 'Enter') commit(e);
-      else if (e.key === 'Escape') { renaming = null; renderSidebar(); }
+      else if (e.key === 'Escape') { renaming = null; renderSidebar(); renderTabs(); }
     } });
 }
 
-const startRename = (obj) => (e) => { e.stopPropagation(); renaming = obj; renderSidebar(); };
+const startRename = (obj, tab = false) => (e) => { e.stopPropagation(); renaming = tab ? { tab: obj } : obj; renderSidebar(); renderTabs(); };
 /** 乐观删除 + Undo toast，不弹确认框 */
 const remove = (arr, obj, what) => () => {
   const idx = arr.indexOf(obj);
@@ -571,6 +605,21 @@ const remove = (arr, obj, what) => () => {
   }] });
 };
 
+/** 集合 / 文件夹的副本：容器、子文件夹、请求全部换新 id。
+ *  不带 project_dir（两个集合不能写同一个目录），请求不置顶（否则 Pinned 区凭空多出一份） */
+function cloneContainer(c) {
+  const d = structuredClone(c);
+  const fresh = (n) => {
+    n.id = crypto.randomUUID();
+    n.requests.forEach((r) => { r.id = crypto.randomUUID(); r.pinned = false; });
+    n.folders.forEach(fresh);
+  };
+  fresh(d);
+  delete d.project_dir;
+  d.name += ' copy';
+  return d;
+}
+
 /** 集合或文件夹节点（结构相同：name / folders / requests） */
 function containerNode(c, parentArr, isFolder = false) {
   const menu = (e) => openMenu(e, [
@@ -583,24 +632,41 @@ function containerNode(c, parentArr, isFolder = false) {
       if (filter) { filter = $('#search').value = ''; searchCollapsed.clear(); }
       renaming = f; dirty(); renderSidebar();
     }],
+    '-',
     ['Shared headers & auth…', () => openSettings(c, isFolder)],
-    ['Import from curl…', () => openImport(c)],
     ['Run ' + (isFolder ? 'folder' : 'collection') + '…', () => runCollection(c)],
+    '-',
+    ['Import from curl…', () => openImport(c)],
     !isFolder && ['Export collection…', () => exportCollection(c)],
     !isFolder && (c.project_dir
       ? ['Unlink project folder', () => { delete c.project_dir; dirty(); renderSidebar(); toast(`“${c.name}” is no longer synced to a folder. The files there are untouched.`); }]
       : ['Save as project folder…', () => linkProject(c)]),
+    '-',
     ['Rename', startRename(c)],
+    ['Duplicate', () => { parentArr.splice(parentArr.indexOf(c) + 1, 0, cloneContainer(c)); dirty(); renderSidebar(); }],
+    '-',
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
   const view = filterView(c);
-  // 拖到容器标题上 → 追加到该容器末尾
-  const dropOnContainer = (e) => { e.preventDefault(); e.currentTarget.classList.remove('dropping'); collapsed.delete(c.id); searchCollapsed.delete(c.id); moveDragged(c.requests, c.requests.length); };
+  // 拖到容器标题上：请求 → 追加到该容器末尾；文件夹 / 集合 → 看光标位置（boxDrop）
+  const dropAt = (e) => (dragging?.kind ? boxDrop(e, c, isFolder) : dragging && 'into');
+  const dropOnContainer = (e) => {
+    const at = dropAt(e);
+    e.preventDefault(); delete e.currentTarget.dataset.drop;
+    if (!at) return;
+    if (at !== 'into') return moveDragged(parentArr, parentArr.indexOf(c) + (at === 'after' ? 1 : 0));
+    collapsed.delete(c.id); searchCollapsed.delete(c.id);
+    const into = dragging.kind ? c.folders : c.requests;
+    moveDragged(into, into.length);
+  };
   const set = q() ? searchCollapsed : collapsed;
   return h('details', { open: !set.has(c.id), ontoggle: (e) => { e.target.open ? set.delete(c.id) : set.add(c.id); } },
-    h('summary', { oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
-      ondragover: (e) => { if (dragging) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
-      ondragleave: (e) => e.currentTarget.classList.remove('dropping'), ondrop: dropOnContainer },
+    h('summary', { 'data-id': c.id, oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
+      draggable: renaming === c ? null : 'true', // 重命名时让出鼠标：输入框里要能拖选文字
+      ondragstart: (e) => { dragging = { arr: parentArr, r: c, kind: isFolder ? 'folder' : 'collection' }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', c.name); },
+      ondragend: endDrag,
+      ondragover: (e) => { const at = dropAt(e); if (at) { e.preventDefault(); e.currentTarget.dataset.drop = at; } else delete e.currentTarget.dataset.drop; },
+      ondragleave: (e) => { delete e.currentTarget.dataset.drop; }, ondrop: dropOnContainer },
       nameNode(c), c.project_dir ? h('span', { class: 'proj', title: `Synced to ${c.project_dir}` }, '⎇') : null, btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
     !q() && !c.folders.length && !c.requests.length && h('div', { class: 'empty-hint' }, 'Empty — right-click to add a request, or paste a curl into the URL field'),
     ...view.folders.map((f) => containerNode(f, c.folders, true)),
@@ -622,17 +688,34 @@ function requestRow(r, arr, drag = true) {
   const drops = drag ? {
     draggable: 'true',
     ondragstart: (e) => { dragging = { arr, r }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', r.name); },
-    ondragend: () => { dragging = null; document.querySelectorAll('.dropping').forEach((x) => x.classList.remove('dropping')); },
-    ondragover: (e) => { if (dragging && dragging.r !== r) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
+    ondragend: endDrag,
+    ondragover: (e) => { if (dragging && !dragging.kind && dragging.r !== r) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
     ondragleave: (e) => e.currentTarget.classList.remove('dropping'),
     ondrop: (e) => { e.preventDefault(); e.stopPropagation(); moveDragged(arr, arr.indexOf(r)); },
   } : {};
-  return h('div', { class: 'req' + (r === current ? ' active' : '') + (selected.has(r) ? ' sel' : ''), role: 'button', tabindex: 0,
+  return h('div', { class: 'req' + (r === current ? ' active' : '') + (selected.has(r) ? ' sel' : ''), role: 'button', tabindex: 0, 'data-id': r.id,
     'aria-current': r === current || undefined, 'aria-selected': selected.has(r) || undefined, ...drops,
-    onclick: (e) => { if (e.metaKey || e.ctrlKey) { selected.has(r) ? selected.delete(r) : selected.add(r); renderSidebar(); } else { selected.clear(); selectRequest(r); } },
+    onmousedown: (e) => { if (e.shiftKey) e.preventDefault(); }, // 不然 Shift 点击会把两行之间的文字选中
+    onclick: (e) => {
+      if (e.shiftKey && selectRange(e.currentTarget)) return;
+      anchor = r;
+      if (e.metaKey || e.ctrlKey) { selected.has(r) ? selected.delete(r) : selected.add(r); renderSidebar(); } else { selected.clear(); selectRequest(r); }
+    },
     onkeydown: activate, oncontextmenu: rmenu },
     reqTag(r), nameNode(r), pendings.has(r.id) && h('span', { class: 'spinner', title: 'Sending…' }),
     btn('⋯', rmenu, 'small more').withAttr('aria-label', 'Request actions'));
+}
+
+/** Shift 点击：选中上次点击的行到这一行之间所有可见的请求。起点不在了（没点过、被收起或过滤掉）返回 false，按普通点击处理。
+ *  只在被点的那个区里找（Pinned 区或集合树）：置顶的请求两边各有一行，混着算 id 不唯一 */
+function selectRange(row) {
+  const rows = treeRows().filter((el) => el.matches('.req') && !el.closest('.pinned') === !row.closest('.pinned'));
+  const a = rows.findIndex((el) => el.dataset.id === anchor?.id), b = rows.indexOf(row);
+  if (a < 0) return false;
+  selected.clear();
+  rows.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((el) => selected.add(findById(el.dataset.id)));
+  renderSidebar();
+  return true;
 }
 
 /** 集合树里的所有请求（深度优先） */
@@ -653,19 +736,38 @@ function pinnedNode() {
 }
 Element.prototype.withAttr = function (k, v) { if (v !== undefined) this.setAttribute(k, v); return this; };
 
-/** 把正在拖动的请求放到 targetArr 的 index 之前（同数组内移动会先移除再插入） */
+const endDrag = () => {
+  dragging = null;
+  document.querySelectorAll('.dropping, [data-drop]').forEach((x) => { x.classList.remove('dropping'); delete x.dataset.drop; });
+};
+/** 拖文件夹 / 集合到容器 c 的标题上时落在哪：'before' / 'after' 是排到它前后，'into' 是放进它里面，不能放返回 null。
+ *  集合只在顶层排序（上半前、下半后）；文件夹拖到集合上是放进去，拖到文件夹上时上三分之一排到它前面、其余放进去 */
+function boxDrop(e, c, isFolder) {
+  const { r, kind } = dragging;
+  const inside = (box) => box.folders.some((f) => f === c || inside(f));
+  if (r === c || inside(r)) return null; // 不能拖进自己或自己的后代
+  const rect = e.currentTarget.getBoundingClientRect(), y = (e.clientY - rect.top) / rect.height;
+  if (kind === 'collection') return isFolder ? null : y < 0.5 ? 'before' : 'after';
+  return isFolder && y < 0.35 ? 'before' : 'into';
+}
+
+/** 把正在拖动的请求 / 文件夹 / 集合放到 targetArr 的 index 之前 */
 function moveDragged(targetArr, index) {
   if (!dragging) return;
-  const { arr, r } = dragging;
+  const { arr, r, kind } = dragging;
   dragging = null;
-  const from = arr.indexOf(r);
-  if (from < 0) return;
-  arr.splice(from, 1);
-  if (arr === targetArr && from < index) index -= 1;
-  targetArr.splice(index, 0, r);
+  if (!arr.includes(r)) return;
+  // 拖的是多选里的一行：选中的请求一起走，保持它们在侧栏里的先后顺序（文件夹排在请求前面，和 allRequests 的顺序不同）
+  const many = !kind && selected.size > 1 && selected.has(r);
+  const shown = (nodes) => nodes.flatMap((n) => [...shown(n.folders), ...n.requests]);
+  const moving = many ? shown(data.collections).filter((x) => selected.has(x)) : [r];
+  // 落点记成"插在谁前面"再移除：一次移走好几个，下标会被挤乱
+  const before = targetArr.slice(index).find((x) => !moving.includes(x));
+  for (const x of moving) { const from = many ? locateArr(x) : arr; from.splice(from.indexOf(x), 1); }
+  targetArr.splice(before ? targetArr.indexOf(before) : targetArr.length, 0, ...moving);
   dirty(); renderSidebar();
   // 换了父容器 = 换了继承链：面包屑、继承的头 / auth、未解析变量统计全都要重算
-  if (r === current) { renderRequestHeader(); renderRequest(); renderMissing(); }
+  if (kind || moving.includes(current)) { renderRequestHeader(); renderRequest(); renderMissing(); }
 }
 
 /** 当前请求所在的 requests 数组；不在集合里返回 null */
@@ -712,7 +814,7 @@ let openTabs = (() => {
 const saveTabs = () => { try { localStorage.setItem('firebee.tabs', JSON.stringify(openTabs)); } catch { /* private mode */ } };
 
 /** 关掉一个标签；关的是当前标签时，焦点给右边的、没有就给左边的。
- *  全关完也没关系：标签条自己隐藏，请求面板继续显示当前请求（标签只是快捷入口）。 */
+ *  最后一个关不掉：renderTabs 会把当前请求的标签补回来。 */
 function closeTab(id) {
   const i = openTabs.indexOf(id);
   if (i < 0) return;
@@ -732,18 +834,22 @@ function closeTabsExcept(keep, focusId) {
 }
 
 function renderTabs() {
+  // 面板上显示着的请求至少留一个标签：标签是唯一能看到、改到请求名的地方
+  if (!openTabs.length) { openTabs = [current.id]; saveTabs(); }
   // 集合里已经没有的请求（被删了）顺手清掉
   const live = openTabs.map((id) => [id, findById(id)]).filter(([, r]) => r);
   if (live.length !== openTabs.length) { openTabs = live.map(([id]) => id); saveTabs(); }
   const bar = $('#tabs');
+  const only = live.length < 2;
   put(bar, ...live.map(([id, r]) => {
     const on = id === current.id;
     const i = openTabs.indexOf(id);
     const tmenu = (e) => openMenu(e, [
-      ['Close', () => closeTab(id), { kbd: `${MOD}W` }],
-      live.length > 1 && ['Close others', () => closeTabsExcept([id], id)],
+      !only && ['Close', () => closeTab(id), { kbd: `${MOD}W` }],
+      !only && ['Close others', () => closeTabsExcept([id], id)],
       i < live.length - 1 && ['Close to the right', () => closeTabsExcept(openTabs.slice(0, i + 1), id)],
-      ['Close all', () => closeTabsExcept([])],
+      !only && ['Close all', () => closeTabsExcept([])],
+      ['Rename', startRename(r, true)],
     ]);
     return h('div', { class: 'tab' + (on ? ' active' : ''), role: 'tab', tabindex: 0, 'aria-selected': on ? 'true' : 'false',
       title: [...(locate(r) || []), r.name].join(' / '),
@@ -751,11 +857,13 @@ function renderTabs() {
       onkeydown: activate,
       oncontextmenu: tmenu,
       onauxclick: (e) => { if (e.button === 1) { e.preventDefault(); closeTab(id); } } },
-      reqTag(r), h('span', { class: 'tab-name' }, r.name),
+      reqTag(r), nameNode(r, true),
       pendings.has(id) ? h('span', { class: 'spinner' }) : null,
-      btn('×', (e) => { e.stopPropagation(); closeTab(id); }, 'small more close')
+      !only && btn('×', (e) => { e.stopPropagation(); closeTab(id); }, 'small more close')
         .withAttr('aria-label', `Close ${r.name}`));
   }));
+  bar.querySelector('input.rename')?.focus();
+  bar.querySelector('input.rename')?.select();
   scrollTabIntoView(bar);
 }
 
