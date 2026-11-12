@@ -828,19 +828,35 @@ function openImport(into = null) {
 
 /** 集合导出为 Firebee JSON 文件 */
 /** Runner：按顺序发送容器里的所有请求（含子文件夹），Capture 传给后面的，Tests 决定 PASS/FAIL */
-let runAbort = false, running = false;
+let runAbort = false, running = false, runKept = false;
+/** 左下角的状态条：关掉弹窗不停运行，运行中 / 跑完后都从这里回到结果；跑完才能手动关掉 */
+function renderRunStatus() {
+  $('#run-status').classList.toggle('hidden', !runKept || $('#run-dialog').open);
+  $('#run-dismiss').classList.toggle('hidden', running);
+}
 async function runCollection(container) {
-  if (running) { toast('A run is already in progress — stop it first.'); return; }
+  // 上一次运行可能正藏在状态条后面：把弹窗拿出来，Stop 才够得着
+  if (running) { toast('A run is already in progress — stop it first.'); $('#run-dialog').showModal(); renderRunStatus(); return; }
   const flat = [];
   (function walk(n, path) { for (const r of n.requests) flat.push({ r, path: path ? `${path}/${r.name}` : r.name }); for (const f of n.folders) walk(f, path ? `${path}/${f.name}` : f.name); })(container, '');
   if (!flat.length) { toast('Nothing to run — the container is empty.'); return; }
   const dlg = $('#run-dialog'), list = $('#run-list'), summary = $('#run-summary');
   $('#run-title').textContent = `Run “${container.name}”`;
-  runAbort = false; running = true; $('#run-stop').classList.remove('hidden');
-  const rows = flat.map(({ path }) => h('div', { class: 'run-row' }, h('span', { class: 'st muted' }, '·'), h('span', { class: 'name' }, path), h('span', { class: 'meta muted' }, '')));
+  runAbort = false; running = true; runKept = true; $('#run-stop').classList.remove('hidden');
+  // 响应已经用 setResponse 存好，点一行就是打开那个请求；运行期间请求可能被删，按 id 重新找
+  const openRow = (r) => { dlg.close(); const live = findById(r.id); live ? selectRequest(live) : toast('That request no longer exists.'); };
+  const rows = flat.map(({ r, path }) => h('div', { class: 'run-row', role: 'button', tabindex: 0, title: 'Open this request', onclick: () => openRow(r), onkeydown: activate },
+    h('span', { class: 'st muted' }, '·'), h('span', { class: 'name' }, path), h('span', { class: 'meta muted' }, '')));
   put(list, ...rows); summary.textContent = `0 / ${flat.length}`; dlg.showModal();
   const env = activeEnv();
   let pass = 0, fail = 0;
+  const status = () => {
+    $('#run-reopen').textContent = `${running ? 'Running' : 'Ran'} “${container.name}” · ${pass + fail} / ${flat.length}`
+      + (fail ? ` · ${fail} failed` : '') + (!running && runAbort ? ' · stopped' : '');
+    $('#run-status').classList.toggle('failed', fail > 0);
+    renderRunStatus();
+  };
+  status();
   for (let i = 0; i < flat.length; i++) {
     if (runAbort) break;
     const { r, path } = flat[i], row = rows[i];
@@ -864,11 +880,15 @@ async function runCollection(container) {
     row.firstChild.textContent = ok ? '✓' : '✗'; row.firstChild.className = 'st ' + (ok ? 'ok' : 'bad');
     row.querySelector('.meta').textContent = meta; row.classList.add(ok ? 'pass' : 'fail');
     summary.textContent = `${pass + fail} / ${flat.length} · ${pass} passed${fail ? ` · ${fail} failed` : ''}`;
+    status();
   }
   $('#run-stop').classList.add('hidden'); running = false;
   if (runAbort) summary.textContent += ' · stopped';
+  status();
   if (current && responses.has(current.id)) renderResponse();
-  renderRequest(); renderSidebar();
+  // 运行可能在后台结束：用户正在请求编辑区里打字时不重建它，免得抢走焦点和光标
+  if (!$('#req-body').contains(document.activeElement)) renderRequest();
+  renderSidebar();
 }
 
 /** 项目目录：集合与目录双向同步（见 core/project.rs），目录可以进 git */
@@ -1891,9 +1911,11 @@ function focusFind() {
 
 function bind() {
   acBind();
-  $('#run-close').onclick = () => { runAbort = true; $('#run-dialog').close(); };
+  $('#run-close').onclick = () => $('#run-dialog').close();
   $('#run-stop').onclick = () => { runAbort = true; };
-  $('#run-dialog').onclose = () => { runAbort = true; }; // Esc 关掉也要停
+  $('#run-dialog').onclose = renderRunStatus; // Close / Esc 只是收起，运行继续；只有 Stop 中止
+  $('#run-reopen').onclick = () => { $('#run-dialog').showModal(); renderRunStatus(); };
+  $('#run-dismiss').onclick = () => { runKept = false; renderRunStatus(); };
   $('#cookies-btn').onclick = () => { renderCookies(); $('#cookie-dialog').showModal(); };
   $('#cookie-close').onclick = () => $('#cookie-dialog').close();
   $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies and cached OAuth2 tokens cleared.'); };
