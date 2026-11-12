@@ -28,10 +28,29 @@ function setActiveEnv(id) {
 const pref = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch { return d; } };
 let followRedirects = pref('firebee.follow', true);
 let insecure = pref('firebee.insecure', false);
+// 请求超时（秒），1–300。发送时读这个值而不是输入框：框里打到一半或越界的数不会发出去
+const clampTimeout = (v) => Math.min(300, Math.max(1, Math.round(Number(v)) || 30));
+let timeoutSecs = (() => { try { return clampTimeout(localStorage.getItem('firebee.timeout')); } catch { return 30; } })();
 // 网络层设置（代理 / CA / 客户端证书）：一份 JSON 存本机，和 follow / insecure 一起随每次发送传给后端
 const NET_DEFAULT = { proxy: 'system', proxy_url: '', no_proxy: '', ca_path: '', cert_path: '' };
 let net = (() => { try { return { ...NET_DEFAULT, ...JSON.parse(localStorage.getItem('firebee.net') || '{}') }; } catch { return { ...NET_DEFAULT }; } })();
 const saveNet = () => { try { localStorage.setItem('firebee.net', JSON.stringify(net)); } catch { /* private mode */ } };
+/** 这些设置对每个请求生效、跨重启保留，却藏在弹出层里：偏离默认值时在顶栏留标记，关了证书校验另有常驻标签 */
+function renderNetFlags() {
+  const off = [
+    insecure && 'Allow invalid certificates: on',
+    !followRedirects && 'Follow redirects: off',
+    timeoutSecs !== 30 && `Timeout: ${timeoutSecs} s`,
+    net.proxy !== 'system' && `Proxy: ${net.proxy === 'none' ? 'None' : 'Custom'}`,
+    net.ca_path && 'Custom CA',
+    net.cert_path && 'Client certificate',
+  ].filter(Boolean);
+  const b = $('#settings-btn');
+  b.classList.toggle('changed', off.length > 0);
+  b.title = off.length ? `Request settings — changed from defaults:\n${off.join('\n')}` : 'Request settings';
+  b.setAttribute('aria-label', off.length ? `Request settings, ${off.length} changed from defaults` : 'Request settings');
+  $('#tls-off').classList.toggle('hidden', !insecure);
+}
 // 主题：'light' | 'dark' | 'system'。<html data-theme> 永远是解析后的 light / dark
 let theme = (() => { try { return localStorage.getItem('firebee.theme') || 'system'; } catch { return 'system'; } })();
 const lightMq = matchMedia('(prefers-color-scheme: light)');
@@ -915,19 +934,35 @@ function openImport(into = null) {
 
 /** 集合导出为 Firebee JSON 文件 */
 /** Runner：按顺序发送容器里的所有请求（含子文件夹），Capture 传给后面的，Tests 决定 PASS/FAIL */
-let runAbort = false, running = false;
+let runAbort = false, running = false, runKept = false;
+/** 左下角的状态条：关掉弹窗不停运行，运行中 / 跑完后都从这里回到结果；跑完才能手动关掉 */
+function renderRunStatus() {
+  $('#run-status').classList.toggle('hidden', !runKept || $('#run-dialog').open);
+  $('#run-dismiss').classList.toggle('hidden', running);
+}
 async function runCollection(container) {
-  if (running) { toast('A run is already in progress — stop it first.'); return; }
+  // 上一次运行可能正藏在状态条后面：把弹窗拿出来，Stop 才够得着
+  if (running) { toast('A run is already in progress — stop it first.'); $('#run-dialog').showModal(); renderRunStatus(); return; }
   const flat = [];
   (function walk(n, path) { for (const r of n.requests) flat.push({ r, path: path ? `${path}/${r.name}` : r.name }); for (const f of n.folders) walk(f, path ? `${path}/${f.name}` : f.name); })(container, '');
   if (!flat.length) { toast('Nothing to run — the container is empty.'); return; }
   const dlg = $('#run-dialog'), list = $('#run-list'), summary = $('#run-summary');
   $('#run-title').textContent = `Run “${container.name}”`;
-  runAbort = false; running = true; $('#run-stop').classList.remove('hidden');
-  const rows = flat.map(({ path }) => h('div', { class: 'run-row' }, h('span', { class: 'st muted' }, '·'), h('span', { class: 'name' }, path), h('span', { class: 'meta muted' }, '')));
+  runAbort = false; running = true; runKept = true; $('#run-stop').classList.remove('hidden');
+  // 响应已经用 setResponse 存好，点一行就是打开那个请求；运行期间请求可能被删，按 id 重新找
+  const openRow = (r) => { dlg.close(); const live = findById(r.id); live ? selectRequest(live) : toast('That request no longer exists.'); };
+  const rows = flat.map(({ r, path }) => h('div', { class: 'run-row', role: 'button', tabindex: 0, title: 'Open this request', onclick: () => openRow(r), onkeydown: activate },
+    h('span', { class: 'st muted' }, '·'), h('span', { class: 'name' }, path), h('span', { class: 'meta muted' }, '')));
   put(list, ...rows); summary.textContent = `0 / ${flat.length}`; dlg.showModal();
   const env = activeEnv();
   let pass = 0, fail = 0;
+  const status = () => {
+    $('#run-reopen').textContent = `${running ? 'Running' : 'Ran'} “${container.name}” · ${pass + fail} / ${flat.length}`
+      + (fail ? ` · ${fail} failed` : '') + (!running && runAbort ? ' · stopped' : '');
+    $('#run-status').classList.toggle('failed', fail > 0);
+    renderRunStatus();
+  };
+  status();
   for (let i = 0; i < flat.length; i++) {
     if (runAbort) break;
     const { r, path } = flat[i], row = rows[i];
@@ -937,7 +972,7 @@ async function runCollection(container) {
     let ok, meta;
     try {
       const dto = await invoke('send_request', { job_id: ++jobSeq, request: req, env: activeEnv(),
-        options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
+        options: { timeout_secs: timeoutSecs, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
       const asserts = await runAsserts(req, dto);
       ok = asserts ? asserts.every((a) => a.ok) : dto.status < 400;
       const cap = dto.status < 300 ? runCaptures(req, dto, env) : null;
@@ -951,11 +986,15 @@ async function runCollection(container) {
     row.firstChild.textContent = ok ? '✓' : '✗'; row.firstChild.className = 'st ' + (ok ? 'ok' : 'bad');
     row.querySelector('.meta').textContent = meta; row.classList.add(ok ? 'pass' : 'fail');
     summary.textContent = `${pass + fail} / ${flat.length} · ${pass} passed${fail ? ` · ${fail} failed` : ''}`;
+    status();
   }
   $('#run-stop').classList.add('hidden'); running = false;
   if (runAbort) summary.textContent += ' · stopped';
+  status();
   if (current && responses.has(current.id)) renderResponse();
-  renderRequest(); renderSidebar();
+  // 运行可能在后台结束：用户正在请求编辑区里打字时不重建它，免得抢走焦点和光标
+  if (!$('#req-body').contains(document.activeElement)) renderRequest();
+  renderSidebar();
 }
 
 /** 项目目录：集合与目录双向同步（见 core/project.rs），目录可以进 git */
@@ -1377,7 +1416,7 @@ async function send() {
   let status = null, duration_ms = null, result;
   try {
     const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(),
-      options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
+      options: { timeout_secs: timeoutSecs, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
     result = { ok: r }; status = r.status; duration_ms = r.duration_ms;
   } catch (e) {
     result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
@@ -1985,9 +2024,11 @@ function focusSearch() { sideTab = 'collections'; renderSidebar(); $('#search').
 
 function bind() {
   acBind();
-  $('#run-close').onclick = () => { runAbort = true; $('#run-dialog').close(); };
+  $('#run-close').onclick = () => $('#run-dialog').close();
   $('#run-stop').onclick = () => { runAbort = true; };
-  $('#run-dialog').onclose = () => { runAbort = true; }; // Esc 关掉也要停
+  $('#run-dialog').onclose = renderRunStatus; // Close / Esc 只是收起，运行继续；只有 Stop 中止
+  $('#run-reopen').onclick = () => { $('#run-dialog').showModal(); renderRunStatus(); };
+  $('#run-dismiss').onclick = () => { runKept = false; renderRunStatus(); };
   $('#cookies-btn').onclick = () => { renderCookies(); $('#cookie-dialog').showModal(); };
   $('#cookie-close').onclick = () => $('#cookie-dialog').close();
   $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies and cached OAuth2 tokens cleared.'); };
@@ -2036,7 +2077,8 @@ function bind() {
   };
   // 不 stopPropagation：让 document 上关 #menu 的监听照常跑，两者不会同时开着
   popBtn.onclick = () => toggleSettings();
-  document.addEventListener('click', (e) => { if (!pop.contains(e.target) && !popBtn.contains(e.target)) toggleSettings(false); });
+  document.addEventListener('click', (e) => { if (!pop.contains(e.target) && !popBtn.contains(e.target) && !e.target.closest('#tls-off')) toggleSettings(false); });
+  $('#tls-off').onclick = () => toggleSettings(true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.classList.contains('hidden')) { toggleSettings(false); popBtn.focus(); } });
   // 图标按钮不能走 copyText 的换文字逻辑（会把 svg 冲掉），只改颜色和 title
   $('#copy-resolved').onclick = (e) => {
@@ -2078,6 +2120,7 @@ function bind() {
       put(el, net[key] ? h('span', { class: 'file', title: net[key] }, net[key].split('/').pop()) : null,
         btn(net[key] ? '×' : 'Choose…', () => { if (net[key]) { net[key] = ''; saveNet(); renderNet(); } else pick(key, [{ name: 'PEM', extensions: ['pem', 'crt', 'cer', 'key'] }]); }, 'small ghost'));
     }
+    renderNetFlags();
   };
   $('#proxy-mode').onchange = (e) => { net.proxy = e.target.value; saveNet(); renderNet(); };
   $('#proxy-url').oninput = (e) => { net.proxy_url = e.target.value; saveNet(); };
@@ -2087,12 +2130,22 @@ function bind() {
   $('#insecure').onchange = (e) => {
     insecure = e.target.checked;
     try { localStorage.setItem('firebee.insecure', insecure ? '1' : '0'); } catch { /* private mode */ }
+    renderNetFlags();
   };
   $('#follow').checked = followRedirects;
   $('#follow').onchange = (e) => {
     followRedirects = e.target.checked;
     try { localStorage.setItem('firebee.follow', followRedirects ? '1' : '0'); } catch { /* private mode */ }
+    renderNetFlags();
   };
+  $('#timeout').value = timeoutSecs;
+  // input 时就存，不等失焦；框里的数到 change 才换成夹紧后的值，免得打字到一半被改写
+  $('#timeout').oninput = (e) => {
+    timeoutSecs = clampTimeout(e.target.value);
+    try { localStorage.setItem('firebee.timeout', timeoutSecs); } catch { /* private mode */ }
+    renderNetFlags();
+  };
+  $('#timeout').onchange = (e) => { e.target.value = timeoutSecs; };
   $('#send').onclick = send;
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pendings.get(current.id) });
   $('#export-copy').onclick = (e) => copyText($('#export-text').textContent, e.currentTarget);

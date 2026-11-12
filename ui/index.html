@@ -9,6 +9,7 @@
 <header id="topbar">
   <select id="env-select" aria-label="Active environment" title="Active environment"></select>
   <span class="spacer"></span>
+  <button id="tls-off" class="hidden" title="Certificates are not verified for any request. Click to open Request settings.">TLS verification off</button>
   <button id="theme-btn" class="icon" aria-label="Appearance" title="Appearance" aria-expanded="false" aria-controls="appearance">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
   </button>
@@ -159,6 +160,7 @@
 <div id="menu" class="hidden" role="menu"></div>
 <div id="toast" class="hidden" role="status"></div>
 <div id="update-progress" class="hidden" role="status"></div>
+<div id="run-status" class="hidden"><button id="run-reopen" class="small ghost" title="Show run results"></button><button id="run-dismiss" class="small ghost" aria-label="Dismiss run results" title="Dismiss">×</button></div>
 <script src="app.js"></script>
 </body>
 </html>
