@@ -974,11 +974,15 @@ function renderTabCounts() {
   });
 }
 
+/** 标签行窄窗口下可横向滚动：从 ⋯ 菜单打开的 Capture / Tests、面板变窄之后，当前标签都可能落在可视区外 */
+function revealReqTab() { document.querySelector('#req-tabs .active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+
 function renderRequest() {
   setTab('req', reqTab);
   // Preview 里已经有完整的最终 URL，URL 栏下那行就不重复显示了
   $('#resolved').classList.toggle('hidden', reqTab === 'preview');
   renderRequestHeader();
+  revealReqTab();
   const body = $('#req-body');
   body.replaceChildren();
   if (reqTab === 'params') body.append(kvTable(current.params, 'Key', 'Value', renderRequest));
@@ -1517,14 +1521,14 @@ function renderResponse() {
   const isImage = ct.startsWith('image/'), isHtml = ct.includes('text/html');
   const copy = btn('Copy body', () => copyText(r.body, copy), 'small ghost');
   // put 会过滤掉 null/undefined/false；append 不会——它会把 null 当文本渲染成 "null"
-  put(meta,
+  put(meta, h('span', { class: 'summary' },
     h('span', { class: `status s${Math.floor(r.status / 100)}` }, r.status), REASON[r.status] && h('span', { class: 'reason' }, REASON[r.status]),
     h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: r.ttfb_ms != null ? `Time to first byte ${r.ttfb_ms} ms (connect + server), then ${r.duration_ms - r.ttfb_ms} ms downloading` : 'Time from request start to last byte received' }, `${r.duration_ms} ms`),
     r.ttfb_ms != null && r.duration_ms - r.ttfb_ms >= 50 ? h('span', { class: 'meta muted', title: 'Time to first byte' }, `TTFB ${r.ttfb_ms} ms`) : null,
     h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: 'Body size' }, fmtSize(r.size_bytes)),
     r.from_history ? h('span', { class: 'meta from-history', title: `Kept from ${new Date(r.from_history).toLocaleString()} — press Send for a fresh one` },
-      r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null,
-    h('span', { class: 'spacer' }), r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost'),
+      r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null),
+    h('span', { class: 'actions' }, r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost')),
   );
   // 跟过的每一跳都列出来；3xx 说明停下了，说清为什么并给一键跟进
   if (r.asserts?.length) {
@@ -1920,6 +1924,9 @@ function bind() {
     ['Open project folder…', openProject],
     ['Import from curl…', () => openImport()],
   ]);
+  // 标签行放不下时是横向滚动的；普通鼠标只有纵向滚轮，折算过去，否则右边的标签够不着
+  $('#req-tabs').onwheel = (e) => { if (!e.deltaX) e.currentTarget.scrollLeft += e.deltaY; };
+  new ResizeObserver(revealReqTab).observe($('#req-tabs')); // 收到响应后请求面板会变窄
   // Capture 有规则时本身就是一个标签；只有标签藏起来时，菜单里才放入口
   $('#req-more').onclick = (e) => {
     const tabHidden = document.querySelector('[data-req=capture]').classList.contains('hidden');
