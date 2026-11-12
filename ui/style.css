@@ -3,7 +3,7 @@
 :root {
   --bg-canvas: #101214; --bg-sidebar: #14171A; --bg-surface: #111417; --bg-popover: #1A1D21;
   --hover: rgba(255,255,255,.035); --active: rgba(255,255,255,.055); --input: rgba(255,255,255,.04);
-  --text: #E8EAEC; --text-2: #A2A8AF; --muted: #6E747B;
+  --text: #E8EAEC; --text-2: #A2A8AF; --muted: #8A9097;
   --border: rgba(255,255,255,.07); --border-strong: rgba(255,255,255,.16); --focus: rgba(160,190,255,.45);
   --primary: #EDEEF0; --primary-fg: #0C0D0F;
   --m-get: oklch(0.76 0.09 155); --m-post: oklch(0.80 0.09 75); --m-put: oklch(0.76 0.08 250); --m-patch: oklch(0.76 0.08 300); --m-delete: oklch(0.72 0.11 25);
@@ -27,7 +27,7 @@
 :root[data-theme="light"] {
   --bg-canvas: #F7F8F9; --bg-sidebar: #F4F5F6; --bg-surface: #FFFFFF; --bg-popover: #FFFFFF;
   --hover: rgba(10,20,30,.035); --active: rgba(10,20,30,.055); --input: rgba(10,20,30,.045);
-  --text: #16181B; --text-2: #50565D; --muted: #80868D;
+  --text: #16181B; --text-2: #50565D; --muted: #62686F;
   --border: rgba(10,20,30,.08); --border-strong: rgba(10,20,30,.2); --focus: rgba(60,110,230,.45);
   --primary: #16181B; --primary-fg: #FFFFFF;
   --m-get: oklch(0.52 0.11 155); --m-post: oklch(0.56 0.11 65); --m-put: oklch(0.52 0.11 250); --m-patch: oklch(0.52 0.11 300); --m-delete: oklch(0.54 0.15 25);
