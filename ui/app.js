@@ -503,6 +503,21 @@ const remove = (arr, obj, what) => () => {
   }] });
 };
 
+/** 集合 / 文件夹的副本：容器、子文件夹、请求全部换新 id。
+ *  不带 project_dir（两个集合不能写同一个目录），请求不置顶（否则 Pinned 区凭空多出一份） */
+function cloneContainer(c) {
+  const d = structuredClone(c);
+  const fresh = (n) => {
+    n.id = crypto.randomUUID();
+    n.requests.forEach((r) => { r.id = crypto.randomUUID(); r.pinned = false; });
+    n.folders.forEach(fresh);
+  };
+  fresh(d);
+  delete d.project_dir;
+  d.name += ' copy';
+  return d;
+}
+
 /** 集合或文件夹节点（结构相同：name / folders / requests） */
 function containerNode(c, parentArr, isFolder = false) {
   const menu = (e) => openMenu(e, [
@@ -526,6 +541,7 @@ function containerNode(c, parentArr, isFolder = false) {
       : ['Save as project folder…', () => linkProject(c)]),
     '-',
     ['Rename', startRename(c)],
+    ['Duplicate', () => { parentArr.splice(parentArr.indexOf(c) + 1, 0, cloneContainer(c)); dirty(); renderSidebar(); }],
     '-',
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
