@@ -401,6 +401,13 @@ function dayLabel(t) {
   return t.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: t.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
 }
 
+/** 历史行的主文字：起过名的显示名字，否则显示路径。开头的 {{var}} 或 scheme+host 每行都一样，
+ *  留着它侧栏那十几个字符就全被占掉，每一行看起来都是 `{{base_ur…` */
+function histLabel(req) {
+  if (req.name && !/^(Untitled request|New Request)/i.test(req.name)) return req.name;
+  return req.url.replace(/^(\{\{[^}]*\}\}|[a-z][a-z0-9+.-]*:\/\/[^/?#]*)/i, '') || req.url || '(no URL)';
+}
+
 function emptyState(title, why, action) {
   return h('div', { class: 'empty' }, h('strong', {}, title), h('span', {}, why), action && btn(action[0], action[1], ''));
 }
@@ -432,11 +439,14 @@ function renderSidebar() {
       // 新的在前，日期变了就插一行分组标题
       const day = t.toDateString();
       if (day !== lastDay) { lastDay = day; body.append(h('div', { class: 'hist-day' }, dayLabel(t))); }
-      body.append(h('div', { class: 'hist', role: 'button', tabindex: 0, title: `${hist.request.method.toUpperCase()} ${hist.request.url}`,
+      const label = histLabel(hist.request);
+      body.append(h('div', { class: 'hist', role: 'button', tabindex: 0,
+        title: `${label === hist.request.name ? label + '\n' : ''}${hist.request.method.toUpperCase()} ${hist.request.url}`,
         onclick: () => openFromHistory(hist), onkeydown: activate, oncontextmenu: hmenu },
-        h('span', { class: 'muted' }, hhmm), reqTag(hist.request),
+        reqTag(hist.request),
         h('span', { class: hist.status ? `s${Math.floor(hist.status / 100)}` : 's0' }, hist.status ?? 'ERR'),
-        h('span', {}, hist.request.url || '(no URL)'), btn('⋯', hmenu, 'small more').withAttr('aria-label', 'History entry actions')));
+        h('span', { class: 'hist-label' }, label), btn('⋯', hmenu, 'small more').withAttr('aria-label', 'History entry actions'),
+        h('span', { class: 'muted hist-time' }, hhmm)));
     }
     return;
   }
@@ -783,14 +793,43 @@ function ensureCurrent() {
   const r = firstRequest();
   r ? selectRequest(r) : createRequest();
 }
-/** 历史：原请求还在就直接打开它，否则按快照在首个集合里新建一个 */
+// 发出去的内容由这些字段决定；name / pinned / captures / asserts 改了不算"发送后改过"。
+// 值为 false 的键不参与比较：is_file、in_query 这类存盘时会被省掉，重启前后的同一份请求不能因此算作不同
+const SENT_FIELDS = ['method', 'url', 'params', 'headers', 'body_type', 'body', 'form', 'auth', 'graphql_variables'];
+const sentJson = (r) => JSON.stringify(SENT_FIELDS.map((k) => r[k] || ''), (_, v) => (v === false ? undefined : v));
+let histNotice = null; // 正挂着的"发送后改过"提示的 action
+/** 历史：原请求还在就打开它现在的版本，否则按快照恢复进首个集合。打开的不是用户以为的那份时用 toast 说清楚 */
 function openFromHistory(hist) {
-  const found = findById(hist.request.id);
+  const found = findById(hist.request.id), prev = current;
   const r = found || structuredClone(hist.request);
-  if (!found) { homeCollection().requests.push(r); dirty(); }
+  const home = found ? null : homeCollection();
+  if (!found) { home.requests.push(r); dirty(); }
   // 当时的响应还留着就放回响应面板，不用重发（重发 POST 是有副作用的）
   if (hist.response) setResponse(r.id, { ok: { ...hist.response, body_base64: null, from_history: hist.timestamp } });
   selectRequest(r);
+  if (!found) {
+    toast(`Restored deleted request “${r.name}” to “${home.name}”.`, { action: ['Undo', () => {
+      const i = home.requests.indexOf(r);
+      if (i < 0) return; // 这几秒里已经被挪走或删掉了
+      home.requests.splice(i, 1); dirty();
+      current === r && locateArr(prev) ? selectRequest(prev) : (ensureCurrent(), renderSidebar(), renderRequestHeader(), renderTabs());
+    }] });
+  } else if (sentJson(found) !== sentJson(hist.request)) {
+    const action = ['Restore sent version', () => {
+      if (!locateArr(found)) return;
+      const before = structuredClone(found), { id, name, pinned, captures, asserts } = found;
+      Object.assign(found, structuredClone(hist.request), { id, name, pinned, captures, asserts });
+      dirty(); selectRequest(found);
+      toast(`Restored “${name}” to the version that was sent.`, { action: ['Undo', () => {
+        if (!locateArr(found)) return;
+        Object.assign(found, before); dirty(); selectRequest(found);
+      }] });
+    }];
+    // 这条只是提示，不是待撤销的操作：连着点几条历史时直接换掉上一条，
+    // 走 toast() 排队的话每条要等前一条的 8 秒，轮到时用户早就在看别的请求了
+    (pendingUndo === histNotice ? showToast : toast)(`“${found.name}” has changed since this was sent.`, { action });
+    histNotice = action;
+  }
 }
 function findById(id, nodes = data.collections) {
   for (const n of nodes) { const r = n.requests.find((x) => x.id === id); if (r) return r; const d = findById(id, n.folders); if (d) return d; }
