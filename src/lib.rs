@@ -37,13 +37,13 @@ pub fn run() {
                 )
                 .separator()
                 .item(
-                    &MenuItemBuilder::with_id("find", "Find in Response")
+                    &MenuItemBuilder::with_id("find", "Find")
                         .accelerator("CmdOrCtrl+F")
                         .build(app)?,
                 )
                 .item(
                     &MenuItemBuilder::with_id("filter", "Filter Collections")
-                        .accelerator("CmdOrCtrl+Shift+F")
+                        .accelerator("CmdOrCtrl+K")
                         .build(app)?,
                 )
                 .build()?;

@@ -1912,6 +1912,9 @@ function focusFind() {
   f.focus(); f.select();
 }
 
+/** ⌘K / 菜单 Filter Collections。菜单加速键和全局 keydown 可能被同一次按键都触发，所以这里必须幂等 */
+function focusSearch() { sideTab = 'collections'; renderSidebar(); $('#search').focus(); $('#search').select(); }
+
 function bind() {
   acBind();
   $('#run-close').onclick = () => { runAbort = true; $('#run-dialog').close(); };
@@ -2032,7 +2035,7 @@ function bind() {
     if (payload === 'send') send();
     else if (payload === 'new') { createRequest(); $('#url').focus(); }
     else if (payload === 'find') focusFind();
-    else if (payload === 'filter') { $('#search').focus(); $('#search').select(); }
+    else if (payload === 'filter') focusSearch();
     else if (payload === 'check-updates') checkForUpdates(true);
   });
   $('#env-close').onclick = () => $('#env-dialog').close();
@@ -2060,7 +2063,7 @@ function bind() {
     if (document.querySelector('dialog[open]')) return;
     if (e.key === 'Enter') { e.preventDefault(); send(); }
     else if (e.key === 'n' || e.key === 't') { e.preventDefault(); createRequest(); $('#url').focus(); }
-    else if (e.key === 'k') { e.preventDefault(); sideTab = 'collections'; renderSidebar(); $('#search').focus(); $('#search').select(); }
+    else if (e.key === 'k') { e.preventDefault(); focusSearch(); }
     else if (e.key === '/') { e.preventDefault(); $('#url').focus(); }
     else if (e.key === 'f') { e.preventDefault(); focusFind(); }
     else if (e.key === 'w') { e.preventDefault(); closeTab(current.id); }
