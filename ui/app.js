@@ -32,6 +32,21 @@ let insecure = pref('firebee.insecure', false);
 const NET_DEFAULT = { proxy: 'system', proxy_url: '', no_proxy: '', ca_path: '', cert_path: '' };
 let net = (() => { try { return { ...NET_DEFAULT, ...JSON.parse(localStorage.getItem('firebee.net') || '{}') }; } catch { return { ...NET_DEFAULT }; } })();
 const saveNet = () => { try { localStorage.setItem('firebee.net', JSON.stringify(net)); } catch { /* private mode */ } };
+/** 这些设置对每个请求生效、跨重启保留，却藏在弹出层里：偏离默认值时在顶栏留标记，关了证书校验另有常驻标签 */
+function renderNetFlags() {
+  const off = [
+    insecure && 'Allow invalid certificates: on',
+    !followRedirects && 'Follow redirects: off',
+    net.proxy !== 'system' && `Proxy: ${net.proxy === 'none' ? 'None' : 'Custom'}`,
+    net.ca_path && 'Custom CA',
+    net.cert_path && 'Client certificate',
+  ].filter(Boolean);
+  const b = $('#settings-btn');
+  b.classList.toggle('changed', off.length > 0);
+  b.title = off.length ? `Request settings — changed from defaults:\n${off.join('\n')}` : 'Request settings';
+  b.setAttribute('aria-label', off.length ? `Request settings, ${off.length} changed from defaults` : 'Request settings');
+  $('#tls-off').classList.toggle('hidden', !insecure);
+}
 // 主题：'light' | 'dark' | 'system'。<html data-theme> 永远是解析后的 light / dark
 let theme = (() => { try { return localStorage.getItem('firebee.theme') || 'system'; } catch { return 'system'; } })();
 const lightMq = matchMedia('(prefers-color-scheme: light)');
@@ -1960,7 +1975,8 @@ function bind() {
   };
   // 不 stopPropagation：让 document 上关 #menu 的监听照常跑，两者不会同时开着
   popBtn.onclick = () => toggleSettings();
-  document.addEventListener('click', (e) => { if (!pop.contains(e.target) && !popBtn.contains(e.target)) toggleSettings(false); });
+  document.addEventListener('click', (e) => { if (!pop.contains(e.target) && !popBtn.contains(e.target) && !e.target.closest('#tls-off')) toggleSettings(false); });
+  $('#tls-off').onclick = () => toggleSettings(true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.classList.contains('hidden')) { toggleSettings(false); popBtn.focus(); } });
   // 图标按钮不能走 copyText 的换文字逻辑（会把 svg 冲掉），只改颜色和 title
   $('#copy-resolved').onclick = (e) => {
@@ -2002,6 +2018,7 @@ function bind() {
       put(el, net[key] ? h('span', { class: 'file', title: net[key] }, net[key].split('/').pop()) : null,
         btn(net[key] ? '×' : 'Choose…', () => { if (net[key]) { net[key] = ''; saveNet(); renderNet(); } else pick(key, [{ name: 'PEM', extensions: ['pem', 'crt', 'cer', 'key'] }]); }, 'small ghost'));
     }
+    renderNetFlags();
   };
   $('#proxy-mode').onchange = (e) => { net.proxy = e.target.value; saveNet(); renderNet(); };
   $('#proxy-url').oninput = (e) => { net.proxy_url = e.target.value; saveNet(); };
@@ -2011,11 +2028,13 @@ function bind() {
   $('#insecure').onchange = (e) => {
     insecure = e.target.checked;
     try { localStorage.setItem('firebee.insecure', insecure ? '1' : '0'); } catch { /* private mode */ }
+    renderNetFlags();
   };
   $('#follow').checked = followRedirects;
   $('#follow').onchange = (e) => {
     followRedirects = e.target.checked;
     try { localStorage.setItem('firebee.follow', followRedirects ? '1' : '0'); } catch { /* private mode */ }
+    renderNetFlags();
   };
   $('#send').onclick = send;
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pendings.get(current.id) });
