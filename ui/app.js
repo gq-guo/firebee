@@ -99,7 +99,7 @@ let bodyQuery = '';    // 请求体的查找框，跨请求保留
 let bodyView = (() => { try { return localStorage.getItem('firebee.bodyView') === 'tree' ? 'tree' : 'edit'; } catch { return 'edit'; } })();
 const showAll = new Set();     // 已点过 Show all 的 request.id
 const selected = new Set();    // 侧栏多选（⌘点击）的请求
-let dragging = null;           // { arr, r } 正在拖动的请求
+let dragging = null;           // { arr, r, kind } 正在拖动的请求；拖文件夹 / 集合时 kind 是 'folder' / 'collection'，r 是那个容器
 const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘时保持）
 // 搜索时默认全展开，但用户在搜索结果里手动收起的要记住——否则发送请求等任何重绘都会把它们全部弹开。
 // 换了关键字就清空：新结果按新结果展开
@@ -578,13 +578,25 @@ function containerNode(c, parentArr, isFolder = false) {
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
   const view = filterView(c);
-  // 拖到容器标题上 → 追加到该容器末尾
-  const dropOnContainer = (e) => { e.preventDefault(); e.currentTarget.classList.remove('dropping'); collapsed.delete(c.id); searchCollapsed.delete(c.id); moveDragged(c.requests, c.requests.length); };
+  // 拖到容器标题上：请求 → 追加到该容器末尾；文件夹 / 集合 → 看光标位置（boxDrop）
+  const dropAt = (e) => (dragging?.kind ? boxDrop(e, c, isFolder) : dragging && 'into');
+  const dropOnContainer = (e) => {
+    const at = dropAt(e);
+    e.preventDefault(); delete e.currentTarget.dataset.drop;
+    if (!at) return;
+    if (at !== 'into') return moveDragged(parentArr, parentArr.indexOf(c) + (at === 'after' ? 1 : 0));
+    collapsed.delete(c.id); searchCollapsed.delete(c.id);
+    const into = dragging.kind ? c.folders : c.requests;
+    moveDragged(into, into.length);
+  };
   const set = q() ? searchCollapsed : collapsed;
   return h('details', { open: !set.has(c.id), ontoggle: (e) => { e.target.open ? set.delete(c.id) : set.add(c.id); } },
     h('summary', { 'data-id': c.id, oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
-      ondragover: (e) => { if (dragging) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
-      ondragleave: (e) => e.currentTarget.classList.remove('dropping'), ondrop: dropOnContainer },
+      draggable: renaming === c ? null : 'true', // 重命名时让出鼠标：输入框里要能拖选文字
+      ondragstart: (e) => { dragging = { arr: parentArr, r: c, kind: isFolder ? 'folder' : 'collection' }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', c.name); },
+      ondragend: endDrag,
+      ondragover: (e) => { const at = dropAt(e); if (at) { e.preventDefault(); e.currentTarget.dataset.drop = at; } else delete e.currentTarget.dataset.drop; },
+      ondragleave: (e) => { delete e.currentTarget.dataset.drop; }, ondrop: dropOnContainer },
       nameNode(c), c.project_dir ? h('span', { class: 'proj', title: `Synced to ${c.project_dir}` }, '⎇') : null, btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
     !q() && !c.folders.length && !c.requests.length && h('div', { class: 'empty-hint' }, 'Empty — right-click to add a request, or paste a curl into the URL field'),
     ...view.folders.map((f) => containerNode(f, c.folders, true)),
@@ -606,8 +618,8 @@ function requestRow(r, arr, drag = true) {
   const drops = drag ? {
     draggable: 'true',
     ondragstart: (e) => { dragging = { arr, r }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', r.name); },
-    ondragend: () => { dragging = null; document.querySelectorAll('.dropping').forEach((x) => x.classList.remove('dropping')); },
-    ondragover: (e) => { if (dragging && dragging.r !== r) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
+    ondragend: endDrag,
+    ondragover: (e) => { if (dragging && !dragging.kind && dragging.r !== r) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
     ondragleave: (e) => e.currentTarget.classList.remove('dropping'),
     ondrop: (e) => { e.preventDefault(); e.stopPropagation(); moveDragged(arr, arr.indexOf(r)); },
   } : {};
@@ -637,10 +649,25 @@ function pinnedNode() {
 }
 Element.prototype.withAttr = function (k, v) { if (v !== undefined) this.setAttribute(k, v); return this; };
 
-/** 把正在拖动的请求放到 targetArr 的 index 之前（同数组内移动会先移除再插入） */
+const endDrag = () => {
+  dragging = null;
+  document.querySelectorAll('.dropping, [data-drop]').forEach((x) => { x.classList.remove('dropping'); delete x.dataset.drop; });
+};
+/** 拖文件夹 / 集合到容器 c 的标题上时落在哪：'before' / 'after' 是排到它前后，'into' 是放进它里面，不能放返回 null。
+ *  集合只在顶层排序（上半前、下半后）；文件夹拖到集合上是放进去，拖到文件夹上时上三分之一排到它前面、其余放进去 */
+function boxDrop(e, c, isFolder) {
+  const { r, kind } = dragging;
+  const inside = (box) => box.folders.some((f) => f === c || inside(f));
+  if (r === c || inside(r)) return null; // 不能拖进自己或自己的后代
+  const rect = e.currentTarget.getBoundingClientRect(), y = (e.clientY - rect.top) / rect.height;
+  if (kind === 'collection') return isFolder ? null : y < 0.5 ? 'before' : 'after';
+  return isFolder && y < 0.35 ? 'before' : 'into';
+}
+
+/** 把正在拖动的请求 / 文件夹 / 集合放到 targetArr 的 index 之前（同数组内移动会先移除再插入） */
 function moveDragged(targetArr, index) {
   if (!dragging) return;
-  const { arr, r } = dragging;
+  const { arr, r, kind } = dragging;
   dragging = null;
   const from = arr.indexOf(r);
   if (from < 0) return;
@@ -649,7 +676,7 @@ function moveDragged(targetArr, index) {
   targetArr.splice(index, 0, r);
   dirty(); renderSidebar();
   // 换了父容器 = 换了继承链：面包屑、继承的头 / auth、未解析变量统计全都要重算
-  if (r === current) { renderRequestHeader(); renderRequest(); renderMissing(); }
+  if (kind || r === current) { renderRequestHeader(); renderRequest(); renderMissing(); }
 }
 
 /** 当前请求所在的 requests 数组；不在集合里返回 null */

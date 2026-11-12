@@ -247,8 +247,9 @@ summary:hover .more, .req:hover .more, .hist:hover .more, .more:focus-visible, s
 .req.active { background: var(--active); color: var(--text); }
 .req.active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; border-radius: 2px; background: var(--text); }
 .req.sel { box-shadow: inset 0 0 0 1px var(--accent); }
-.req.dropping, summary.dropping { box-shadow: inset 0 2px 0 var(--accent); }
-summary.dropping { background: var(--active); }
+.req.dropping, summary[data-drop=before] { box-shadow: inset 0 2px 0 var(--accent); }
+summary[data-drop=after] { box-shadow: inset 0 -2px 0 var(--accent); }
+summary[data-drop=into] { background: var(--active); box-shadow: inset 0 0 0 1px var(--accent); }
 .req[draggable] { cursor: grab; }
 .req .spinner { width: 10px; height: 10px; flex: none; }
 .req .method { width: 40px; min-width: 40px; flex: none; }
