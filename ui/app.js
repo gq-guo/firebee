@@ -1054,9 +1054,9 @@ function graphqlEditor() {
   lint(true);
   return h('div', { class: 'fill' }, h('div', { class: 'row' }, h('strong', {}, 'Query')), query,
     h('div', { class: 'row' }, h('strong', {}, 'Variables'), h('span', { class: 'muted' }, 'JSON'), h('span', { class: 'spacer' }), btn('Format JSON', () => {
-      if (!vars.value.trim()) return;
-      try { current.graphql_variables = vars.value = JSON.stringify(JSON.parse(vars.value), null, 2); dirty(); helper.className = 'helper'; helper.textContent = ''; vars.removeAttribute('aria-invalid'); }
-      catch (err) { vars.setAttribute('aria-invalid', 'true'); helper.className = 'helper error'; helper.textContent = `Not valid JSON — ${err.message}. Fix it, then format again.`; }
+      // 不合法时 lint 已经把错误写到 helper 了
+      if (!vars.value.trim() || !lint(true)) return;
+      current.graphql_variables = vars.value = formatLoose(vars.value); dirty();
     })), vars, helper);
 }
 
@@ -1097,6 +1097,22 @@ function parseLoose(text) {
   }
 }
 
+/** JSON.stringify(…, null, 2)，字符串外面的 {{var}} 原样留着不加引号。
+ *  做法：占位符先换成带编号的哨兵字符串（"\u0000N"，正常内容里不会有），格式化完再换回来 */
+function formatLoose(text) {
+  const held = [];
+  const value = parseSub(text, (m) => JSON.stringify(`\0${held.push(m) - 1}`));
+  // 按整个字符串 token 匹配再换回，免得撞上别的字符串里恰好长得像哨兵的片段
+  return JSON.stringify(value, null, 2).replace(/"(?:\\.|[^"\\])*"/g, (m) => held[/^"\\u0000(\d+)"$/.exec(m)?.[1]] ?? m);
+}
+// 自检：加载时跑一遍，不过只在控制台报
+for (const [src, want] of [
+  ['{"a":[1,{"b":null}]}', '{\n  "a": [\n    1,\n    {\n      "b": null\n    }\n  ]\n}'],          // 普通 JSON、嵌套
+  ['{"id":{{id}},"n":"x"}', '{\n  "id": {{id}},\n  "n": "x"\n}'],                                   // 字符串外的占位符不加引号
+  ['{"s":"a {{v}} b","t":"{{v}}"}', '{\n  "s": "a {{v}} b",\n  "t": "{{v}}"\n}'],                   // 字符串内的原样保留
+  ['{"a":{"b":[{{x}},{"c":{{$uuid}}}]}}', '{\n  "a": {\n    "b": [\n      {{x}},\n      {\n        "c": {{$uuid}}\n      }\n    ]\n  }\n}'],
+]) console.assert(formatLoose(src) === want, 'formatLoose', src);
+
 /** JSON 实时校验：输入停顿 300ms 后检查，结果写进 helper 行；只提示，不拦发送。
  *  返回的函数不带参数是"过一会儿查"，传 true 是立刻查并返回是否合法 */
 function jsonLint(ta, helper) {
@@ -1127,8 +1143,9 @@ function textBodyEditor(toolbar) {
         h('button', { class: 'small', 'aria-pressed': String(!tree), onclick: () => setView('edit') }, 'Edit'),
         h('button', { class: 'small', 'aria-pressed': String(tree), title: 'Read-only view — fold and unfold objects and arrays', onclick: () => setView('tree') }, 'Tree')),
       tree ? null : btn('Format JSON', () => {
-        try { current.body = ta.value = JSON.stringify(JSON.parse(ta.value), null, 2); dirty(); helper.className = 'helper'; helper.textContent = ''; ta.removeAttribute('aria-invalid'); paint(); }
-        catch (err) { ta.setAttribute('aria-invalid', 'true'); helper.className = 'helper error'; helper.textContent = `Not valid JSON — ${err.message}. Fix it, then format again.`; }
+        // 不合法时 lint 已经把错误写到 helper 了
+        if (!ta.value.trim() || !lint(true)) return;
+        current.body = ta.value = formatLoose(ta.value); dirty(); paint();
       }));
   }
 
