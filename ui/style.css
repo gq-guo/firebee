@@ -3,7 +3,7 @@
 :root {
   --bg-canvas: #101214; --bg-sidebar: #14171A; --bg-surface: #111417; --bg-popover: #1A1D21;
   --hover: rgba(255,255,255,.035); --active: rgba(255,255,255,.055); --input: rgba(255,255,255,.04);
-  --text: #E8EAEC; --text-2: #A2A8AF; --muted: #6E747B;
+  --text: #E8EAEC; --text-2: #A2A8AF; --muted: #8A9097;
   --border: rgba(255,255,255,.07); --border-strong: rgba(255,255,255,.16); --focus: rgba(160,190,255,.45);
   --primary: #EDEEF0; --primary-fg: #0C0D0F;
   --m-get: oklch(0.76 0.09 155); --m-post: oklch(0.80 0.09 75); --m-put: oklch(0.76 0.08 250); --m-patch: oklch(0.76 0.08 300); --m-delete: oklch(0.72 0.11 25);
@@ -27,7 +27,7 @@
 :root[data-theme="light"] {
   --bg-canvas: #F7F8F9; --bg-sidebar: #F4F5F6; --bg-surface: #FFFFFF; --bg-popover: #FFFFFF;
   --hover: rgba(10,20,30,.035); --active: rgba(10,20,30,.055); --input: rgba(10,20,30,.045);
-  --text: #16181B; --text-2: #50565D; --muted: #80868D;
+  --text: #16181B; --text-2: #50565D; --muted: #62686F;
   --border: rgba(10,20,30,.08); --border-strong: rgba(10,20,30,.2); --focus: rgba(60,110,230,.45);
   --primary: #16181B; --primary-fg: #FFFFFF;
   --m-get: oklch(0.52 0.11 155); --m-post: oklch(0.56 0.11 65); --m-put: oklch(0.52 0.11 250); --m-patch: oklch(0.52 0.11 300); --m-delete: oklch(0.54 0.15 25);
@@ -222,6 +222,14 @@ table.kv td.val .row .muted { overflow: hidden; text-overflow: ellipsis; white-s
 table.kv tr.ghost td.ctl { visibility: hidden; }
 table.kv tr.off td:not(:first-child) { opacity: .5; }
 table.kv .ctl button { width: 24px; height: 24px; padding: 0; color: var(--muted); }
+/* 锁 / 眼睛：h() 建不了 SVG，跟侧栏箭头一样用 mask 画；锁上 = 实心 + 强调色，不只靠形状区分 */
+table.kv .lock::before, table.kv .eye::before { content: ""; display: block; width: 14px; height: 14px; margin: auto; background: currentColor; -webkit-mask: var(--ico) center / contain no-repeat; mask: var(--ico) center / contain no-repeat; }
+table.kv .lock { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='11' x='3' y='11' rx='2'/%3E%3Cpath d='M7 11V7a5 5 0 0 1 9.9-1'/%3E%3C/svg%3E"); }
+table.kv .lock[aria-pressed="true"] { color: var(--accent); --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='11' x='3' y='11' rx='2' fill='black'/%3E%3Cpath d='M7 11V7a5 5 0 0 1 10 0v4'/%3E%3C/svg%3E"); }
+table.kv td.val .peek { display: flex; align-items: center; gap: 4px; }
+table.kv td.val .peek input { flex: 1; min-width: 0; }
+table.kv .eye { flex: none; width: 24px; height: 24px; padding: 0; color: var(--muted); --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E"); }
+table.kv .eye[aria-pressed="true"] { color: var(--text); --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='m3 3 18 18'/%3E%3C/svg%3E"); }
 .kv-add { margin-top: 4px; }
 
 /* ---- sidebar tree ---- */

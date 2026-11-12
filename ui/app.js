@@ -262,9 +262,15 @@ function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = n
       }, 'small').withAttr('title', r.value || ''),
       r.value ? h('span', { class: 'muted' }, r.value) : null);
     // Secret：值进钥匙串不进 JSON，输入框遮罩
-    const secretBtn = !secrets || ghost ? null : btn(r.secret ? '🔒' : '🔓', () => { r.secret = !r.secret; dirty(); rerender(); }, 'small ghost')
+    const secretBtn = !secrets || ghost ? null : btn('', () => { r.secret = !r.secret; dirty(); rerender(); }, 'small ghost lock')
       .withAttr('title', r.secret ? 'Secret — stored in the keychain, masked, never exported. Click to make plain.' : 'Plain — click to make secret')
-      .withAttr('aria-label', 'Toggle secret');
+      .withAttr('aria-label', 'Secret').withAttr('aria-pressed', String(!!r.secret));
+    // 临时查看：只切输入框的 type，不动 r.secret（改它会把值从钥匙串挪进 JSON）；重绘时输入框重建，自动回到遮罩
+    const eye = !secretBtn || !r.secret ? null : btn('', (e) => {
+      const show = val.type === 'password';
+      val.type = show ? 'text' : 'password';
+      e.currentTarget.setAttribute('aria-pressed', String(show)); e.currentTarget.title = show ? 'Hide value' : 'Show value';
+    }, 'small ghost eye').withAttr('title', 'Show value').withAttr('aria-label', 'Show value').withAttr('aria-pressed', 'false');
     const typeBtn = !files || ghost ? null : btn(r.is_file ? 'File' : 'Text', () => {
       r.is_file = !r.is_file; r.value = ''; dirty(); rerender();
     }, 'small ghost').withAttr('aria-label', 'Field type');
@@ -275,7 +281,7 @@ function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = n
         oninput: (e) => { if (ghost) return promote('key', e.target.value); r.key = e.target.value; const l = listFor(r.key); l ? val.setAttribute('list', l) : val.removeAttribute('list'); dirty(); renderTabCounts(); } })),
       files ? h('td', { class: 'ctl type' }, typeBtn) : null,
       secrets ? h('td', { class: 'ctl type' }, secretBtn) : null,
-      h('td', { class: 'val' }, !ghost && r.is_file && files ? fileCell() : val),
+      h('td', { class: 'val' }, !ghost && r.is_file && files ? fileCell() : eye ? h('span', { class: 'peek' }, val, eye) : val),
       h('td', { class: 'ctl' }, ghost ? null : btn('×', () => { rows.splice(i, 1); dirty(); rerender(); renderTabCounts(); }, 'small ghost').withAttr('aria-label', 'Remove row')),
     );
     table.append(tr);
@@ -1840,7 +1846,7 @@ function renderEnvDialog() {
     ),
     h('div', { class: 'vars-head' }, h('span'), h('span', {}, 'Name'), h('span'), h('span', {}, 'Value'), h('span')),
     h('div', { class: 'vars' }, kvTable(env.variables, 'e.g. base_url', 'e.g. https://api.example.com', renderEnvDialog, { secrets: true })),
-    h('div', { class: 'helper' }, '🔒 Secret values are kept in the macOS keychain, masked in the UI, and left out of exports, project folders and history.'),
+    h('div', { class: 'helper' }, 'Locked values are secrets: kept in the macOS keychain, masked here, and left out of exports, project folders and history. The eye shows one temporarily; it stays secret.'),
   );
 }
 
@@ -1967,6 +1973,7 @@ function bind() {
       tabHidden && ['Capture', () => { reqTab = 'capture'; renderRequest(); }],
       testsHidden && ['Tests', () => { reqTab = 'tests'; renderRequest(); }],
       ['Request settings…', () => toggleSettings(true)],
+      ['Cookies…', () => $('#cookies-btn').click()], // 复用 Environments 弹窗底部那个按钮的处理
       ...exportItems(current),
     ]);
   };
