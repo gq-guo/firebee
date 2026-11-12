@@ -170,16 +170,23 @@ function toast(text, { error = false, action = null } = {}) {
   // 一次只显示一个 toast。前一个还带着没用过的 Undo 时不能直接盖掉——
   // 删了 A 再删 B、或者删完 A 又发了个带 capture 的请求，A 就永久没了
   // （删除是乐观的，500ms 后就落盘）。有待撤销动作时一律排队。
-  if (pendingUndo) { toastQueue.push([text, { error, action }]); return; }
+  if (pendingUndo && !error) { toastQueue.push([text, { error, action }]); return; }
+  // 错误例外：排在 Undo 后面要等它消失才看得到。错误立刻显示，被顶下去的 Undo 放回队首，
+  // 错误关掉后带着完整的时长再出来。被顶下去的若是带 Retry 的错误就不留了——
+  // 存盘连续失败时每次都留，队列里会攒出一串一样的
+  if (pendingUndo && !pendingUndo[1].error) toastQueue.unshift(pendingUndo);
   showToast(text, { error, action });
 }
 const toastQueue = [];
-let pendingUndo = null;
+let pendingUndo = null; // 正显示着、按钮还没用过的那个 toast：[text, opts]
+/** 停留多久：按字数算（60ms 一个字符，约 200 词/分钟），短句 3 秒起，12 秒封顶；带按钮的至少 8 秒。
+    错误是意料之外的，用户多半正看着别处，给三倍 */
+const toastMs = (text, error, action) => Math.min(12000, Math.max(action ? 8000 : 3000, text.length * 60)) * (error ? 3 : 1);
 
 function showToast(text, { error = false, action = null } = {}) {
   const el = $('#toast');
   clearTimeout(toastTimer);
-  pendingUndo = action || null;
+  pendingUndo = action ? [text, { error, action }] : null;
   const done = () => {
     el.classList.add('hidden');
     pendingUndo = null;
@@ -192,7 +199,7 @@ function showToast(text, { error = false, action = null } = {}) {
   el.className = 'toast' + (error ? ' error' : '');
   el.onmouseenter = () => clearTimeout(toastTimer);
   el.onmouseleave = () => { toastTimer = setTimeout(done, 3000); };
-  toastTimer = setTimeout(done, action ? 8000 : 3000);
+  toastTimer = setTimeout(done, toastMs(text, error, action));
 }
 function hideToast() { clearTimeout(toastTimer); pendingUndo = null; toastQueue.length = 0; $('#toast').classList.add('hidden'); }
 
