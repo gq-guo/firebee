@@ -28,10 +28,29 @@ function setActiveEnv(id) {
 const pref = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v === '1'; } catch { return d; } };
 let followRedirects = pref('firebee.follow', true);
 let insecure = pref('firebee.insecure', false);
+// 请求超时（秒），1–300。发送时读这个值而不是输入框：框里打到一半或越界的数不会发出去
+const clampTimeout = (v) => Math.min(300, Math.max(1, Math.round(Number(v)) || 30));
+let timeoutSecs = (() => { try { return clampTimeout(localStorage.getItem('firebee.timeout')); } catch { return 30; } })();
 // 网络层设置（代理 / CA / 客户端证书）：一份 JSON 存本机，和 follow / insecure 一起随每次发送传给后端
 const NET_DEFAULT = { proxy: 'system', proxy_url: '', no_proxy: '', ca_path: '', cert_path: '' };
 let net = (() => { try { return { ...NET_DEFAULT, ...JSON.parse(localStorage.getItem('firebee.net') || '{}') }; } catch { return { ...NET_DEFAULT }; } })();
 const saveNet = () => { try { localStorage.setItem('firebee.net', JSON.stringify(net)); } catch { /* private mode */ } };
+/** 这些设置对每个请求生效、跨重启保留，却藏在弹出层里：偏离默认值时在顶栏留标记，关了证书校验另有常驻标签 */
+function renderNetFlags() {
+  const off = [
+    insecure && 'Allow invalid certificates: on',
+    !followRedirects && 'Follow redirects: off',
+    timeoutSecs !== 30 && `Timeout: ${timeoutSecs} s`,
+    net.proxy !== 'system' && `Proxy: ${net.proxy === 'none' ? 'None' : 'Custom'}`,
+    net.ca_path && 'Custom CA',
+    net.cert_path && 'Client certificate',
+  ].filter(Boolean);
+  const b = $('#settings-btn');
+  b.classList.toggle('changed', off.length > 0);
+  b.title = off.length ? `Request settings — changed from defaults:\n${off.join('\n')}` : 'Request settings';
+  b.setAttribute('aria-label', off.length ? `Request settings, ${off.length} changed from defaults` : 'Request settings');
+  $('#tls-off').classList.toggle('hidden', !insecure);
+}
 // 主题：'light' | 'dark' | 'system'。<html data-theme> 永远是解析后的 light / dark
 let theme = (() => { try { return localStorage.getItem('firebee.theme') || 'system'; } catch { return 'system'; } })();
 const lightMq = matchMedia('(prefers-color-scheme: light)');
@@ -88,18 +107,20 @@ function setResponse(rid, r) {
 let jobSeq = 0;
 let missing = [];
 let reqTab = 'params', respTab = 'body', sideTab = 'collections';
-let renaming = null;   // 正在重命名的对象（collection / folder / request）
+let renaming = null;   // 正在重命名的对象（collection / folder / request）；在标签上改名时是 { tab: request }
 let envSel = null;     // env 对话框中选中的环境
 let saveTimer = null;
 let saving = Promise.resolve(); // 已经在写盘的那次保存；更新后重启前要等它写完
 let filter = '';       // 侧栏搜索关键字（匹配集合/文件夹/请求名、URL）
+let searchIdx = -1;    // 搜索框里 ↑/↓ 选中的是第几条可见结果；-1 = 没有高亮
 let respQuery = '';    // 响应区的查询框，跨请求保留：以 $ 开头是 JSONPath 过滤，否则是正文查找
 let bodyQuery = '';    // 请求体的查找框，跨请求保留
 // JSON 请求体的视图：'edit' 文本编辑 / 'tree' 只读可折叠树
 let bodyView = (() => { try { return localStorage.getItem('firebee.bodyView') === 'tree' ? 'tree' : 'edit'; } catch { return 'edit'; } })();
 const showAll = new Set();     // 已点过 Show all 的 request.id
-const selected = new Set();    // 侧栏多选（⌘点击）的请求
-let dragging = null;           // { arr, r } 正在拖动的请求
+const selected = new Set();    // 侧栏多选（⌘点击 / Shift 点击）的请求
+let anchor = null;             // 上次点击的请求：Shift 点击从它选到被点的那一行
+let dragging = null;           // { arr, r, kind } 正在拖动的请求；拖文件夹 / 集合时 kind 是 'folder' / 'collection'，r 是那个容器
 const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘时保持）
 // 搜索时默认全展开，但用户在搜索结果里手动收起的要记住——否则发送请求等任何重绘都会把它们全部弹开。
 // 换了关键字就清空：新结果按新结果展开
@@ -170,16 +191,23 @@ function toast(text, { error = false, action = null } = {}) {
   // 一次只显示一个 toast。前一个还带着没用过的 Undo 时不能直接盖掉——
   // 删了 A 再删 B、或者删完 A 又发了个带 capture 的请求，A 就永久没了
   // （删除是乐观的，500ms 后就落盘）。有待撤销动作时一律排队。
-  if (pendingUndo) { toastQueue.push([text, { error, action }]); return; }
+  if (pendingUndo && !error) { toastQueue.push([text, { error, action }]); return; }
+  // 错误例外：排在 Undo 后面要等它消失才看得到。错误立刻显示，被顶下去的 Undo 放回队首，
+  // 错误关掉后带着完整的时长再出来。被顶下去的若是带 Retry 的错误就不留了——
+  // 存盘连续失败时每次都留，队列里会攒出一串一样的
+  if (pendingUndo && !pendingUndo[1].error) toastQueue.unshift(pendingUndo);
   showToast(text, { error, action });
 }
 const toastQueue = [];
-let pendingUndo = null;
+let pendingUndo = null; // 正显示着、按钮还没用过的那个 toast：[text, opts]
+/** 停留多久：按字数算（60ms 一个字符，约 200 词/分钟），短句 3 秒起，12 秒封顶；带按钮的至少 8 秒。
+    错误是意料之外的，用户多半正看着别处，给三倍 */
+const toastMs = (text, error, action) => Math.min(12000, Math.max(action ? 8000 : 3000, text.length * 60)) * (error ? 3 : 1);
 
 function showToast(text, { error = false, action = null } = {}) {
   const el = $('#toast');
   clearTimeout(toastTimer);
-  pendingUndo = action || null;
+  pendingUndo = action ? [text, { error, action }] : null;
   const done = () => {
     el.classList.add('hidden');
     pendingUndo = null;
@@ -192,11 +220,11 @@ function showToast(text, { error = false, action = null } = {}) {
   el.className = 'toast' + (error ? ' error' : '');
   el.onmouseenter = () => clearTimeout(toastTimer);
   el.onmouseleave = () => { toastTimer = setTimeout(done, 3000); };
-  toastTimer = setTimeout(done, action ? 8000 : 3000);
+  toastTimer = setTimeout(done, toastMs(text, error, action));
 }
 function hideToast() { clearTimeout(toastTimer); pendingUndo = null; toastQueue.length = 0; $('#toast').classList.add('hidden'); }
 
-/** 右键 / ⋯ 菜单：items = [[label, fn, {danger, kbd}], ...]，点击任意处或 Esc 关闭 */
+/** 右键 / ⋯ 菜单：items = [[label, fn, {danger, kbd}], ...]，其中的 '-' 是分隔线；点击任意处或 Esc 关闭 */
 function openMenu(e, items) {
   e.preventDefault(); e.stopPropagation();
   // 这里 stopPropagation 了，document 上关设置弹窗的监听收不到，手动关
@@ -204,15 +232,16 @@ function openMenu(e, items) {
   $('#appearance').classList.add('hidden'); $('#theme-btn').setAttribute('aria-expanded', 'false');
   const menu = $('#menu');
   items = items.filter(Boolean);
-  menu.replaceChildren(...items.map(([label, fn, opt = {}]) =>
+  // '-' 解构出来 label 也是 '-'
+  menu.replaceChildren(...items.map(([label, fn, opt = {}]) => (label === '-' ? h('div', { class: 'menu-sep', role: 'separator' }) :
     h('button', { class: 'menu-item' + (opt.danger ? ' danger-item' : ''), role: 'menuitem',
       onclick: (ev) => { ev.stopPropagation(); menu.classList.add('hidden'); fn(ev); } },
-      label, opt.kbd && h('span', { class: 'kbd' }, opt.kbd))));
+      label, opt.kbd && h('span', { class: 'kbd' }, opt.kbd)))));
   // 鼠标事件在光标处打开；按钮/键盘触发时贴按钮下方并右对齐
   const rect = e.currentTarget?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
   const x = e.clientX || Math.max(8, rect.right - 170), y = e.clientY || rect.bottom + 4;
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - items.length * 30 - 12)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - items.reduce((s, it) => s + (it === '-' ? 9 : 30), 0) - 12)}px`;
   menu.classList.remove('hidden');
   menu.firstElementChild?.focus();
 }
@@ -230,7 +259,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') menu.classList.add('hidden');
   if (!menu.classList.contains('hidden') && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
     e.preventDefault();
-    const items = [...menu.children], i = items.indexOf(document.activeElement);
+    const items = [...menu.querySelectorAll('.menu-item')], i = items.indexOf(document.activeElement); // 跳过分隔线
     items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
   }
 });
@@ -262,9 +291,15 @@ function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = n
       }, 'small').withAttr('title', r.value || ''),
       r.value ? h('span', { class: 'muted' }, r.value) : null);
     // Secret：值进钥匙串不进 JSON，输入框遮罩
-    const secretBtn = !secrets || ghost ? null : btn(r.secret ? '🔒' : '🔓', () => { r.secret = !r.secret; dirty(); rerender(); }, 'small ghost')
+    const secretBtn = !secrets || ghost ? null : btn('', () => { r.secret = !r.secret; dirty(); rerender(); }, 'small ghost lock')
       .withAttr('title', r.secret ? 'Secret — stored in the keychain, masked, never exported. Click to make plain.' : 'Plain — click to make secret')
-      .withAttr('aria-label', 'Toggle secret');
+      .withAttr('aria-label', 'Secret').withAttr('aria-pressed', String(!!r.secret));
+    // 临时查看：只切输入框的 type，不动 r.secret（改它会把值从钥匙串挪进 JSON）；重绘时输入框重建，自动回到遮罩
+    const eye = !secretBtn || !r.secret ? null : btn('', (e) => {
+      const show = val.type === 'password';
+      val.type = show ? 'text' : 'password';
+      e.currentTarget.setAttribute('aria-pressed', String(show)); e.currentTarget.title = show ? 'Hide value' : 'Show value';
+    }, 'small ghost eye').withAttr('title', 'Show value').withAttr('aria-label', 'Show value').withAttr('aria-pressed', 'false');
     const typeBtn = !files || ghost ? null : btn(r.is_file ? 'File' : 'Text', () => {
       r.is_file = !r.is_file; r.value = ''; dirty(); rerender();
     }, 'small ghost').withAttr('aria-label', 'Field type');
@@ -275,7 +310,7 @@ function kvTable(rows, keyHint, valHint, rerender, { keyList = null, valList = n
         oninput: (e) => { if (ghost) return promote('key', e.target.value); r.key = e.target.value; const l = listFor(r.key); l ? val.setAttribute('list', l) : val.removeAttribute('list'); dirty(); renderTabCounts(); } })),
       files ? h('td', { class: 'ctl type' }, typeBtn) : null,
       secrets ? h('td', { class: 'ctl type' }, secretBtn) : null,
-      h('td', { class: 'val' }, !ghost && r.is_file && files ? fileCell() : val),
+      h('td', { class: 'val' }, !ghost && r.is_file && files ? fileCell() : eye ? h('span', { class: 'peek' }, val, eye) : val),
       h('td', { class: 'ctl' }, ghost ? null : btn('×', () => { rows.splice(i, 1); dirty(); rerender(); renderTabCounts(); }, 'small ghost').withAttr('aria-label', 'Remove row')),
     );
     table.append(tr);
@@ -365,12 +400,47 @@ function renderResolved() {
 /** 未解析变量提示：常驻在 Send 左侧的固定槽位，不撑开布局 */
 function renderMissing() {
   const m = $('#missing'), list = unresolvedVars();
+  const armed = list.length > 0 && JSON.stringify(missing) === JSON.stringify(list);
+  // "再点一次才发送"要写在按钮上：只改旁边那行小字，第一次点击看起来就像没反应
+  $('#send').textContent = armed ? 'Send anyway' : 'Send';
+  // Preview 标签下 URL 栏下面那行只为这条提示留着，没有提示就整行收起
+  $('#resolved').classList.toggle('hidden', reqTab === 'preview' && !list.length);
   m.classList.toggle('hidden', list.length === 0);
   if (!list.length) { missing = []; return; }
-  const armed = JSON.stringify(missing) === JSON.stringify(list);
   m.textContent = armed ? 'Send again to send with placeholders as-is' : `${list.join(', ')} not defined${activeEnv() ? ` in ${activeEnv().name}` : ''}`;
   m.title = armed ? '' : `Not defined in the active environment: ${list.join(', ')}`;
 }
+
+/** 变量卡片：点 URL 里的 {{var}} 弹出，看当前值、原地改；没定义的直接定义进当前环境。
+ *  不抢焦点：光标还留在 URL 里，接着打字卡片就收起 */
+function showVarCard(name, anchor) {
+  const card = $('#var-card'), env = activeEnv();
+  const dyn = DYNAMIC_VARS.find(([k]) => k === baseVarName(name));
+  const row = env?.variables.find((v) => v.key === name); // 停用的行也算：定义时启用它，不另加一行重名的
+  const live = row?.enabled ? row : null;
+  const refresh = () => { dirty(); renderUrlMirror(); renderMissing(); };
+  const define = () => {
+    if (row) { row.value = input.value; row.enabled = true; } else env.variables.push({ enabled: true, key: name, value: input.value });
+    refresh(); hideVarCard(); $('#url').focus();
+  };
+  const input = h('input', { type: live?.secret ? 'password' : 'text', value: live ? live.value : '', placeholder: 'Value',
+    'aria-label': `Value of ${name}`, spellcheck: 'false', autocomplete: 'off',
+    oninput: (e) => { if (live) { live.value = e.target.value; refresh(); } },
+    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); live ? hideVarCard() : define(); } } });
+  put(card,
+    h('div', { class: 'row' }, h('code', {}, `{{${name}}}`), h('span', { class: 'spacer' }),
+      h('span', { class: 'muted' }, live ? env.name : dyn ? 'Built-in' : env ? `Not defined in ${env.name}` : 'Not defined')),
+    live ? input
+      : dyn ? h('div', { class: 'muted' }, `${dyn[1]} — a new value on every send.`)
+      : env ? h('div', { class: 'row' }, input, btn('Define', define, 'small primary'))
+      : h('div', { class: 'row' }, h('span', { class: 'muted' }, 'No environment is active.'), h('span', { class: 'spacer' }),
+          btn('Environments…', () => { hideVarCard(); envSel = null; renderEnvDialog(); $('#env-dialog').showModal(); })));
+  card.classList.remove('hidden');
+  const r = anchor.getBoundingClientRect();
+  card.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - card.offsetWidth - 8))}px`;
+  card.style.top = `${r.bottom + 6}px`;
+}
+function hideVarCard() { $('#var-card').classList.add('hidden'); }
 
 // ---------- 顶栏 ----------
 function renderTopbar() {
@@ -401,11 +471,35 @@ function dayLabel(t) {
   return t.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: t.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
 }
 
+/** 历史行的主文字：起过名的显示名字，否则显示路径。开头的 {{var}} 或 scheme+host 每行都一样，
+ *  留着它侧栏那十几个字符就全被占掉，每一行看起来都是 `{{base_ur…` */
+function histLabel(req) {
+  if (req.name && !DEFAULT_NAME.test(req.name)) return req.name;
+  return urlPath(req.url) || req.url || '(no URL)';
+}
+const DEFAULT_NAME = /^(Untitled request|New Request)/i;
+/** URL 去掉开头的 {{var}} 或 scheme+host：`{{base_url}}/v2/orders` → `/v2/orders` */
+const urlPath = (url) => url.replace(/^(\{\{[^}]*\}\}|[a-z][a-z0-9+.-]*:\/\/[^/?#]*)/i, '');
+/** 没起过名字的请求按 URL 路径叫（/v2/orders），只有 host 时叫 host。方法不进名字：名字旁边到处都有方法标签 */
+function autoName(url) {
+  const path = urlPath(url).split(/[?#]/)[0];
+  return (path.length > 1 ? path : url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/)[0]) || 'Untitled request';
+}
+/** 名字是默认的、或者就是上次按 URL 自动起的：这种名字跟着 URL 变，用户自己起的不动 */
+const isAutoName = (r) => DEFAULT_NAME.test(r.name) || r.name === autoName(r.url);
+/** 只换文字不重绘：每敲一个字符重建一次侧栏太贵 */
+function retitle() {
+  current.name = autoName(current.url);
+  document.querySelectorAll(`#side-body .req[data-id="${current.id}"] .name, #tabs .tab.active .tab-name`)
+    .forEach((el) => { el.textContent = current.name; if (el.title) el.title = current.name; });
+}
+
 function emptyState(title, why, action) {
   return h('div', { class: 'empty' }, h('strong', {}, title), h('span', {}, why), action && btn(action[0], action[1], ''));
 }
 
 function renderSidebar() {
+  const focused = focusedRow();
   setTab('side', sideTab);
   const body = $('#side-body');
   body.replaceChildren();
@@ -432,11 +526,14 @@ function renderSidebar() {
       // 新的在前，日期变了就插一行分组标题
       const day = t.toDateString();
       if (day !== lastDay) { lastDay = day; body.append(h('div', { class: 'hist-day' }, dayLabel(t))); }
-      body.append(h('div', { class: 'hist', role: 'button', tabindex: 0, title: `${hist.request.method.toUpperCase()} ${hist.request.url}`,
+      const label = histLabel(hist.request);
+      body.append(h('div', { class: 'hist', role: 'button', tabindex: 0,
+        title: `${label === hist.request.name ? label + '\n' : ''}${hist.request.method.toUpperCase()} ${hist.request.url}`,
         onclick: () => openFromHistory(hist), onkeydown: activate, oncontextmenu: hmenu },
-        h('span', { class: 'muted' }, hhmm), reqTag(hist.request),
+        reqTag(hist.request),
         h('span', { class: hist.status ? `s${Math.floor(hist.status / 100)}` : 's0' }, hist.status ?? 'ERR'),
-        h('span', {}, hist.request.url || '(no URL)'), btn('⋯', hmenu, 'small more').withAttr('aria-label', 'History entry actions')));
+        h('span', { class: 'hist-label' }, label), btn('⋯', hmenu, 'small more').withAttr('aria-label', 'History entry actions'),
+        h('span', { class: 'muted hist-time' }, hhmm)));
     }
     return;
   }
@@ -450,7 +547,10 @@ function renderSidebar() {
   if (pins) body.append(pins);
   if (q() && !shown.length) { body.append(emptyState(`Nothing matches “${filter.trim()}”`, 'Names of collections, folders and requests are searched, and request URLs.')); return; }
   shown.forEach((c) => body.append(containerNode(c, data.collections)));
+  // 重绘把原来聚焦的行换成了新节点：焦点还给同一行，方向键才能接着走
+  if (focused) allRows().filter((el) => el.dataset.id === focused[0])[focused[1]]?.focus();
   body.querySelector('input.rename')?.focus();
+  body.querySelector('input.rename')?.select(); // 全选：直接打字就是换名字
 }
 
 function addCollection() { data.collections.push(newContainer(`Collection ${data.collections.length + 1}`)); sideTab = 'collections'; dirty(); renderSidebar(); }
@@ -466,14 +566,64 @@ function filterView(c) {
   return { folders, requests, show: folders.length + requests.length > 0 };
 }
 
+/** 搜索框键盘导航能走到的行，按 DOM 顺序。收起的容器里的行还在 DOM 里，要排除；
+ *  有关键字时 Pinned 区不算——它不受过滤，排在最前会抢走"第一条匹配" */
+function searchRows() {
+  return [...$('#side-body').querySelectorAll('.req, .hist')]
+    .filter((el) => !el.closest('details:not([open])') && !(q() && el.closest('.pinned')));
+}
+/** 给第 searchIdx 条结果加高亮。做成渲染之后的一步而不是写进行模板：
+ *  侧栏任何重绘（发送完成、打开请求）都会重建这些行，由 bind() 里的 MutationObserver 补回来 */
+function markSearchHit(scroll) {
+  $('#side-body').querySelector('.search-hit')?.classList.remove('search-hit');
+  if (searchIdx < 0 || document.activeElement !== $('#search')) return null;
+  const rows = searchRows();
+  const row = rows[searchIdx = Math.min(searchIdx, rows.length - 1)];
+  row?.classList.add('search-hit');
+  if (scroll && row) {
+    // Pinned 区吸顶，往上滚时会盖住刚滚进来的行，给它让出高度
+    row.style.scrollMarginTop = `${row.closest('.pinned') ? 0 : $('#side-body .pinned')?.offsetHeight || 0}px`;
+    row.scrollIntoView({ block: 'nearest' });
+  }
+  return row;
+}
+
 /** Enter / Space 触发点击（给 role=button 的 div 用） */
 function activate(e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); } }
 
-/** 名称：正在重命名则显示输入框（Enter 提交 / Esc 取消 / 失焦提交）；双击也可重命名 */
-function nameNode(obj) {
-  if (renaming !== obj) return h('span', { class: 'name', title: obj.name, ondblclick: startRename(obj) }, obj.name);
+/** 树里的行（请求行 + 集合 / 文件夹标题），按显示顺序 */
+const allRows = () => [...$('#side-body').querySelectorAll('summary, .req')];
+/** 其中看得见的：收起的 details 里的行不算 */
+const treeRows = () => allRows().filter((el) => !(el.matches('summary') ? el.parentElement.parentElement : el).closest('details:not([open])'));
+/** 重绘前记下焦点在树里的哪一行：[id, 同 id 的第几行]——置顶的请求在 Pinned 区和树里各有一行 */
+function focusedRow() {
+  const row = document.activeElement?.closest('#side-body summary, #side-body .req');
+  return row && [row.dataset.id, allRows().filter((el) => el.dataset.id === row.dataset.id).indexOf(row)];
+}
+/** 树的键盘操作：↑ / ↓ 在可见行之间移动，→ / ← 展开 / 收起，F2 重命名；Enter 打开请求是行自己的 activate */
+$('#side-body').addEventListener('keydown', (e) => {
+  const row = e.target;
+  // 只管焦点正好在行上的时候：⋯ 按钮和重命名输入框里的按键归它们自己
+  if (!row.matches('summary, .req') || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  const box = row.matches('summary') ? row.parentElement : null;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const rows = treeRows();
+    rows[rows.indexOf(row) + (e.key === 'ArrowDown' ? 1 : -1)]?.focus();
+  } else if (e.key === 'ArrowRight' && box) box.open = true;
+  else if (e.key === 'ArrowLeft' && box) box.open = false;
+  // 重命名的对象闭包在名字的双击处理里（startRename），借它触发，不另建 行 → 对象 的映射
+  else if (e.key === 'F2') row.querySelector('.name')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  else return;
+  e.preventDefault();
+});
+
+/** 名称：正在重命名则显示输入框（Enter 提交 / Esc 取消 / 失焦提交）；双击也可重命名。
+ *  tab=true 是标签上的名字：同一个请求在侧栏和标签上各有一个，输入框只出在发起重命名的那一处 */
+function nameNode(obj, tab = false) {
+  const on = () => (tab ? renaming?.tab === obj : renaming === obj);
+  if (!on()) return h('span', { class: tab ? 'tab-name' : 'name', title: tab ? null : obj.name, ondblclick: startRename(obj, tab) }, obj.name);
   const commit = (e) => {
-    if (renaming !== obj) return; // Enter 后 blur 会再触发一次
+    if (!on()) return; // Enter 后 blur 会再触发一次
     const v = e.target.value.trim();
     if (v) { obj.name = v; dirty(); }
     renaming = null; renderSidebar(); renderRequestHeader(); renderTabs();
@@ -484,11 +634,11 @@ function nameNode(obj) {
     onkeydown: (e) => {
       e.stopPropagation();
       if (e.key === 'Enter') commit(e);
-      else if (e.key === 'Escape') { renaming = null; renderSidebar(); }
+      else if (e.key === 'Escape') { renaming = null; renderSidebar(); renderTabs(); }
     } });
 }
 
-const startRename = (obj) => (e) => { e.stopPropagation(); renaming = obj; renderSidebar(); };
+const startRename = (obj, tab = false) => (e) => { e.stopPropagation(); renaming = tab ? { tab: obj } : obj; renderSidebar(); renderTabs(); };
 /** 乐观删除 + Undo toast，不弹确认框 */
 const remove = (arr, obj, what) => () => {
   const idx = arr.indexOf(obj);
@@ -502,6 +652,21 @@ const remove = (arr, obj, what) => () => {
   }] });
 };
 
+/** 集合 / 文件夹的副本：容器、子文件夹、请求全部换新 id。
+ *  不带 project_dir（两个集合不能写同一个目录），请求不置顶（否则 Pinned 区凭空多出一份） */
+function cloneContainer(c) {
+  const d = structuredClone(c);
+  const fresh = (n) => {
+    n.id = crypto.randomUUID();
+    n.requests.forEach((r) => { r.id = crypto.randomUUID(); r.pinned = false; });
+    n.folders.forEach(fresh);
+  };
+  fresh(d);
+  delete d.project_dir;
+  d.name += ' copy';
+  return d;
+}
+
 /** 集合或文件夹节点（结构相同：name / folders / requests） */
 function containerNode(c, parentArr, isFolder = false) {
   const menu = (e) => openMenu(e, [
@@ -514,24 +679,41 @@ function containerNode(c, parentArr, isFolder = false) {
       if (filter) { filter = $('#search').value = ''; searchCollapsed.clear(); }
       renaming = f; dirty(); renderSidebar();
     }],
+    '-',
     ['Shared headers & auth…', () => openSettings(c, isFolder)],
-    ['Import from curl…', () => openImport(c)],
     ['Run ' + (isFolder ? 'folder' : 'collection') + '…', () => runCollection(c)],
+    '-',
+    ['Import from curl…', () => openImport(c)],
     !isFolder && ['Export collection…', () => exportCollection(c)],
     !isFolder && (c.project_dir
       ? ['Unlink project folder', () => { delete c.project_dir; dirty(); renderSidebar(); toast(`“${c.name}” is no longer synced to a folder. The files there are untouched.`); }]
       : ['Save as project folder…', () => linkProject(c)]),
+    '-',
     ['Rename', startRename(c)],
+    ['Duplicate', () => { parentArr.splice(parentArr.indexOf(c) + 1, 0, cloneContainer(c)); dirty(); renderSidebar(); }],
+    '-',
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
   const view = filterView(c);
-  // 拖到容器标题上 → 追加到该容器末尾
-  const dropOnContainer = (e) => { e.preventDefault(); e.currentTarget.classList.remove('dropping'); collapsed.delete(c.id); searchCollapsed.delete(c.id); moveDragged(c.requests, c.requests.length); };
+  // 拖到容器标题上：请求 → 追加到该容器末尾；文件夹 / 集合 → 看光标位置（boxDrop）
+  const dropAt = (e) => (dragging?.kind ? boxDrop(e, c, isFolder) : dragging && 'into');
+  const dropOnContainer = (e) => {
+    const at = dropAt(e);
+    e.preventDefault(); delete e.currentTarget.dataset.drop;
+    if (!at) return;
+    if (at !== 'into') return moveDragged(parentArr, parentArr.indexOf(c) + (at === 'after' ? 1 : 0));
+    collapsed.delete(c.id); searchCollapsed.delete(c.id);
+    const into = dragging.kind ? c.folders : c.requests;
+    moveDragged(into, into.length);
+  };
   const set = q() ? searchCollapsed : collapsed;
   return h('details', { open: !set.has(c.id), ontoggle: (e) => { e.target.open ? set.delete(c.id) : set.add(c.id); } },
-    h('summary', { oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
-      ondragover: (e) => { if (dragging) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
-      ondragleave: (e) => e.currentTarget.classList.remove('dropping'), ondrop: dropOnContainer },
+    h('summary', { 'data-id': c.id, oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
+      draggable: renaming === c ? null : 'true', // 重命名时让出鼠标：输入框里要能拖选文字
+      ondragstart: (e) => { dragging = { arr: parentArr, r: c, kind: isFolder ? 'folder' : 'collection' }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', c.name); },
+      ondragend: endDrag,
+      ondragover: (e) => { const at = dropAt(e); if (at) { e.preventDefault(); e.currentTarget.dataset.drop = at; } else delete e.currentTarget.dataset.drop; },
+      ondragleave: (e) => { delete e.currentTarget.dataset.drop; }, ondrop: dropOnContainer },
       nameNode(c), c.project_dir ? h('span', { class: 'proj', title: `Synced to ${c.project_dir}` }, '⎇') : null, btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
     !q() && !c.folders.length && !c.requests.length && h('div', { class: 'empty-hint' }, 'Empty — right-click to add a request, or paste a curl into the URL field'),
     ...view.folders.map((f) => containerNode(f, c.folders, true)),
@@ -553,17 +735,34 @@ function requestRow(r, arr, drag = true) {
   const drops = drag ? {
     draggable: 'true',
     ondragstart: (e) => { dragging = { arr, r }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', r.name); },
-    ondragend: () => { dragging = null; document.querySelectorAll('.dropping').forEach((x) => x.classList.remove('dropping')); },
-    ondragover: (e) => { if (dragging && dragging.r !== r) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
+    ondragend: endDrag,
+    ondragover: (e) => { if (dragging && !dragging.kind && dragging.r !== r) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
     ondragleave: (e) => e.currentTarget.classList.remove('dropping'),
     ondrop: (e) => { e.preventDefault(); e.stopPropagation(); moveDragged(arr, arr.indexOf(r)); },
   } : {};
-  return h('div', { class: 'req' + (r === current ? ' active' : '') + (selected.has(r) ? ' sel' : ''), role: 'button', tabindex: 0,
+  return h('div', { class: 'req' + (r === current ? ' active' : '') + (selected.has(r) ? ' sel' : ''), role: 'button', tabindex: 0, 'data-id': r.id,
     'aria-current': r === current || undefined, 'aria-selected': selected.has(r) || undefined, ...drops,
-    onclick: (e) => { if (e.metaKey || e.ctrlKey) { selected.has(r) ? selected.delete(r) : selected.add(r); renderSidebar(); } else { selected.clear(); selectRequest(r); } },
+    onmousedown: (e) => { if (e.shiftKey) e.preventDefault(); }, // 不然 Shift 点击会把两行之间的文字选中
+    onclick: (e) => {
+      if (e.shiftKey && selectRange(e.currentTarget)) return;
+      anchor = r;
+      if (e.metaKey || e.ctrlKey) { selected.has(r) ? selected.delete(r) : selected.add(r); renderSidebar(); } else { selected.clear(); selectRequest(r); }
+    },
     onkeydown: activate, oncontextmenu: rmenu },
     reqTag(r), nameNode(r), pendings.has(r.id) && h('span', { class: 'spinner', title: 'Sending…' }),
     btn('⋯', rmenu, 'small more').withAttr('aria-label', 'Request actions'));
+}
+
+/** Shift 点击：选中上次点击的行到这一行之间所有可见的请求。起点不在了（没点过、被收起或过滤掉）返回 false，按普通点击处理。
+ *  只在被点的那个区里找（Pinned 区或集合树）：置顶的请求两边各有一行，混着算 id 不唯一 */
+function selectRange(row) {
+  const rows = treeRows().filter((el) => el.matches('.req') && !el.closest('.pinned') === !row.closest('.pinned'));
+  const a = rows.findIndex((el) => el.dataset.id === anchor?.id), b = rows.indexOf(row);
+  if (a < 0) return false;
+  selected.clear();
+  rows.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((el) => selected.add(findById(el.dataset.id)));
+  renderSidebar();
+  return true;
 }
 
 /** 集合树里的所有请求（深度优先） */
@@ -584,19 +783,38 @@ function pinnedNode() {
 }
 Element.prototype.withAttr = function (k, v) { if (v !== undefined) this.setAttribute(k, v); return this; };
 
-/** 把正在拖动的请求放到 targetArr 的 index 之前（同数组内移动会先移除再插入） */
+const endDrag = () => {
+  dragging = null;
+  document.querySelectorAll('.dropping, [data-drop]').forEach((x) => { x.classList.remove('dropping'); delete x.dataset.drop; });
+};
+/** 拖文件夹 / 集合到容器 c 的标题上时落在哪：'before' / 'after' 是排到它前后，'into' 是放进它里面，不能放返回 null。
+ *  集合只在顶层排序（上半前、下半后）；文件夹拖到集合上是放进去，拖到文件夹上时上三分之一排到它前面、其余放进去 */
+function boxDrop(e, c, isFolder) {
+  const { r, kind } = dragging;
+  const inside = (box) => box.folders.some((f) => f === c || inside(f));
+  if (r === c || inside(r)) return null; // 不能拖进自己或自己的后代
+  const rect = e.currentTarget.getBoundingClientRect(), y = (e.clientY - rect.top) / rect.height;
+  if (kind === 'collection') return isFolder ? null : y < 0.5 ? 'before' : 'after';
+  return isFolder && y < 0.35 ? 'before' : 'into';
+}
+
+/** 把正在拖动的请求 / 文件夹 / 集合放到 targetArr 的 index 之前 */
 function moveDragged(targetArr, index) {
   if (!dragging) return;
-  const { arr, r } = dragging;
+  const { arr, r, kind } = dragging;
   dragging = null;
-  const from = arr.indexOf(r);
-  if (from < 0) return;
-  arr.splice(from, 1);
-  if (arr === targetArr && from < index) index -= 1;
-  targetArr.splice(index, 0, r);
+  if (!arr.includes(r)) return;
+  // 拖的是多选里的一行：选中的请求一起走，保持它们在侧栏里的先后顺序（文件夹排在请求前面，和 allRequests 的顺序不同）
+  const many = !kind && selected.size > 1 && selected.has(r);
+  const shown = (nodes) => nodes.flatMap((n) => [...shown(n.folders), ...n.requests]);
+  const moving = many ? shown(data.collections).filter((x) => selected.has(x)) : [r];
+  // 落点记成"插在谁前面"再移除：一次移走好几个，下标会被挤乱
+  const before = targetArr.slice(index).find((x) => !moving.includes(x));
+  for (const x of moving) { const from = many ? locateArr(x) : arr; from.splice(from.indexOf(x), 1); }
+  targetArr.splice(before ? targetArr.indexOf(before) : targetArr.length, 0, ...moving);
   dirty(); renderSidebar();
   // 换了父容器 = 换了继承链：面包屑、继承的头 / auth、未解析变量统计全都要重算
-  if (r === current) { renderRequestHeader(); renderRequest(); renderMissing(); }
+  if (kind || moving.includes(current)) { renderRequestHeader(); renderRequest(); renderMissing(); }
 }
 
 /** 当前请求所在的 requests 数组；不在集合里返回 null */
@@ -625,7 +843,7 @@ function deleteSelected() {
 
 /** 选中请求：来自集合时直接引用（编辑即写回集合并保存），来自历史时为副本。 */
 function selectRequest(r) {
-  current = r; missing = []; flash(null);
+  current = r; missing = []; flash(null); hideVarCard();
   if (!openTabs.includes(r.id)) openTabs.push(r.id);
   saveTabs();
   renderTabs(); renderRequest(); renderResponse(); renderSidebar();
@@ -643,7 +861,7 @@ let openTabs = (() => {
 const saveTabs = () => { try { localStorage.setItem('firebee.tabs', JSON.stringify(openTabs)); } catch { /* private mode */ } };
 
 /** 关掉一个标签；关的是当前标签时，焦点给右边的、没有就给左边的。
- *  全关完也没关系：标签条自己隐藏，请求面板继续显示当前请求（标签只是快捷入口）。 */
+ *  最后一个关不掉：renderTabs 会把当前请求的标签补回来。 */
 function closeTab(id) {
   const i = openTabs.indexOf(id);
   if (i < 0) return;
@@ -663,18 +881,22 @@ function closeTabsExcept(keep, focusId) {
 }
 
 function renderTabs() {
+  // 面板上显示着的请求至少留一个标签：标签是唯一能看到、改到请求名的地方
+  if (!openTabs.length) { openTabs = [current.id]; saveTabs(); }
   // 集合里已经没有的请求（被删了）顺手清掉
   const live = openTabs.map((id) => [id, findById(id)]).filter(([, r]) => r);
   if (live.length !== openTabs.length) { openTabs = live.map(([id]) => id); saveTabs(); }
   const bar = $('#tabs');
+  const only = live.length < 2;
   put(bar, ...live.map(([id, r]) => {
     const on = id === current.id;
     const i = openTabs.indexOf(id);
     const tmenu = (e) => openMenu(e, [
-      ['Close', () => closeTab(id), { kbd: `${MOD}W` }],
-      live.length > 1 && ['Close others', () => closeTabsExcept([id], id)],
+      !only && ['Close', () => closeTab(id), { kbd: `${MOD}W` }],
+      !only && ['Close others', () => closeTabsExcept([id], id)],
       i < live.length - 1 && ['Close to the right', () => closeTabsExcept(openTabs.slice(0, i + 1), id)],
-      ['Close all', () => closeTabsExcept([])],
+      !only && ['Close all', () => closeTabsExcept([])],
+      ['Rename', startRename(r, true)],
     ]);
     return h('div', { class: 'tab' + (on ? ' active' : ''), role: 'tab', tabindex: 0, 'aria-selected': on ? 'true' : 'false',
       title: [...(locate(r) || []), r.name].join(' / '),
@@ -682,11 +904,13 @@ function renderTabs() {
       onkeydown: activate,
       oncontextmenu: tmenu,
       onauxclick: (e) => { if (e.button === 1) { e.preventDefault(); closeTab(id); } } },
-      reqTag(r), h('span', { class: 'tab-name' }, r.name),
+      reqTag(r), nameNode(r, true),
       pendings.has(id) ? h('span', { class: 'spinner' }) : null,
-      btn('×', (e) => { e.stopPropagation(); closeTab(id); }, 'small more close')
+      !only && btn('×', (e) => { e.stopPropagation(); closeTab(id); }, 'small more close')
         .withAttr('aria-label', `Close ${r.name}`));
   }));
+  bar.querySelector('input.rename')?.focus();
+  bar.querySelector('input.rename')?.select();
   scrollTabIntoView(bar);
 }
 
@@ -783,14 +1007,43 @@ function ensureCurrent() {
   const r = firstRequest();
   r ? selectRequest(r) : createRequest();
 }
-/** 历史：原请求还在就直接打开它，否则按快照在首个集合里新建一个 */
+// 发出去的内容由这些字段决定；name / pinned / captures / asserts 改了不算"发送后改过"。
+// 值为 false 的键不参与比较：is_file、in_query 这类存盘时会被省掉，重启前后的同一份请求不能因此算作不同
+const SENT_FIELDS = ['method', 'url', 'params', 'headers', 'body_type', 'body', 'form', 'auth', 'graphql_variables'];
+const sentJson = (r) => JSON.stringify(SENT_FIELDS.map((k) => r[k] || ''), (_, v) => (v === false ? undefined : v));
+let histNotice = null; // 正挂着的"发送后改过"提示的 action
+/** 历史：原请求还在就打开它现在的版本，否则按快照恢复进首个集合。打开的不是用户以为的那份时用 toast 说清楚 */
 function openFromHistory(hist) {
-  const found = findById(hist.request.id);
+  const found = findById(hist.request.id), prev = current;
   const r = found || structuredClone(hist.request);
-  if (!found) { homeCollection().requests.push(r); dirty(); }
+  const home = found ? null : homeCollection();
+  if (!found) { home.requests.push(r); dirty(); }
   // 当时的响应还留着就放回响应面板，不用重发（重发 POST 是有副作用的）
   if (hist.response) setResponse(r.id, { ok: { ...hist.response, body_base64: null, from_history: hist.timestamp } });
   selectRequest(r);
+  if (!found) {
+    toast(`Restored deleted request “${r.name}” to “${home.name}”.`, { action: ['Undo', () => {
+      const i = home.requests.indexOf(r);
+      if (i < 0) return; // 这几秒里已经被挪走或删掉了
+      home.requests.splice(i, 1); dirty();
+      current === r && locateArr(prev) ? selectRequest(prev) : (ensureCurrent(), renderSidebar(), renderRequestHeader(), renderTabs());
+    }] });
+  } else if (sentJson(found) !== sentJson(hist.request)) {
+    const action = ['Restore sent version', () => {
+      if (!locateArr(found)) return;
+      const before = structuredClone(found), { id, name, pinned, captures, asserts } = found;
+      Object.assign(found, structuredClone(hist.request), { id, name, pinned, captures, asserts });
+      dirty(); selectRequest(found);
+      toast(`Restored “${name}” to the version that was sent.`, { action: ['Undo', () => {
+        if (!locateArr(found)) return;
+        Object.assign(found, before); dirty(); selectRequest(found);
+      }] });
+    }];
+    // 这条只是提示，不是待撤销的操作：连着点几条历史时直接换掉上一条，
+    // 走 toast() 排队的话每条要等前一条的 8 秒，轮到时用户早就在看别的请求了
+    (pendingUndo?.[1].action === histNotice ? showToast : toast)(`“${found.name}” has changed since this was sent.`, { action });
+    histNotice = action;
+  }
 }
 function findById(id, nodes = data.collections) {
   for (const n of nodes) { const r = n.requests.find((x) => x.id === id); if (r) return r; const d = findById(id, n.folders); if (d) return d; }
@@ -809,12 +1062,20 @@ async function importCurl(text, onError, into = null) {
   try {
     const r = await invoke('import_curl', { text });
     if (into) { into.requests.push(r); collapsed.delete(into.id); searchCollapsed.delete(into.id); dirty(); selectRequest(r); return true; }
-    const keepName = !/^(Untitled request|New Request)/i.test(current.name);
+    const keepName = !isAutoName(current);
+    const target = current, before = structuredClone(current);
     // import_curl 返回的是全新的 Request，captures / pinned 是空的——
   // 直接 assign 会把用户配好的提取规则和置顶状态静默抹掉
   Object.assign(current, r, { id: current.id, name: keepName ? current.name : r.name,
     captures: current.captures || [], pinned: current.pinned });
     dirty(); selectRequest(current);
+    // 整个请求被覆盖，手滑粘错就全没了，给个撤销。恢复要原地写回：
+    // target 就是集合里那个对象，换成新对象会和集合、打开的标签脱钩
+    toast('Replaced this request with the pasted curl.', { action: ['Undo', () => {
+      for (const k of Object.keys(target)) delete target[k];
+      Object.assign(target, before); dirty();
+      if (current === target) selectRequest(target); else { renderSidebar(); renderTabs(); }
+    }] });
     return true;
   } catch (e) { onError(String(e)); return false; }
 }
@@ -828,19 +1089,35 @@ function openImport(into = null) {
 
 /** 集合导出为 Firebee JSON 文件 */
 /** Runner：按顺序发送容器里的所有请求（含子文件夹），Capture 传给后面的，Tests 决定 PASS/FAIL */
-let runAbort = false, running = false;
+let runAbort = false, running = false, runKept = false;
+/** 左下角的状态条：关掉弹窗不停运行，运行中 / 跑完后都从这里回到结果；跑完才能手动关掉 */
+function renderRunStatus() {
+  $('#run-status').classList.toggle('hidden', !runKept || $('#run-dialog').open);
+  $('#run-dismiss').classList.toggle('hidden', running);
+}
 async function runCollection(container) {
-  if (running) { toast('A run is already in progress — stop it first.'); return; }
+  // 上一次运行可能正藏在状态条后面：把弹窗拿出来，Stop 才够得着
+  if (running) { toast('A run is already in progress — stop it first.'); $('#run-dialog').showModal(); renderRunStatus(); return; }
   const flat = [];
   (function walk(n, path) { for (const r of n.requests) flat.push({ r, path: path ? `${path}/${r.name}` : r.name }); for (const f of n.folders) walk(f, path ? `${path}/${f.name}` : f.name); })(container, '');
   if (!flat.length) { toast('Nothing to run — the container is empty.'); return; }
   const dlg = $('#run-dialog'), list = $('#run-list'), summary = $('#run-summary');
   $('#run-title').textContent = `Run “${container.name}”`;
-  runAbort = false; running = true; $('#run-stop').classList.remove('hidden');
-  const rows = flat.map(({ path }) => h('div', { class: 'run-row' }, h('span', { class: 'st muted' }, '·'), h('span', { class: 'name' }, path), h('span', { class: 'meta muted' }, '')));
+  runAbort = false; running = true; runKept = true; $('#run-stop').classList.remove('hidden');
+  // 响应已经用 setResponse 存好，点一行就是打开那个请求；运行期间请求可能被删，按 id 重新找
+  const openRow = (r) => { dlg.close(); const live = findById(r.id); live ? selectRequest(live) : toast('That request no longer exists.'); };
+  const rows = flat.map(({ r, path }) => h('div', { class: 'run-row', role: 'button', tabindex: 0, title: 'Open this request', onclick: () => openRow(r), onkeydown: activate },
+    h('span', { class: 'st muted' }, '·'), h('span', { class: 'name' }, path), h('span', { class: 'meta muted' }, '')));
   put(list, ...rows); summary.textContent = `0 / ${flat.length}`; dlg.showModal();
   const env = activeEnv();
   let pass = 0, fail = 0;
+  const status = () => {
+    $('#run-reopen').textContent = `${running ? 'Running' : 'Ran'} “${container.name}” · ${pass + fail} / ${flat.length}`
+      + (fail ? ` · ${fail} failed` : '') + (!running && runAbort ? ' · stopped' : '');
+    $('#run-status').classList.toggle('failed', fail > 0);
+    renderRunStatus();
+  };
+  status();
   for (let i = 0; i < flat.length; i++) {
     if (runAbort) break;
     const { r, path } = flat[i], row = rows[i];
@@ -850,7 +1127,7 @@ async function runCollection(container) {
     let ok, meta;
     try {
       const dto = await invoke('send_request', { job_id: ++jobSeq, request: req, env: activeEnv(),
-        options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
+        options: { timeout_secs: timeoutSecs, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
       const asserts = await runAsserts(req, dto);
       ok = asserts ? asserts.every((a) => a.ok) : dto.status < 400;
       const cap = dto.status < 300 ? runCaptures(req, dto, env) : null;
@@ -864,11 +1141,15 @@ async function runCollection(container) {
     row.firstChild.textContent = ok ? '✓' : '✗'; row.firstChild.className = 'st ' + (ok ? 'ok' : 'bad');
     row.querySelector('.meta').textContent = meta; row.classList.add(ok ? 'pass' : 'fail');
     summary.textContent = `${pass + fail} / ${flat.length} · ${pass} passed${fail ? ` · ${fail} failed` : ''}`;
+    status();
   }
   $('#run-stop').classList.add('hidden'); running = false;
   if (runAbort) summary.textContent += ' · stopped';
+  status();
   if (current && responses.has(current.id)) renderResponse();
-  renderRequest(); renderSidebar();
+  // 运行可能在后台结束：用户正在请求编辑区里打字时不重建它，免得抢走焦点和光标
+  if (!$('#req-body').contains(document.activeElement)) renderRequest();
+  renderSidebar();
 }
 
 /** 项目目录：集合与目录双向同步（见 core/project.rs），目录可以进 git */
@@ -974,11 +1255,15 @@ function renderTabCounts() {
   });
 }
 
+/** 标签行窄窗口下可横向滚动：从 ⋯ 菜单打开的 Capture / Tests、面板变窄之后，当前标签都可能落在可视区外 */
+function revealReqTab() { document.querySelector('#req-tabs .active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+
 function renderRequest() {
   setTab('req', reqTab);
-  // Preview 里已经有完整的最终 URL，URL 栏下那行就不重复显示了
-  $('#resolved').classList.toggle('hidden', reqTab === 'preview');
+  // Preview 里已经有完整的最终 URL，URL 栏下那行就不重复显示了——但未定义变量的提示要留着（见 renderMissing）
+  $('#resolved').classList.toggle('preview', reqTab === 'preview');
   renderRequestHeader();
+  revealReqTab();
   const body = $('#req-body');
   body.replaceChildren();
   if (reqTab === 'params') body.append(kvTable(current.params, 'Key', 'Value', renderRequest));
@@ -1011,18 +1296,52 @@ function radios(name, options, value, onchange) {
     h('label', {}, h('input', { type: 'radio', name, value: v, checked: v === value, onchange: () => onchange(v) }), label)));
 }
 
+/** 代码 textarea 的按键：Tab 缩进 2 空格（选区跨行就整体缩进）、Shift+Tab 反缩进、Enter 沿用当前行的缩进。
+ *  Esc 之后紧跟的那次 Tab 不拦，照常移走焦点 —— 否则只用键盘的人出不去。
+ *  {{ 补全列表开着时 Enter / Tab 在捕获阶段就被 acBind 吃掉，到不了这里 */
+let tabOut = null;
+function codeKeys(e) {
+  const ta = e.target, leave = tabOut === ta;
+  tabOut = e.key === 'Escape' ? ta : null;
+  // keyCode 229：WebKit 里结束输入法组合的那次 Enter，isComposing 已经是 false
+  if (e.isComposing || e.keyCode === 229 || e.metaKey || e.ctrlKey || e.altKey) return;
+  if ((e.key !== 'Tab' || leave) && e.key !== 'Enter') return;
+  e.preventDefault();
+  const v = ta.value, s = ta.selectionStart, end = ta.selectionEnd, multi = v.slice(s, end).includes('\n');
+  const ls = v.lastIndexOf('\n', s - 1) + 1; // 选区第一行的行首
+  // execCommand 而不是直接改 value：保住原生撤销栈，也照常触发 input
+  const type = (text) => document.execCommand(text ? 'insertText' : 'delete', false, text)
+    || (ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, 'end'), ta.dispatchEvent(new Event('input', { bubbles: true })));
+  if (e.key === 'Enter') return type('\n' + /^[ \t]*/.exec(v.slice(ls, s))[0]);
+  if (!e.shiftKey && !multi) return type('  ');
+  // 选区停在某一行行首时，那一行不算选中
+  let le = v.indexOf('\n', multi && v[end - 1] === '\n' ? end - 1 : end);
+  if (le < 0) le = v.length;
+  const block = v.slice(ls, le);
+  const out = e.shiftKey ? block.replace(/^(?: {1,2}|\t)/gm, '') : block.replace(/^(?=.)/gm, '  ');
+  if (out === block) return;
+  ta.setSelectionRange(ls, le);
+  type(out);
+  const cut = block.length - out.length; // 单行反缩进：光标跟着往回退，不越过行首
+  if (multi) ta.setSelectionRange(ls, ls + out.length);
+  else ta.setSelectionRange(Math.max(ls, s - cut), Math.max(ls, end - cut));
+}
+const CODE_TA = { onkeydown: codeKeys, 'aria-description': 'Tab indents. Press Escape, then Tab, to move focus out.' };
+
 /** GraphQL：上面 query，下面 variables（JSON，可格式化） */
 function graphqlEditor() {
   const helper = h('div', { class: 'helper' });
-  const query = h('textarea', { spellcheck: 'false', 'aria-label': 'GraphQL query', placeholder: 'query {\n  viewer { id }\n}',
+  const query = h('textarea', { ...CODE_TA, spellcheck: 'false', 'aria-label': 'GraphQL query', placeholder: 'query {\n  viewer { id }\n}',
     oninput: (e) => { current.body = e.target.value; dirty(); renderTabCounts(); } }, current.body);
-  const vars = h('textarea', { class: 'gql-vars', spellcheck: 'false', 'aria-label': 'GraphQL variables', placeholder: '{ "id": 1 }',
-    oninput: (e) => { current.graphql_variables = e.target.value; vars.removeAttribute('aria-invalid'); helper.className = 'helper'; helper.textContent = ''; dirty(); } }, current.graphql_variables || '');
+  const vars = h('textarea', { ...CODE_TA, class: 'gql-vars', spellcheck: 'false', 'aria-label': 'GraphQL variables', placeholder: '{ "id": 1 }',
+    oninput: (e) => { current.graphql_variables = e.target.value; lint(); dirty(); } }, current.graphql_variables || '');
+  const lint = jsonLint(vars, helper);
+  lint(true);
   return h('div', { class: 'fill' }, h('div', { class: 'row' }, h('strong', {}, 'Query')), query,
     h('div', { class: 'row' }, h('strong', {}, 'Variables'), h('span', { class: 'muted' }, 'JSON'), h('span', { class: 'spacer' }), btn('Format JSON', () => {
-      if (!vars.value.trim()) return;
-      try { current.graphql_variables = vars.value = JSON.stringify(JSON.parse(vars.value), null, 2); dirty(); helper.className = 'helper'; helper.textContent = ''; vars.removeAttribute('aria-invalid'); }
-      catch (err) { vars.setAttribute('aria-invalid', 'true'); helper.className = 'helper error'; helper.textContent = `Not valid JSON — ${err.message}. Fix it, then format again.`; }
+      // 不合法时 lint 已经把错误写到 helper 了
+      if (!vars.value.trim() || !lint(true)) return;
+      current.graphql_variables = vars.value = formatLoose(vars.value); dirty();
     })), vars, helper);
 }
 
@@ -1051,11 +1370,46 @@ function bodyEditor() {
 }
 
 /** JSON.parse，但容忍字符串外面的 {{var}}（"id": {{id}} 这种写法很常见）：当成字符串显示 */
+const LOOSE_RE = /"(?:\\.|[^"\\])*"|\{\{[^{}]*\}\}/g;
+/** 把字符串外面的每个 {{var}} 换成 sub(m) 再 JSON.parse */
+const parseSub = (text, sub) => JSON.parse(text.replace(LOOSE_RE, (m) => (m[0] === '"' ? m : sub(m))));
 function parseLoose(text) {
-  try { return JSON.parse(text); } catch (err) {
-    try { return JSON.parse(text.replace(/"(?:\\.|[^"\\])*"|\{\{[^{}]*\}\}/g, (m) => (m[0] === '"' ? m : JSON.stringify(m)))); }
-    catch { throw err; }
+  try { return JSON.parse(text); } catch {
+    try { return parseSub(text, (m) => JSON.stringify(m)); }
+    // 还是不行就真有语法错。严格解析的报错会指到第一个 {{，误导人；
+    // 占位符换成等长的字符串（{{id}} → "{id}"）再解析一遍（必然再抛），报错位置才对得上原文
+    catch { return parseSub(text, (m) => `"${m.slice(1, -1).replace(/["\\\x00-\x1f]/g, ' ')}"`); }
   }
+}
+
+/** JSON.stringify(…, null, 2)，字符串外面的 {{var}} 原样留着不加引号。
+ *  做法：占位符先换成带编号的哨兵字符串（"\u0000N"，正常内容里不会有），格式化完再换回来 */
+function formatLoose(text) {
+  const held = [];
+  const value = parseSub(text, (m) => JSON.stringify(`\0${held.push(m) - 1}`));
+  // 按整个字符串 token 匹配再换回，免得撞上别的字符串里恰好长得像哨兵的片段
+  return JSON.stringify(value, null, 2).replace(/"(?:\\.|[^"\\])*"/g, (m) => held[/^"\\u0000(\d+)"$/.exec(m)?.[1]] ?? m);
+}
+// 自检：加载时跑一遍，不过只在控制台报
+for (const [src, want] of [
+  ['{"a":[1,{"b":null}]}', '{\n  "a": [\n    1,\n    {\n      "b": null\n    }\n  ]\n}'],          // 普通 JSON、嵌套
+  ['{"id":{{id}},"n":"x"}', '{\n  "id": {{id}},\n  "n": "x"\n}'],                                   // 字符串外的占位符不加引号
+  ['{"s":"a {{v}} b","t":"{{v}}"}', '{\n  "s": "a {{v}} b",\n  "t": "{{v}}"\n}'],                   // 字符串内的原样保留
+  ['{"a":{"b":[{{x}},{"c":{{$uuid}}}]}}', '{\n  "a": {\n    "b": [\n      {{x}},\n      {\n        "c": {{$uuid}}\n      }\n    ]\n  }\n}'],
+]) console.assert(formatLoose(src) === want, 'formatLoose', src);
+
+/** JSON 实时校验：输入停顿 300ms 后检查，结果写进 helper 行；只提示，不拦发送。
+ *  返回的函数不带参数是"过一会儿查"，传 true 是立刻查并返回是否合法 */
+function jsonLint(ta, helper) {
+  let t;
+  const check = () => {
+    let msg = '';
+    if (ta.value.trim()) try { parseLoose(ta.value); } catch (err) { msg = `Not valid JSON — ${err.message}`; }
+    helper.className = msg ? 'helper error' : 'helper'; helper.textContent = msg;
+    msg ? ta.setAttribute('aria-invalid', 'true') : ta.removeAttribute('aria-invalid');
+    return !msg;
+  };
+  return (now) => { clearTimeout(t); if (now) return check(); t = setTimeout(check, 300); };
 }
 
 const HL_STYLES = ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight',
@@ -1074,20 +1428,34 @@ function textBodyEditor(toolbar) {
         h('button', { class: 'small', 'aria-pressed': String(!tree), onclick: () => setView('edit') }, 'Edit'),
         h('button', { class: 'small', 'aria-pressed': String(tree), title: 'Read-only view — fold and unfold objects and arrays', onclick: () => setView('tree') }, 'Tree')),
       tree ? null : btn('Format JSON', () => {
-        try { current.body = ta.value = JSON.stringify(JSON.parse(ta.value), null, 2); dirty(); helper.className = 'helper'; helper.textContent = ''; ta.removeAttribute('aria-invalid'); paint(); }
-        catch (err) { ta.setAttribute('aria-invalid', 'true'); helper.className = 'helper error'; helper.textContent = `Not valid JSON — ${err.message}. Fix it, then format again.`; }
+        // 不合法时 lint 已经把错误写到 helper 了
+        if (!ta.value.trim() || !lint(true)) return;
+        current.body = ta.value = formatLoose(ta.value); dirty(); paint();
       }));
   }
 
   // Edit：textarea 背景透明，下面垫一层同字体同换行的 .hl，查找命中在那一层上画底色
   const hl = h('div', { class: 'hl', 'aria-hidden': 'true' });
-  const sync = () => { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; };
-  const ta = h('textarea', { spellcheck: 'false', 'aria-label': 'Request body', placeholder: json ? '{ "key": "value" }' : 'Raw text body',
+  const sync = () => { for (const el of [hl, tintEl]) if (el) { el.scrollTop = ta.scrollTop; el.scrollLeft = ta.scrollLeft; } };
+  const ta = h('textarea', { ...CODE_TA, spellcheck: 'false', 'aria-label': 'Request body', placeholder: json ? '{ "key": "value" }' : 'Raw text body',
     onscroll: sync,
     oninput: (e) => {
-      current.body = e.target.value; ta.removeAttribute('aria-invalid'); helper.className = 'helper'; helper.textContent = ''; dirty(); renderTabCounts();
+      current.body = e.target.value; lint?.(); dirty(); renderTabCounts(); tint();
       if (bodyQuery.trim()) { clearTimeout(t); t = setTimeout(() => paint(false), 150); }
     } }, current.body);
+  const lint = json ? jsonLint(ta, helper) : null;
+  // JSON 着色：再垫一层 .tint 画带颜色的文字，textarea 自己的字变透明（和 URL 栏的镜像一个做法）。
+  // 不和 .hl 合成一层：markMatches 按文本节点找，着色把节点切碎后跨 token 的命中会丢。
+  // 字体不像 .hl 那样抄成内联样式：外观设置改字号不会重画，抄了就过期，这一层的字是看得见的
+  const tintEl = json ? h('div', { class: 'tint', 'aria-hidden': 'true' }) : null;
+  const editor = h('div', { class: 'editor' }, hl, tintEl, ta);
+  const tint = () => {
+    if (!tintEl) return;
+    const on = ta.value.length <= 50_000; // 每次输入都同步重画，太大就不着色，textarea 的字恢复可见
+    editor.classList.toggle('tinted', on);
+    if (on) tintEl.innerHTML = `${highlightJson(ta.value)} `; else tintEl.textContent = ''; // 末尾空格同 .hl
+    sync();
+  };
   // Tree：和响应区同一个可折叠树
   const out = h('div', { class: 'out body-tree' });
 
@@ -1101,6 +1469,7 @@ function textBodyEditor(toolbar) {
       const cs = getComputedStyle(ta);
       for (const k of HL_STYLES) hl.style[k] = cs[k];
       hl.textContent = q ? `${ta.value} ` : ''; // 末尾补空格：textarea 以换行结尾时多出的那一行，div 里不会占高度
+      tint();
     }
     marks = q ? markMatches(tree ? out : hl, q) : [];
     count.textContent = !q ? '' : marks.length ? `${marks.length} found` : 'No matches';
@@ -1146,7 +1515,8 @@ function textBodyEditor(toolbar) {
     return [find, out, helper];
   }
   queueMicrotask(() => paint());
-  return [find, h('div', { class: 'editor' }, hl, ta), helper];
+  lint?.(true);
+  return [find, editor, helper];
 }
 
 /** Cookie 管理：列出会话里的 cookie，可单删 */
@@ -1286,7 +1656,7 @@ async function send() {
   let status = null, duration_ms = null, result;
   try {
     const r = await invoke('send_request', { job_id: id, request: req, env: activeEnv(),
-      options: { timeout_secs: Number($('#timeout').value) || 30, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
+      options: { timeout_secs: timeoutSecs, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
     result = { ok: r }; status = r.status; duration_ms = r.duration_ms;
   } catch (e) {
     result = /cancelled/i.test(String(e)) ? { cancelled: true } : { error: String(e) };
@@ -1517,14 +1887,14 @@ function renderResponse() {
   const isImage = ct.startsWith('image/'), isHtml = ct.includes('text/html');
   const copy = btn('Copy body', () => copyText(r.body, copy), 'small ghost');
   // put 会过滤掉 null/undefined/false；append 不会——它会把 null 当文本渲染成 "null"
-  put(meta,
+  put(meta, h('span', { class: 'summary' },
     h('span', { class: `status s${Math.floor(r.status / 100)}` }, r.status), REASON[r.status] && h('span', { class: 'reason' }, REASON[r.status]),
     h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: r.ttfb_ms != null ? `Time to first byte ${r.ttfb_ms} ms (connect + server), then ${r.duration_ms - r.ttfb_ms} ms downloading` : 'Time from request start to last byte received' }, `${r.duration_ms} ms`),
     r.ttfb_ms != null && r.duration_ms - r.ttfb_ms >= 50 ? h('span', { class: 'meta muted', title: 'Time to first byte' }, `TTFB ${r.ttfb_ms} ms`) : null,
     h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: 'Body size' }, fmtSize(r.size_bytes)),
     r.from_history ? h('span', { class: 'meta from-history', title: `Kept from ${new Date(r.from_history).toLocaleString()} — press Send for a fresh one` },
-      r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null,
-    h('span', { class: 'spacer' }), r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost'),
+      r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null),
+    h('span', { class: 'actions' }, r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost')),
   );
   // 跟过的每一跳都列出来；3xx 说明停下了，说清为什么并给一键跟进
   if (r.asserts?.length) {
@@ -1574,7 +1944,12 @@ function renderResponse() {
   // 工具行只有一个输入框：JSON 且以 $ 开头 → JSONPath 过滤；否则 → 在正文里查找并高亮
   const isPath = () => isJson && respQuery.trim().startsWith('$');
   const count = h('span', { class: 'meta' });
-  const out = h('div', { class: 'out' });
+  // 右键按下之前树里是否已经选中了文字（有就留给原生菜单复制）。不能等菜单事件时再看选区：
+  // macOS 上右键会先自动选中光标下的那个词
+  let hadSel = false;
+  const out = h('div', { class: 'out',
+    onmousedown: (e) => { if (e.button === 2 || e.ctrlKey) { const sel = getSelection(); hadSel = !sel.isCollapsed && out.contains(sel.anchorNode); } },
+    oncontextmenu: (e) => { if (!hadSel) nodeMenu(e, parsed); hadSel = false; } });
   let marks = [], cur = -1;
   const paint = () => {
     out.replaceChildren();
@@ -1587,7 +1962,8 @@ function renderResponse() {
     if (isJson) text = JSON.stringify(value, null, 2);
     const full = showAll.has(current.id) || text.length <= TRUNCATE_AT;
     // JSON 默认就是可折叠树。ponytail: >1MB 不建树（DOM 节点太多会卡），退回纯文本
-    if (isJson && full && text.length <= 1_000_000) out.append(jsonTree(value, null, 0, text.length > 50_000));
+    // JSONPath 过滤后的结果不带 path：节点在原响应里的位置已经对不上了
+    if (isJson && full && text.length <= 1_000_000) out.append(jsonTree(value, null, 0, text.length > 50_000, isPath() ? undefined : '$'));
     else {
       const shown = full ? text : text.slice(0, TRUNCATE_AT);
       const pre = h('pre', {});
@@ -1706,24 +2082,58 @@ document.addEventListener('copy', (e) => {
   e.preventDefault();
 });
 
-/** JSON → 可折叠树（原生 <details>）。big 时深度 ≥ 2 默认折叠。 */
-function jsonTree(v, key, depth, big) {
+/** 响应 JSON 树的右键菜单：复制值 / 路径，或者直接拿这个节点建 Capture、Test，不用手写 JSONPath */
+function nodeMenu(e, root) {
+  const path = e.target.closest?.('[data-path]')?.dataset.path;
+  if (!path) return;
+  getSelection().removeAllRanges(); // 右键自动选中的那个词
+  const v = jsonPath_(root, path)[0];
+  const text = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+  const addRow = (list, tab, row) => { (current[list] ||= []).push({ enabled: true, ...row }); dirty(); reqTab = tab; renderRequest(); };
+  // 变量名取路径里最后一个像名字的段：$.data.orders[0].id → id
+  const name = [...path.matchAll(/[A-Za-z_][\w-]*/g)].pop()?.[0] || 'value';
+  // 断言的期望值按整行文本比，引号只能包一层：对象、null、带换行或太长的值只断言存在
+  const simple = v !== null && typeof v !== 'object' && text.length <= 80 && !/[\n"]/.test(text);
+  openMenu(e, [
+    ['Copy value', () => { copyText(text); toast('Copied the value.'); }],
+    ['Copy JSONPath', () => { copyText(path); toast(`Copied ${path}`); }],
+    '-',
+    ['Capture as variable', () => {
+      addRow('captures', 'capture', { key: name, value: path });
+      const cell = $('#req-body table.kv tr:nth-last-child(2) td.key input'); // 变量名多半要改，直接选中
+      cell?.focus(); cell?.select();
+    }],
+    ['Add test', () => addRow('asserts', 'tests', { key: path, value: simple ? `= ${typeof v === 'string' ? `"${v}"` : text}` : 'exists' })],
+  ]);
+}
+
+/** 子节点的 JSONPath，写法限于 jsonPath_ 和 core/jsonpath.rs 都认的那几种；表达不了（键名里两种引号都有、或者就叫 *）返回 undefined */
+function childPath(path, k) {
+  if (path === undefined) return undefined;
+  if (Array.isArray(k)) return `${path}[${k[0]}]`;
+  if (/^[\w$-]+$/.test(k)) return `${path}.${k}`;
+  return k === '*' ? undefined : !k.includes("'") ? `${path}['${k}']` : !k.includes('"') ? `${path}["${k}"]` : undefined;
+}
+
+/** JSON → 可折叠树（原生 <details>）。big 时深度 ≥ 2 默认折叠。
+ *  给了 path（响应区传 '$'）每个节点就带上 data-path，右键菜单靠它取值；请求体的 Tree 视图不传 */
+function jsonTree(v, key, depth, big, path) {
   // 数组下标只是显示用（复制时跳过 .idx），对象键是内容
   const label = key === null ? null : Array.isArray(key) ? h('span', { class: 'idx' }, h('span', { class: 'num' }, `${key[0]}`), ': ')
     : h('span', {}, h('span', { class: 'key' }, `"${key}"`), ': ');
   const isObj = v !== null && typeof v === 'object';
   if (!isObj) {
     const cls = v === null ? 'null' : typeof v === 'string' ? 'str' : typeof v === 'boolean' ? 'bool' : 'num';
-    return h('div', { class: 'tl' }, label, h('span', { class: cls }, JSON.stringify(v)), ',');
+    return h('div', { class: 'tl', 'data-path': path }, label, h('span', { class: cls }, JSON.stringify(v)), ',');
   }
   const entries = Array.isArray(v) ? v.map((x, i) => [[i], x]) : Object.entries(v);
   const open = Array.isArray(v) ? '[' : '{', close = Array.isArray(v) ? ']' : '}';
   const d = h('details', { class: depth === 0 ? 'tree' : null, open: !(big && depth >= 2) },
     // 折叠时显示成 "key": { … }, 5 keys —— .fold 和 .n 只在折叠状态下可见（见 CSS）
-    h('summary', {}, label, open,
+    h('summary', { 'data-path': path }, label, open,
       h('span', { class: 'fold' }, `…${close}${depth ? ',' : ''}`),
       h('span', { class: 'n' }, `${entries.length} ${Array.isArray(v) ? (entries.length === 1 ? 'item' : 'items') : (entries.length === 1 ? 'key' : 'keys')}`)),
-    ...entries.map(([k, x]) => jsonTree(x, k, depth + 1, big)),
+    ...entries.map(([k, x]) => jsonTree(x, k, depth + 1, big, childPath(path, k))),
     h('div', { class: 'tl' }, close, depth ? ',' : ''));
   return d;
 }
@@ -1801,7 +2211,7 @@ function renderEnvDialog() {
     ),
     h('div', { class: 'vars-head' }, h('span'), h('span', {}, 'Name'), h('span'), h('span', {}, 'Value'), h('span')),
     h('div', { class: 'vars' }, kvTable(env.variables, 'e.g. base_url', 'e.g. https://api.example.com', renderEnvDialog, { secrets: true })),
-    h('div', { class: 'helper' }, '🔒 Secret values are kept in the macOS keychain, masked in the UI, and left out of exports, project folders and history.'),
+    h('div', { class: 'helper' }, 'Locked values are secrets: kept in the macOS keychain, masked here, and left out of exports, project folders and history. The eye shows one temporarily; it stays secret.'),
   );
 }
 
@@ -1889,17 +2299,37 @@ function focusFind() {
   f.focus(); f.select();
 }
 
+/** ⌘K / 菜单 Filter Collections。菜单加速键和全局 keydown 可能被同一次按键都触发，所以这里必须幂等 */
+function focusSearch() { sideTab = 'collections'; renderSidebar(); $('#search').focus(); $('#search').select(); }
+
 function bind() {
   acBind();
-  $('#run-close').onclick = () => { runAbort = true; $('#run-dialog').close(); };
+  $('#run-close').onclick = () => $('#run-dialog').close();
   $('#run-stop').onclick = () => { runAbort = true; };
-  $('#run-dialog').onclose = () => { runAbort = true; }; // Esc 关掉也要停
+  $('#run-dialog').onclose = renderRunStatus; // Close / Esc 只是收起，运行继续；只有 Stop 中止
+  $('#run-reopen').onclick = () => { $('#run-dialog').showModal(); renderRunStatus(); };
+  $('#run-dismiss').onclick = () => { runKept = false; renderRunStatus(); };
   $('#cookies-btn').onclick = () => { renderCookies(); $('#cookie-dialog').showModal(); };
   $('#cookie-close').onclick = () => $('#cookie-dialog').close();
   $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies and cached OAuth2 tokens cleared.'); };
   $('#method').replaceChildren(...METHODS.map((m) => h('option', { value: m }, m.toUpperCase())));
   $('#method').onchange = (e) => { current.method = e.target.value; e.target.className = `m-${current.method.toLowerCase()}`; dirty(); renderSidebar(); renderTabs(); };
-  $('#url').oninput = (e) => { current.url = e.target.value; dirty(); renderUrlMirror(); renderMissing(); };
+  $('#url').oninput = (e) => {
+    const auto = isAutoName(current); // 改 URL 之前判断：改完就对不上了
+    current.url = e.target.value;
+    if (auto) retitle();
+    dirty(); renderUrlMirror(); renderMissing(); hideVarCard();
+  };
+  // 点在 {{var}} 里面：弹变量卡片。只认不带选区的单击，拖选 / 双击选词不算；点在两端（要接着打字）也不算
+  $('#url').onclick = (e) => {
+    const el = e.currentTarget, pos = el.selectionStart;
+    const hits = [...el.value.matchAll(VAR_RE)];
+    const i = pos === el.selectionEnd ? hits.findIndex((m) => pos > m.index && pos < m.index + m[0].length) : -1;
+    const span = $('#url-mirror').querySelectorAll('span')[i];
+    span ? showVarCard(hits[i][1], span) : hideVarCard();
+  };
+  document.addEventListener('mousedown', (e) => { if (!e.target.closest?.('#var-card, #url')) hideVarCard(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideVarCard(); });
   $('#url').onscroll = () => { $('#url-mirror').scrollLeft = $('#url').scrollLeft; };
   // ⌘↩ 交给全局快捷键处理；这里只管裸 Enter，否则一次按键触发两次 send，
   // 第二次会跳过"未解析变量先提示"这一步直接发出去
@@ -1920,6 +2350,9 @@ function bind() {
     ['Open project folder…', openProject],
     ['Import from curl…', () => openImport()],
   ]);
+  // 标签行放不下时是横向滚动的；普通鼠标只有纵向滚轮，折算过去，否则右边的标签够不着
+  $('#req-tabs').onwheel = (e) => { if (!e.deltaX) e.currentTarget.scrollLeft += e.deltaY; };
+  new ResizeObserver(revealReqTab).observe($('#req-tabs')); // 收到响应后请求面板会变窄
   // Capture 有规则时本身就是一个标签；只有标签藏起来时，菜单里才放入口
   $('#req-more').onclick = (e) => {
     const tabHidden = document.querySelector('[data-req=capture]').classList.contains('hidden');
@@ -1928,6 +2361,7 @@ function bind() {
       tabHidden && ['Capture', () => { reqTab = 'capture'; renderRequest(); }],
       testsHidden && ['Tests', () => { reqTab = 'tests'; renderRequest(); }],
       ['Request settings…', () => toggleSettings(true)],
+      ['Cookies…', () => $('#cookies-btn').click()], // 复用 Environments 弹窗底部那个按钮的处理
       ...exportItems(current),
     ]);
   };
@@ -1938,7 +2372,8 @@ function bind() {
   };
   // 不 stopPropagation：让 document 上关 #menu 的监听照常跑，两者不会同时开着
   popBtn.onclick = () => toggleSettings();
-  document.addEventListener('click', (e) => { if (!pop.contains(e.target) && !popBtn.contains(e.target)) toggleSettings(false); });
+  document.addEventListener('click', (e) => { if (!pop.contains(e.target) && !popBtn.contains(e.target) && !e.target.closest('#tls-off')) toggleSettings(false); });
+  $('#tls-off').onclick = () => toggleSettings(true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.classList.contains('hidden')) { toggleSettings(false); popBtn.focus(); } });
   // 图标按钮不能走 copyText 的换文字逻辑（会把 svg 冲掉），只改颜色和 title
   $('#copy-resolved').onclick = (e) => {
@@ -1947,7 +2382,7 @@ function bind() {
     setTimeout(() => { delete b.dataset.state; b.title = 'Copy resolved URL'; }, 1500);
   };
   $('.search .hint').textContent = `${MOD}K`;
-  for (const ev of ['input', 'change']) $('#req-body').addEventListener(ev, () => { if (reqTab === 'params' || reqTab === 'auth') renderResolved(); });
+  for (const ev of ['input', 'change']) $('#req-body').addEventListener(ev, () => { if (reqTab === 'params' || reqTab === 'auth') renderResolved(); renderMissing(); });
   // 外观：主题 + 请求体 / 响应体的字体和字号
   const look = $('#appearance'), lookBtn = $('#theme-btn');
   const toggleLook = (open = look.classList.contains('hidden')) => {
@@ -1980,6 +2415,7 @@ function bind() {
       put(el, net[key] ? h('span', { class: 'file', title: net[key] }, net[key].split('/').pop()) : null,
         btn(net[key] ? '×' : 'Choose…', () => { if (net[key]) { net[key] = ''; saveNet(); renderNet(); } else pick(key, [{ name: 'PEM', extensions: ['pem', 'crt', 'cer', 'key'] }]); }, 'small ghost'));
     }
+    renderNetFlags();
   };
   $('#proxy-mode').onchange = (e) => { net.proxy = e.target.value; saveNet(); renderNet(); };
   $('#proxy-url').oninput = (e) => { net.proxy_url = e.target.value; saveNet(); };
@@ -1989,12 +2425,22 @@ function bind() {
   $('#insecure').onchange = (e) => {
     insecure = e.target.checked;
     try { localStorage.setItem('firebee.insecure', insecure ? '1' : '0'); } catch { /* private mode */ }
+    renderNetFlags();
   };
   $('#follow').checked = followRedirects;
   $('#follow').onchange = (e) => {
     followRedirects = e.target.checked;
     try { localStorage.setItem('firebee.follow', followRedirects ? '1' : '0'); } catch { /* private mode */ }
+    renderNetFlags();
   };
+  $('#timeout').value = timeoutSecs;
+  // input 时就存，不等失焦；框里的数到 change 才换成夹紧后的值，免得打字到一半被改写
+  $('#timeout').oninput = (e) => {
+    timeoutSecs = clampTimeout(e.target.value);
+    try { localStorage.setItem('firebee.timeout', timeoutSecs); } catch { /* private mode */ }
+    renderNetFlags();
+  };
+  $('#timeout').onchange = (e) => { e.target.value = timeoutSecs; };
   $('#send').onclick = send;
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pendings.get(current.id) });
   $('#export-copy').onclick = (e) => copyText($('#export-text').textContent, e.currentTarget);
@@ -2009,15 +2455,24 @@ function bind() {
     if (payload === 'send') send();
     else if (payload === 'new') { createRequest(); $('#url').focus(); }
     else if (payload === 'find') focusFind();
-    else if (payload === 'filter') { $('#search').focus(); $('#search').select(); }
+    else if (payload === 'filter') focusSearch();
     else if (payload === 'check-updates') checkForUpdates(true);
   });
   $('#env-close').onclick = () => $('#env-dialog').close();
   $('#env-dialog').addEventListener('close', renderRequestHeader); // 对话框里改过的变量要反映到 URL 预览
 
   document.querySelectorAll('[data-side]').forEach((b) => b.onclick = () => { sideTab = b.dataset.side; renderSidebar(); });
-  $('#search').oninput = (e) => { filter = e.target.value; searchCollapsed.clear(); renderSidebar(); };
-  $('#search').onkeydown = (e) => { if (e.key === 'Escape' && filter) { e.stopPropagation(); filter = e.target.value = ''; searchCollapsed.clear(); renderSidebar(); } };
+  $('#search').oninput = (e) => { filter = e.target.value; searchIdx = q() ? 0 : -1; searchCollapsed.clear(); renderSidebar(); };
+  $('#search').onkeydown = (e) => {
+    if (e.key === 'Escape' && filter) { e.stopPropagation(); filter = e.target.value = ''; searchIdx = -1; searchCollapsed.clear(); renderSidebar(); }
+    // 输入法选词时的 ↑/↓/Enter 归输入法；WebKit 上确认选词的那次 keydown isComposing 已经是 false，只能看 229
+    if (e.isComposing || e.keyCode === 229 || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); searchIdx = Math.max(0, searchIdx + (e.key === 'ArrowDown' ? 1 : -1)); markSearchHit(true); }
+    else if (e.key === 'Enter') { e.preventDefault(); markSearchHit()?.click(); }
+  };
+  $('#search').onfocus = () => { searchIdx = q() ? 0 : -1; markSearchHit(); };
+  $('#search').onblur = () => markSearchHit();
+  new MutationObserver(() => markSearchHit()).observe($('#side-body'), { childList: true });
   document.querySelectorAll('[data-req]').forEach((b) => b.onclick = () => { reqTab = b.dataset.req; renderRequest(); });
   document.querySelectorAll('[data-resp]').forEach((b) => b.onclick = () => { respTab = b.dataset.resp; renderResponse(); });
   // 全局快捷键：⌘↩ 发送 · ⌘S 保存到集合 · ⌘N 新请求
@@ -2028,7 +2483,7 @@ function bind() {
     if (document.querySelector('dialog[open]')) return;
     if (e.key === 'Enter') { e.preventDefault(); send(); }
     else if (e.key === 'n' || e.key === 't') { e.preventDefault(); createRequest(); $('#url').focus(); }
-    else if (e.key === 'k') { e.preventDefault(); sideTab = 'collections'; renderSidebar(); $('#search').focus(); $('#search').select(); }
+    else if (e.key === 'k') { e.preventDefault(); focusSearch(); }
     else if (e.key === '/') { e.preventDefault(); $('#url').focus(); }
     else if (e.key === 'f') { e.preventDefault(); focusFind(); }
     else if (e.key === 'w') { e.preventDefault(); closeTab(current.id); }
