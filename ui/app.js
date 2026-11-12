@@ -443,8 +443,24 @@ function dayLabel(t) {
 /** 历史行的主文字：起过名的显示名字，否则显示路径。开头的 {{var}} 或 scheme+host 每行都一样，
  *  留着它侧栏那十几个字符就全被占掉，每一行看起来都是 `{{base_ur…` */
 function histLabel(req) {
-  if (req.name && !/^(Untitled request|New Request)/i.test(req.name)) return req.name;
-  return req.url.replace(/^(\{\{[^}]*\}\}|[a-z][a-z0-9+.-]*:\/\/[^/?#]*)/i, '') || req.url || '(no URL)';
+  if (req.name && !DEFAULT_NAME.test(req.name)) return req.name;
+  return urlPath(req.url) || req.url || '(no URL)';
+}
+const DEFAULT_NAME = /^(Untitled request|New Request)/i;
+/** URL 去掉开头的 {{var}} 或 scheme+host：`{{base_url}}/v2/orders` → `/v2/orders` */
+const urlPath = (url) => url.replace(/^(\{\{[^}]*\}\}|[a-z][a-z0-9+.-]*:\/\/[^/?#]*)/i, '');
+/** 没起过名字的请求按 URL 路径叫（/v2/orders），只有 host 时叫 host。方法不进名字：名字旁边到处都有方法标签 */
+function autoName(url) {
+  const path = urlPath(url).split(/[?#]/)[0];
+  return (path.length > 1 ? path : url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/)[0]) || 'Untitled request';
+}
+/** 名字是默认的、或者就是上次按 URL 自动起的：这种名字跟着 URL 变，用户自己起的不动 */
+const isAutoName = (r) => DEFAULT_NAME.test(r.name) || r.name === autoName(r.url);
+/** 只换文字不重绘：每敲一个字符重建一次侧栏太贵 */
+function retitle() {
+  current.name = autoName(current.url);
+  document.querySelectorAll(`#side-body .req[data-id="${current.id}"] .name, #tabs .tab.active .tab-name`)
+    .forEach((el) => { el.textContent = current.name; if (el.title) el.title = current.name; });
 }
 
 function emptyState(title, why, action) {
@@ -1015,7 +1031,7 @@ async function importCurl(text, onError, into = null) {
   try {
     const r = await invoke('import_curl', { text });
     if (into) { into.requests.push(r); collapsed.delete(into.id); searchCollapsed.delete(into.id); dirty(); selectRequest(r); return true; }
-    const keepName = !/^(Untitled request|New Request)/i.test(current.name);
+    const keepName = !isAutoName(current);
     const target = current, before = structuredClone(current);
     // import_curl 返回的是全新的 Request，captures / pinned 是空的——
   // 直接 assign 会把用户配好的提取规则和置顶状态静默抹掉
@@ -1897,7 +1913,12 @@ function renderResponse() {
   // 工具行只有一个输入框：JSON 且以 $ 开头 → JSONPath 过滤；否则 → 在正文里查找并高亮
   const isPath = () => isJson && respQuery.trim().startsWith('$');
   const count = h('span', { class: 'meta' });
-  const out = h('div', { class: 'out' });
+  // 右键按下之前树里是否已经选中了文字（有就留给原生菜单复制）。不能等菜单事件时再看选区：
+  // macOS 上右键会先自动选中光标下的那个词
+  let hadSel = false;
+  const out = h('div', { class: 'out',
+    onmousedown: (e) => { if (e.button === 2 || e.ctrlKey) { const sel = getSelection(); hadSel = !sel.isCollapsed && out.contains(sel.anchorNode); } },
+    oncontextmenu: (e) => { if (!hadSel) nodeMenu(e, parsed); hadSel = false; } });
   let marks = [], cur = -1;
   const paint = () => {
     out.replaceChildren();
@@ -1910,7 +1931,8 @@ function renderResponse() {
     if (isJson) text = JSON.stringify(value, null, 2);
     const full = showAll.has(current.id) || text.length <= TRUNCATE_AT;
     // JSON 默认就是可折叠树。ponytail: >1MB 不建树（DOM 节点太多会卡），退回纯文本
-    if (isJson && full && text.length <= 1_000_000) out.append(jsonTree(value, null, 0, text.length > 50_000));
+    // JSONPath 过滤后的结果不带 path：节点在原响应里的位置已经对不上了
+    if (isJson && full && text.length <= 1_000_000) out.append(jsonTree(value, null, 0, text.length > 50_000, isPath() ? undefined : '$'));
     else {
       const shown = full ? text : text.slice(0, TRUNCATE_AT);
       const pre = h('pre', {});
@@ -2029,24 +2051,58 @@ document.addEventListener('copy', (e) => {
   e.preventDefault();
 });
 
-/** JSON → 可折叠树（原生 <details>）。big 时深度 ≥ 2 默认折叠。 */
-function jsonTree(v, key, depth, big) {
+/** 响应 JSON 树的右键菜单：复制值 / 路径，或者直接拿这个节点建 Capture、Test，不用手写 JSONPath */
+function nodeMenu(e, root) {
+  const path = e.target.closest?.('[data-path]')?.dataset.path;
+  if (!path) return;
+  getSelection().removeAllRanges(); // 右键自动选中的那个词
+  const v = jsonPath_(root, path)[0];
+  const text = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+  const addRow = (list, tab, row) => { (current[list] ||= []).push({ enabled: true, ...row }); dirty(); reqTab = tab; renderRequest(); };
+  // 变量名取路径里最后一个像名字的段：$.data.orders[0].id → id
+  const name = [...path.matchAll(/[A-Za-z_][\w-]*/g)].pop()?.[0] || 'value';
+  // 断言的期望值按整行文本比，引号只能包一层：对象、null、带换行或太长的值只断言存在
+  const simple = v !== null && typeof v !== 'object' && text.length <= 80 && !/[\n"]/.test(text);
+  openMenu(e, [
+    ['Copy value', () => { copyText(text); toast('Copied the value.'); }],
+    ['Copy JSONPath', () => { copyText(path); toast(`Copied ${path}`); }],
+    '-',
+    ['Capture as variable', () => {
+      addRow('captures', 'capture', { key: name, value: path });
+      const cell = $('#req-body table.kv tr:nth-last-child(2) td.key input'); // 变量名多半要改，直接选中
+      cell?.focus(); cell?.select();
+    }],
+    ['Add test', () => addRow('asserts', 'tests', { key: path, value: simple ? `= ${typeof v === 'string' ? `"${v}"` : text}` : 'exists' })],
+  ]);
+}
+
+/** 子节点的 JSONPath，写法限于 jsonPath_ 和 core/jsonpath.rs 都认的那几种；表达不了（键名里两种引号都有、或者就叫 *）返回 undefined */
+function childPath(path, k) {
+  if (path === undefined) return undefined;
+  if (Array.isArray(k)) return `${path}[${k[0]}]`;
+  if (/^[\w$-]+$/.test(k)) return `${path}.${k}`;
+  return k === '*' ? undefined : !k.includes("'") ? `${path}['${k}']` : !k.includes('"') ? `${path}["${k}"]` : undefined;
+}
+
+/** JSON → 可折叠树（原生 <details>）。big 时深度 ≥ 2 默认折叠。
+ *  给了 path（响应区传 '$'）每个节点就带上 data-path，右键菜单靠它取值；请求体的 Tree 视图不传 */
+function jsonTree(v, key, depth, big, path) {
   // 数组下标只是显示用（复制时跳过 .idx），对象键是内容
   const label = key === null ? null : Array.isArray(key) ? h('span', { class: 'idx' }, h('span', { class: 'num' }, `${key[0]}`), ': ')
     : h('span', {}, h('span', { class: 'key' }, `"${key}"`), ': ');
   const isObj = v !== null && typeof v === 'object';
   if (!isObj) {
     const cls = v === null ? 'null' : typeof v === 'string' ? 'str' : typeof v === 'boolean' ? 'bool' : 'num';
-    return h('div', { class: 'tl' }, label, h('span', { class: cls }, JSON.stringify(v)), ',');
+    return h('div', { class: 'tl', 'data-path': path }, label, h('span', { class: cls }, JSON.stringify(v)), ',');
   }
   const entries = Array.isArray(v) ? v.map((x, i) => [[i], x]) : Object.entries(v);
   const open = Array.isArray(v) ? '[' : '{', close = Array.isArray(v) ? ']' : '}';
   const d = h('details', { class: depth === 0 ? 'tree' : null, open: !(big && depth >= 2) },
     // 折叠时显示成 "key": { … }, 5 keys —— .fold 和 .n 只在折叠状态下可见（见 CSS）
-    h('summary', {}, label, open,
+    h('summary', { 'data-path': path }, label, open,
       h('span', { class: 'fold' }, `…${close}${depth ? ',' : ''}`),
       h('span', { class: 'n' }, `${entries.length} ${Array.isArray(v) ? (entries.length === 1 ? 'item' : 'items') : (entries.length === 1 ? 'key' : 'keys')}`)),
-    ...entries.map(([k, x]) => jsonTree(x, k, depth + 1, big)),
+    ...entries.map(([k, x]) => jsonTree(x, k, depth + 1, big, childPath(path, k))),
     h('div', { class: 'tl' }, close, depth ? ',' : ''));
   return d;
 }
@@ -2227,7 +2283,12 @@ function bind() {
   $('#clear-cookies').onclick = async () => { await invoke('clear_cookies'); toast('Cookies and cached OAuth2 tokens cleared.'); };
   $('#method').replaceChildren(...METHODS.map((m) => h('option', { value: m }, m.toUpperCase())));
   $('#method').onchange = (e) => { current.method = e.target.value; e.target.className = `m-${current.method.toLowerCase()}`; dirty(); renderSidebar(); renderTabs(); };
-  $('#url').oninput = (e) => { current.url = e.target.value; dirty(); renderUrlMirror(); renderMissing(); };
+  $('#url').oninput = (e) => {
+    const auto = isAutoName(current); // 改 URL 之前判断：改完就对不上了
+    current.url = e.target.value;
+    if (auto) retitle();
+    dirty(); renderUrlMirror(); renderMissing();
+  };
   $('#url').onscroll = () => { $('#url-mirror').scrollLeft = $('#url').scrollLeft; };
   // ⌘↩ 交给全局快捷键处理；这里只管裸 Enter，否则一次按键触发两次 send，
   // 第二次会跳过"未解析变量先提示"这一步直接发出去
