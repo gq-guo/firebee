@@ -814,11 +814,19 @@ async function importCurl(text, onError, into = null) {
     const r = await invoke('import_curl', { text });
     if (into) { into.requests.push(r); collapsed.delete(into.id); searchCollapsed.delete(into.id); dirty(); selectRequest(r); return true; }
     const keepName = !/^(Untitled request|New Request)/i.test(current.name);
+    const target = current, before = structuredClone(current);
     // import_curl 返回的是全新的 Request，captures / pinned 是空的——
   // 直接 assign 会把用户配好的提取规则和置顶状态静默抹掉
   Object.assign(current, r, { id: current.id, name: keepName ? current.name : r.name,
     captures: current.captures || [], pinned: current.pinned });
     dirty(); selectRequest(current);
+    // 整个请求被覆盖，手滑粘错就全没了，给个撤销。恢复要原地写回：
+    // target 就是集合里那个对象，换成新对象会和集合、打开的标签脱钩
+    toast('Replaced this request with the pasted curl.', { action: ['Undo', () => {
+      for (const k of Object.keys(target)) delete target[k];
+      Object.assign(target, before); dirty();
+      if (current === target) selectRequest(target); else { renderSidebar(); renderTabs(); }
+    }] });
     return true;
   } catch (e) { onError(String(e)); return false; }
 }
