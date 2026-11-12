@@ -1011,12 +1011,44 @@ function radios(name, options, value, onchange) {
     h('label', {}, h('input', { type: 'radio', name, value: v, checked: v === value, onchange: () => onchange(v) }), label)));
 }
 
+/** 代码 textarea 的按键：Tab 缩进 2 空格（选区跨行就整体缩进）、Shift+Tab 反缩进、Enter 沿用当前行的缩进。
+ *  Esc 之后紧跟的那次 Tab 不拦，照常移走焦点 —— 否则只用键盘的人出不去。
+ *  {{ 补全列表开着时 Enter / Tab 在捕获阶段就被 acBind 吃掉，到不了这里 */
+let tabOut = null;
+function codeKeys(e) {
+  const ta = e.target, leave = tabOut === ta;
+  tabOut = e.key === 'Escape' ? ta : null;
+  // keyCode 229：WebKit 里结束输入法组合的那次 Enter，isComposing 已经是 false
+  if (e.isComposing || e.keyCode === 229 || e.metaKey || e.ctrlKey || e.altKey) return;
+  if ((e.key !== 'Tab' || leave) && e.key !== 'Enter') return;
+  e.preventDefault();
+  const v = ta.value, s = ta.selectionStart, end = ta.selectionEnd, multi = v.slice(s, end).includes('\n');
+  const ls = v.lastIndexOf('\n', s - 1) + 1; // 选区第一行的行首
+  // execCommand 而不是直接改 value：保住原生撤销栈，也照常触发 input
+  const type = (text) => document.execCommand(text ? 'insertText' : 'delete', false, text)
+    || (ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, 'end'), ta.dispatchEvent(new Event('input', { bubbles: true })));
+  if (e.key === 'Enter') return type('\n' + /^[ \t]*/.exec(v.slice(ls, s))[0]);
+  if (!e.shiftKey && !multi) return type('  ');
+  // 选区停在某一行行首时，那一行不算选中
+  let le = v.indexOf('\n', multi && v[end - 1] === '\n' ? end - 1 : end);
+  if (le < 0) le = v.length;
+  const block = v.slice(ls, le);
+  const out = e.shiftKey ? block.replace(/^(?: {1,2}|\t)/gm, '') : block.replace(/^(?=.)/gm, '  ');
+  if (out === block) return;
+  ta.setSelectionRange(ls, le);
+  type(out);
+  const cut = block.length - out.length; // 单行反缩进：光标跟着往回退，不越过行首
+  if (multi) ta.setSelectionRange(ls, ls + out.length);
+  else ta.setSelectionRange(Math.max(ls, s - cut), Math.max(ls, end - cut));
+}
+const CODE_TA = { onkeydown: codeKeys, 'aria-description': 'Tab indents. Press Escape, then Tab, to move focus out.' };
+
 /** GraphQL：上面 query，下面 variables（JSON，可格式化） */
 function graphqlEditor() {
   const helper = h('div', { class: 'helper' });
-  const query = h('textarea', { spellcheck: 'false', 'aria-label': 'GraphQL query', placeholder: 'query {\n  viewer { id }\n}',
+  const query = h('textarea', { ...CODE_TA, spellcheck: 'false', 'aria-label': 'GraphQL query', placeholder: 'query {\n  viewer { id }\n}',
     oninput: (e) => { current.body = e.target.value; dirty(); renderTabCounts(); } }, current.body);
-  const vars = h('textarea', { class: 'gql-vars', spellcheck: 'false', 'aria-label': 'GraphQL variables', placeholder: '{ "id": 1 }',
+  const vars = h('textarea', { ...CODE_TA, class: 'gql-vars', spellcheck: 'false', 'aria-label': 'GraphQL variables', placeholder: '{ "id": 1 }',
     oninput: (e) => { current.graphql_variables = e.target.value; vars.removeAttribute('aria-invalid'); helper.className = 'helper'; helper.textContent = ''; dirty(); } }, current.graphql_variables || '');
   return h('div', { class: 'fill' }, h('div', { class: 'row' }, h('strong', {}, 'Query')), query,
     h('div', { class: 'row' }, h('strong', {}, 'Variables'), h('span', { class: 'muted' }, 'JSON'), h('span', { class: 'spacer' }), btn('Format JSON', () => {
@@ -1082,7 +1114,7 @@ function textBodyEditor(toolbar) {
   // Edit：textarea 背景透明，下面垫一层同字体同换行的 .hl，查找命中在那一层上画底色
   const hl = h('div', { class: 'hl', 'aria-hidden': 'true' });
   const sync = () => { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; };
-  const ta = h('textarea', { spellcheck: 'false', 'aria-label': 'Request body', placeholder: json ? '{ "key": "value" }' : 'Raw text body',
+  const ta = h('textarea', { ...CODE_TA, spellcheck: 'false', 'aria-label': 'Request body', placeholder: json ? '{ "key": "value" }' : 'Raw text body',
     onscroll: sync,
     oninput: (e) => {
       current.body = e.target.value; ta.removeAttribute('aria-invalid'); helper.className = 'helper'; helper.textContent = ''; dirty(); renderTabCounts();
