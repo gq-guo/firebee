@@ -98,7 +98,8 @@ let bodyQuery = '';    // 请求体的查找框，跨请求保留
 // JSON 请求体的视图：'edit' 文本编辑 / 'tree' 只读可折叠树
 let bodyView = (() => { try { return localStorage.getItem('firebee.bodyView') === 'tree' ? 'tree' : 'edit'; } catch { return 'edit'; } })();
 const showAll = new Set();     // 已点过 Show all 的 request.id
-const selected = new Set();    // 侧栏多选（⌘点击）的请求
+const selected = new Set();    // 侧栏多选（⌘点击 / Shift 点击）的请求
+let anchor = null;             // 上次点击的请求：Shift 点击从它选到被点的那一行
 let dragging = null;           // { arr, r, kind } 正在拖动的请求；拖文件夹 / 集合时 kind 是 'folder' / 'collection'，r 是那个容器
 const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘时保持）
 // 搜索时默认全展开，但用户在搜索结果里手动收起的要记住——否则发送请求等任何重绘都会把它们全部弹开。
@@ -625,10 +626,27 @@ function requestRow(r, arr, drag = true) {
   } : {};
   return h('div', { class: 'req' + (r === current ? ' active' : '') + (selected.has(r) ? ' sel' : ''), role: 'button', tabindex: 0, 'data-id': r.id,
     'aria-current': r === current || undefined, 'aria-selected': selected.has(r) || undefined, ...drops,
-    onclick: (e) => { if (e.metaKey || e.ctrlKey) { selected.has(r) ? selected.delete(r) : selected.add(r); renderSidebar(); } else { selected.clear(); selectRequest(r); } },
+    onmousedown: (e) => { if (e.shiftKey) e.preventDefault(); }, // 不然 Shift 点击会把两行之间的文字选中
+    onclick: (e) => {
+      if (e.shiftKey && selectRange(e.currentTarget)) return;
+      anchor = r;
+      if (e.metaKey || e.ctrlKey) { selected.has(r) ? selected.delete(r) : selected.add(r); renderSidebar(); } else { selected.clear(); selectRequest(r); }
+    },
     onkeydown: activate, oncontextmenu: rmenu },
     reqTag(r), nameNode(r), pendings.has(r.id) && h('span', { class: 'spinner', title: 'Sending…' }),
     btn('⋯', rmenu, 'small more').withAttr('aria-label', 'Request actions'));
+}
+
+/** Shift 点击：选中上次点击的行到这一行之间所有可见的请求。起点不在了（没点过、被收起或过滤掉）返回 false，按普通点击处理。
+ *  只在被点的那个区里找（Pinned 区或集合树）：置顶的请求两边各有一行，混着算 id 不唯一 */
+function selectRange(row) {
+  const rows = treeRows().filter((el) => el.matches('.req') && !el.closest('.pinned') === !row.closest('.pinned'));
+  const a = rows.findIndex((el) => el.dataset.id === anchor?.id), b = rows.indexOf(row);
+  if (a < 0) return false;
+  selected.clear();
+  rows.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((el) => selected.add(findById(el.dataset.id)));
+  renderSidebar();
+  return true;
 }
 
 /** 集合树里的所有请求（深度优先） */
@@ -664,19 +682,23 @@ function boxDrop(e, c, isFolder) {
   return isFolder && y < 0.35 ? 'before' : 'into';
 }
 
-/** 把正在拖动的请求 / 文件夹 / 集合放到 targetArr 的 index 之前（同数组内移动会先移除再插入） */
+/** 把正在拖动的请求 / 文件夹 / 集合放到 targetArr 的 index 之前 */
 function moveDragged(targetArr, index) {
   if (!dragging) return;
   const { arr, r, kind } = dragging;
   dragging = null;
-  const from = arr.indexOf(r);
-  if (from < 0) return;
-  arr.splice(from, 1);
-  if (arr === targetArr && from < index) index -= 1;
-  targetArr.splice(index, 0, r);
+  if (!arr.includes(r)) return;
+  // 拖的是多选里的一行：选中的请求一起走，保持它们在侧栏里的先后顺序（文件夹排在请求前面，和 allRequests 的顺序不同）
+  const many = !kind && selected.size > 1 && selected.has(r);
+  const shown = (nodes) => nodes.flatMap((n) => [...shown(n.folders), ...n.requests]);
+  const moving = many ? shown(data.collections).filter((x) => selected.has(x)) : [r];
+  // 落点记成"插在谁前面"再移除：一次移走好几个，下标会被挤乱
+  const before = targetArr.slice(index).find((x) => !moving.includes(x));
+  for (const x of moving) { const from = many ? locateArr(x) : arr; from.splice(from.indexOf(x), 1); }
+  targetArr.splice(before ? targetArr.indexOf(before) : targetArr.length, 0, ...moving);
   dirty(); renderSidebar();
   // 换了父容器 = 换了继承链：面包屑、继承的头 / auth、未解析变量统计全都要重算
-  if (kind || r === current) { renderRequestHeader(); renderRequest(); renderMissing(); }
+  if (kind || moving.includes(current)) { renderRequestHeader(); renderRequest(); renderMissing(); }
 }
 
 /** 当前请求所在的 requests 数组；不在集合里返回 null */
