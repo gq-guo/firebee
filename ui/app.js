@@ -365,9 +365,13 @@ function renderResolved() {
 /** 未解析变量提示：常驻在 Send 左侧的固定槽位，不撑开布局 */
 function renderMissing() {
   const m = $('#missing'), list = unresolvedVars();
+  const armed = list.length > 0 && JSON.stringify(missing) === JSON.stringify(list);
+  // "再点一次才发送"要写在按钮上：只改旁边那行小字，第一次点击看起来就像没反应
+  $('#send').textContent = armed ? 'Send anyway' : 'Send';
+  // Preview 标签下 URL 栏下面那行只为这条提示留着，没有提示就整行收起
+  $('#resolved').classList.toggle('hidden', reqTab === 'preview' && !list.length);
   m.classList.toggle('hidden', list.length === 0);
   if (!list.length) { missing = []; return; }
-  const armed = JSON.stringify(missing) === JSON.stringify(list);
   m.textContent = armed ? 'Send again to send with placeholders as-is' : `${list.join(', ')} not defined${activeEnv() ? ` in ${activeEnv().name}` : ''}`;
   m.title = armed ? '' : `Not defined in the active environment: ${list.join(', ')}`;
 }
@@ -979,8 +983,8 @@ function revealReqTab() { document.querySelector('#req-tabs .active')?.scrollInt
 
 function renderRequest() {
   setTab('req', reqTab);
-  // Preview 里已经有完整的最终 URL，URL 栏下那行就不重复显示了
-  $('#resolved').classList.toggle('hidden', reqTab === 'preview');
+  // Preview 里已经有完整的最终 URL，URL 栏下那行就不重复显示了——但未定义变量的提示要留着（见 renderMissing）
+  $('#resolved').classList.toggle('preview', reqTab === 'preview');
   renderRequestHeader();
   revealReqTab();
   const body = $('#req-body');
@@ -1954,7 +1958,7 @@ function bind() {
     setTimeout(() => { delete b.dataset.state; b.title = 'Copy resolved URL'; }, 1500);
   };
   $('.search .hint').textContent = `${MOD}K`;
-  for (const ev of ['input', 'change']) $('#req-body').addEventListener(ev, () => { if (reqTab === 'params' || reqTab === 'auth') renderResolved(); });
+  for (const ev of ['input', 'change']) $('#req-body').addEventListener(ev, () => { if (reqTab === 'params' || reqTab === 'auth') renderResolved(); renderMissing(); });
   // 外观：主题 + 请求体 / 响应体的字体和字号
   const look = $('#appearance'), lookBtn = $('#theme-btn');
   const toggleLook = (open = look.classList.contains('hidden')) => {

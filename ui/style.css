@@ -213,7 +213,7 @@ textarea[aria-invalid="true"] { box-shadow: 0 0 0 2px var(--err-bg), inset 0 0 0
 #flash.on { opacity: 1; }
 #flash.dim { opacity: .45; }
 #flash b { font-weight: 500; }
-button.send { width: 84px; height: 42px; flex: none; padding: 0; border-radius: 6px; font-size: 14px; }
+button.send { min-width: 84px; height: 42px; flex: none; padding: 0 12px; border-radius: 6px; font-size: 14px; }
 #resolved { flex: none; display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; padding: 0 108px 4px 113px; font: 12px var(--font-mono); color: var(--muted); }
 #resolved .arrow { flex: none; margin-top: -6px; }
 #resolved-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -221,6 +221,7 @@ button.send { width: 84px; height: 42px; flex: none; padding: 0; border-radius: 
 #resolved-url .rbad { color: var(--err); }
 #resolved .icon { width: 22px; height: 22px; border-radius: 4px; color: var(--muted); }
 #resolved.empty { visibility: hidden; }
+#resolved.preview > :not(#missing) { visibility: hidden; }
 
 /* ---- key/value：只有行分隔线；单元格靠 hover / focus 显形 ---- */
 table.kv { border-collapse: collapse; width: 100%; }
