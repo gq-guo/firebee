@@ -93,14 +93,30 @@ body.dragging { user-select: none; cursor: col-resize; }
 body.dragging iframe, body.dragging textarea { pointer-events: none; }
 section { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 #request > .tabs { padding: 0 16px; }
+/* 最小窗口下 7 个标签放不下：标签横向滚动，⋯ 粘在右侧不被挤出去 */
+#req-tabs { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+#req-tabs::-webkit-scrollbar { display: none; }
+#req-tabs > [data-req] { flex: none; scroll-margin: 0 68px 0 16px; }
+/* 底色必须不透明，否则滚到下面的标签会透出来；右侧的投影盖住 16px 的内边距 */
+#req-more { position: sticky; right: 0; background: var(--bg-canvas); box-shadow: 16px 0 0 var(--bg-canvas), -6px 0 6px var(--bg-canvas); }
+@media (hover: hover) { #req-more:hover { background: linear-gradient(var(--hover), var(--hover)) var(--bg-canvas); } }
 #req-body { overflow: auto; flex: 1; padding: 4px 16px 16px; display: flex; flex-direction: column; }
 #req-body > * { flex: none; }
 #req-body > .fill { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .fill textarea { flex: 1; min-height: 240px; resize: none; }
 #response { background: var(--bg-surface); }
-#resp-meta { min-height: 36px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 20px; font: 13px var(--font-mono); }
+#resp-meta { min-height: 36px; flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; padding: 5px 20px; font: 13px var(--font-mono); }
 #resp-meta:empty { display: none; }
 #resp-meta > * { white-space: nowrap; }
+/* 窄窗口：一行放不下时按钮换到第二行，按钮永远不被挤出可视区。摘要再按重要程度省略：
+   TTFB 先让，然后原因短语，最后 from history；状态码、耗时、大小不让。
+   shrink 系数差五个数量级，是为了前一档让完之前后一档一个亚像素都不缩（缩一点就会冒出省略号） */
+#resp-meta .summary { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+#resp-meta .summary > * { flex: none; }
+#resp-meta .summary > .from-history, #resp-meta .summary > .reason, #resp-meta .summary > .meta.muted { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#resp-meta .summary > .reason { flex-shrink: 1e5; }
+#resp-meta .summary > .meta.muted { flex-shrink: 1e10; }
+#resp-meta .actions { flex: none; display: flex; gap: 8px; margin-left: auto; }
 #resp-tabs { padding: 0 20px; height: 32px; }
 #resp-body { overflow: auto; flex: 1; padding: 8px 20px 20px; }
 
@@ -197,7 +213,7 @@ textarea[aria-invalid="true"] { box-shadow: 0 0 0 2px var(--err-bg), inset 0 0 0
 #flash.on { opacity: 1; }
 #flash.dim { opacity: .45; }
 #flash b { font-weight: 500; }
-button.send { width: 84px; height: 42px; flex: none; padding: 0; border-radius: 6px; font-size: 14px; }
+button.send { min-width: 84px; height: 42px; flex: none; padding: 0 12px; border-radius: 6px; font-size: 14px; }
 #resolved { flex: none; display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; padding: 0 108px 4px 113px; font: 12px var(--font-mono); color: var(--muted); }
 #resolved .arrow { flex: none; margin-top: -6px; }
 #resolved-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -205,6 +221,7 @@ button.send { width: 84px; height: 42px; flex: none; padding: 0; border-radius: 
 #resolved-url .rbad { color: var(--err); }
 #resolved .icon { width: 22px; height: 22px; border-radius: 4px; color: var(--muted); }
 #resolved.empty { visibility: hidden; }
+#resolved.preview > :not(#missing) { visibility: hidden; }
 
 /* ---- key/value：只有行分隔线；单元格靠 hover / focus 显形 ---- */
 table.kv { border-collapse: collapse; width: 100%; }

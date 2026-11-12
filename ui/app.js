@@ -171,16 +171,23 @@ function toast(text, { error = false, action = null } = {}) {
   // 一次只显示一个 toast。前一个还带着没用过的 Undo 时不能直接盖掉——
   // 删了 A 再删 B、或者删完 A 又发了个带 capture 的请求，A 就永久没了
   // （删除是乐观的，500ms 后就落盘）。有待撤销动作时一律排队。
-  if (pendingUndo) { toastQueue.push([text, { error, action }]); return; }
+  if (pendingUndo && !error) { toastQueue.push([text, { error, action }]); return; }
+  // 错误例外：排在 Undo 后面要等它消失才看得到。错误立刻显示，被顶下去的 Undo 放回队首，
+  // 错误关掉后带着完整的时长再出来。被顶下去的若是带 Retry 的错误就不留了——
+  // 存盘连续失败时每次都留，队列里会攒出一串一样的
+  if (pendingUndo && !pendingUndo[1].error) toastQueue.unshift(pendingUndo);
   showToast(text, { error, action });
 }
 const toastQueue = [];
-let pendingUndo = null;
+let pendingUndo = null; // 正显示着、按钮还没用过的那个 toast：[text, opts]
+/** 停留多久：按字数算（60ms 一个字符，约 200 词/分钟），短句 3 秒起，12 秒封顶；带按钮的至少 8 秒。
+    错误是意料之外的，用户多半正看着别处，给三倍 */
+const toastMs = (text, error, action) => Math.min(12000, Math.max(action ? 8000 : 3000, text.length * 60)) * (error ? 3 : 1);
 
 function showToast(text, { error = false, action = null } = {}) {
   const el = $('#toast');
   clearTimeout(toastTimer);
-  pendingUndo = action || null;
+  pendingUndo = action ? [text, { error, action }] : null;
   const done = () => {
     el.classList.add('hidden');
     pendingUndo = null;
@@ -193,7 +200,7 @@ function showToast(text, { error = false, action = null } = {}) {
   el.className = 'toast' + (error ? ' error' : '');
   el.onmouseenter = () => clearTimeout(toastTimer);
   el.onmouseleave = () => { toastTimer = setTimeout(done, 3000); };
-  toastTimer = setTimeout(done, action ? 8000 : 3000);
+  toastTimer = setTimeout(done, toastMs(text, error, action));
 }
 function hideToast() { clearTimeout(toastTimer); pendingUndo = null; toastQueue.length = 0; $('#toast').classList.add('hidden'); }
 
@@ -372,9 +379,13 @@ function renderResolved() {
 /** 未解析变量提示：常驻在 Send 左侧的固定槽位，不撑开布局 */
 function renderMissing() {
   const m = $('#missing'), list = unresolvedVars();
+  const armed = list.length > 0 && JSON.stringify(missing) === JSON.stringify(list);
+  // "再点一次才发送"要写在按钮上：只改旁边那行小字，第一次点击看起来就像没反应
+  $('#send').textContent = armed ? 'Send anyway' : 'Send';
+  // Preview 标签下 URL 栏下面那行只为这条提示留着，没有提示就整行收起
+  $('#resolved').classList.toggle('hidden', reqTab === 'preview' && !list.length);
   m.classList.toggle('hidden', list.length === 0);
   if (!list.length) { missing = []; return; }
-  const armed = JSON.stringify(missing) === JSON.stringify(list);
   m.textContent = armed ? 'Send again to send with placeholders as-is' : `${list.join(', ')} not defined${activeEnv() ? ` in ${activeEnv().name}` : ''}`;
   m.title = armed ? '' : `Not defined in the active environment: ${list.join(', ')}`;
 }
@@ -878,11 +889,19 @@ async function importCurl(text, onError, into = null) {
     const r = await invoke('import_curl', { text });
     if (into) { into.requests.push(r); collapsed.delete(into.id); searchCollapsed.delete(into.id); dirty(); selectRequest(r); return true; }
     const keepName = !/^(Untitled request|New Request)/i.test(current.name);
+    const target = current, before = structuredClone(current);
     // import_curl 返回的是全新的 Request，captures / pinned 是空的——
   // 直接 assign 会把用户配好的提取规则和置顶状态静默抹掉
   Object.assign(current, r, { id: current.id, name: keepName ? current.name : r.name,
     captures: current.captures || [], pinned: current.pinned });
     dirty(); selectRequest(current);
+    // 整个请求被覆盖，手滑粘错就全没了，给个撤销。恢复要原地写回：
+    // target 就是集合里那个对象，换成新对象会和集合、打开的标签脱钩
+    toast('Replaced this request with the pasted curl.', { action: ['Undo', () => {
+      for (const k of Object.keys(target)) delete target[k];
+      Object.assign(target, before); dirty();
+      if (current === target) selectRequest(target); else { renderSidebar(); renderTabs(); }
+    }] });
     return true;
   } catch (e) { onError(String(e)); return false; }
 }
@@ -1042,11 +1061,15 @@ function renderTabCounts() {
   });
 }
 
+/** 标签行窄窗口下可横向滚动：从 ⋯ 菜单打开的 Capture / Tests、面板变窄之后，当前标签都可能落在可视区外 */
+function revealReqTab() { document.querySelector('#req-tabs .active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+
 function renderRequest() {
   setTab('req', reqTab);
-  // Preview 里已经有完整的最终 URL，URL 栏下那行就不重复显示了
-  $('#resolved').classList.toggle('hidden', reqTab === 'preview');
+  // Preview 里已经有完整的最终 URL，URL 栏下那行就不重复显示了——但未定义变量的提示要留着（见 renderMissing）
+  $('#resolved').classList.toggle('preview', reqTab === 'preview');
   renderRequestHeader();
+  revealReqTab();
   const body = $('#req-body');
   body.replaceChildren();
   if (reqTab === 'params') body.append(kvTable(current.params, 'Key', 'Value', renderRequest));
@@ -1585,14 +1608,14 @@ function renderResponse() {
   const isImage = ct.startsWith('image/'), isHtml = ct.includes('text/html');
   const copy = btn('Copy body', () => copyText(r.body, copy), 'small ghost');
   // put 会过滤掉 null/undefined/false；append 不会——它会把 null 当文本渲染成 "null"
-  put(meta,
+  put(meta, h('span', { class: 'summary' },
     h('span', { class: `status s${Math.floor(r.status / 100)}` }, r.status), REASON[r.status] && h('span', { class: 'reason' }, REASON[r.status]),
     h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: r.ttfb_ms != null ? `Time to first byte ${r.ttfb_ms} ms (connect + server), then ${r.duration_ms - r.ttfb_ms} ms downloading` : 'Time from request start to last byte received' }, `${r.duration_ms} ms`),
     r.ttfb_ms != null && r.duration_ms - r.ttfb_ms >= 50 ? h('span', { class: 'meta muted', title: 'Time to first byte' }, `TTFB ${r.ttfb_ms} ms`) : null,
     h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: 'Body size' }, fmtSize(r.size_bytes)),
     r.from_history ? h('span', { class: 'meta from-history', title: `Kept from ${new Date(r.from_history).toLocaleString()} — press Send for a fresh one` },
-      r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null,
-    h('span', { class: 'spacer' }), r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost'),
+      r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null),
+    h('span', { class: 'actions' }, r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost')),
   );
   // 跟过的每一跳都列出来；3xx 说明停下了，说清为什么并给一键跟进
   if (r.asserts?.length) {
@@ -1991,6 +2014,9 @@ function bind() {
     ['Open project folder…', openProject],
     ['Import from curl…', () => openImport()],
   ]);
+  // 标签行放不下时是横向滚动的；普通鼠标只有纵向滚轮，折算过去，否则右边的标签够不着
+  $('#req-tabs').onwheel = (e) => { if (!e.deltaX) e.currentTarget.scrollLeft += e.deltaY; };
+  new ResizeObserver(revealReqTab).observe($('#req-tabs')); // 收到响应后请求面板会变窄
   // Capture 有规则时本身就是一个标签；只有标签藏起来时，菜单里才放入口
   $('#req-more').onclick = (e) => {
     const tabHidden = document.querySelector('[data-req=capture]').classList.contains('hidden');
@@ -2019,7 +2045,7 @@ function bind() {
     setTimeout(() => { delete b.dataset.state; b.title = 'Copy resolved URL'; }, 1500);
   };
   $('.search .hint').textContent = `${MOD}K`;
-  for (const ev of ['input', 'change']) $('#req-body').addEventListener(ev, () => { if (reqTab === 'params' || reqTab === 'auth') renderResolved(); });
+  for (const ev of ['input', 'change']) $('#req-body').addEventListener(ev, () => { if (reqTab === 'params' || reqTab === 'auth') renderResolved(); renderMissing(); });
   // 外观：主题 + 请求体 / 响应体的字体和字号
   const look = $('#appearance'), lookBtn = $('#theme-btn');
   const toggleLook = (open = look.classList.contains('hidden')) => {
