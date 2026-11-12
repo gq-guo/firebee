@@ -196,7 +196,7 @@ function showToast(text, { error = false, action = null } = {}) {
 }
 function hideToast() { clearTimeout(toastTimer); pendingUndo = null; toastQueue.length = 0; $('#toast').classList.add('hidden'); }
 
-/** 右键 / ⋯ 菜单：items = [[label, fn, {danger, kbd}], ...]，点击任意处或 Esc 关闭 */
+/** 右键 / ⋯ 菜单：items = [[label, fn, {danger, kbd}], ...]，其中的 '-' 是分隔线；点击任意处或 Esc 关闭 */
 function openMenu(e, items) {
   e.preventDefault(); e.stopPropagation();
   // 这里 stopPropagation 了，document 上关设置弹窗的监听收不到，手动关
@@ -204,15 +204,16 @@ function openMenu(e, items) {
   $('#appearance').classList.add('hidden'); $('#theme-btn').setAttribute('aria-expanded', 'false');
   const menu = $('#menu');
   items = items.filter(Boolean);
-  menu.replaceChildren(...items.map(([label, fn, opt = {}]) =>
+  // '-' 解构出来 label 也是 '-'
+  menu.replaceChildren(...items.map(([label, fn, opt = {}]) => (label === '-' ? h('div', { class: 'menu-sep', role: 'separator' }) :
     h('button', { class: 'menu-item' + (opt.danger ? ' danger-item' : ''), role: 'menuitem',
       onclick: (ev) => { ev.stopPropagation(); menu.classList.add('hidden'); fn(ev); } },
-      label, opt.kbd && h('span', { class: 'kbd' }, opt.kbd))));
+      label, opt.kbd && h('span', { class: 'kbd' }, opt.kbd)))));
   // 鼠标事件在光标处打开；按钮/键盘触发时贴按钮下方并右对齐
   const rect = e.currentTarget?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
   const x = e.clientX || Math.max(8, rect.right - 170), y = e.clientY || rect.bottom + 4;
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - items.length * 30 - 12)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - items.reduce((s, it) => s + (it === '-' ? 9 : 30), 0) - 12)}px`;
   menu.classList.remove('hidden');
   menu.firstElementChild?.focus();
 }
@@ -230,7 +231,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') menu.classList.add('hidden');
   if (!menu.classList.contains('hidden') && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
     e.preventDefault();
-    const items = [...menu.children], i = items.indexOf(document.activeElement);
+    const items = [...menu.querySelectorAll('.menu-item')], i = items.indexOf(document.activeElement); // 跳过分隔线
     items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
   }
 });
@@ -514,14 +515,18 @@ function containerNode(c, parentArr, isFolder = false) {
       if (filter) { filter = $('#search').value = ''; searchCollapsed.clear(); }
       renaming = f; dirty(); renderSidebar();
     }],
+    '-',
     ['Shared headers & auth…', () => openSettings(c, isFolder)],
-    ['Import from curl…', () => openImport(c)],
     ['Run ' + (isFolder ? 'folder' : 'collection') + '…', () => runCollection(c)],
+    '-',
+    ['Import from curl…', () => openImport(c)],
     !isFolder && ['Export collection…', () => exportCollection(c)],
     !isFolder && (c.project_dir
       ? ['Unlink project folder', () => { delete c.project_dir; dirty(); renderSidebar(); toast(`“${c.name}” is no longer synced to a folder. The files there are untouched.`); }]
       : ['Save as project folder…', () => linkProject(c)]),
+    '-',
     ['Rename', startRename(c)],
+    '-',
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
   const view = filterView(c);

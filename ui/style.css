@@ -350,6 +350,7 @@ mark.cur { background: var(--warn); color: var(--primary-fg); }
 .menu-item { text-align: left; background: none; height: 30px; padding: 0 8px; border-radius: 5px; display: flex; align-items: center; gap: 16px; font-weight: 400; }
 .menu-item:hover, .menu-item:focus-visible { background: var(--active); box-shadow: none; }
 .menu-item.danger-item { color: var(--err); }
+.menu-sep { flex: none; height: 1px; margin: 4px 6px; background: var(--border); }
 /* 菜单里的快捷键是提示不是控件：跟系统菜单一样只留符号 */
 .menu-item .kbd { margin-left: auto; background: none; padding: 0; color: var(--muted); font-size: 12px; }
 #toast { position: fixed; right: 16px; bottom: 16px; z-index: var(--z-toast); display: flex; align-items: center; gap: 12px; background: var(--bg-popover); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; box-shadow: var(--shadow); max-width: 360px; font-size: 13px; animation: toast-in 150ms var(--ease); }
