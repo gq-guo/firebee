@@ -407,6 +407,7 @@ function emptyState(title, why, action) {
 }
 
 function renderSidebar() {
+  const focused = focusedRow();
   setTab('side', sideTab);
   const body = $('#side-body');
   body.replaceChildren();
@@ -451,6 +452,8 @@ function renderSidebar() {
   if (pins) body.append(pins);
   if (q() && !shown.length) { body.append(emptyState(`Nothing matches “${filter.trim()}”`, 'Names of collections, folders and requests are searched, and request URLs.')); return; }
   shown.forEach((c) => body.append(containerNode(c, data.collections)));
+  // 重绘把原来聚焦的行换成了新节点：焦点还给同一行，方向键才能接着走
+  if (focused) allRows().filter((el) => el.dataset.id === focused[0])[focused[1]]?.focus();
   body.querySelector('input.rename')?.focus();
 }
 
@@ -469,6 +472,32 @@ function filterView(c) {
 
 /** Enter / Space 触发点击（给 role=button 的 div 用） */
 function activate(e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); } }
+
+/** 树里的行（请求行 + 集合 / 文件夹标题），按显示顺序 */
+const allRows = () => [...$('#side-body').querySelectorAll('summary, .req')];
+/** 其中看得见的：收起的 details 里的行不算 */
+const treeRows = () => allRows().filter((el) => !(el.matches('summary') ? el.parentElement.parentElement : el).closest('details:not([open])'));
+/** 重绘前记下焦点在树里的哪一行：[id, 同 id 的第几行]——置顶的请求在 Pinned 区和树里各有一行 */
+function focusedRow() {
+  const row = document.activeElement?.closest('#side-body summary, #side-body .req');
+  return row && [row.dataset.id, allRows().filter((el) => el.dataset.id === row.dataset.id).indexOf(row)];
+}
+/** 树的键盘操作：↑ / ↓ 在可见行之间移动，→ / ← 展开 / 收起，F2 重命名；Enter 打开请求是行自己的 activate */
+$('#side-body').addEventListener('keydown', (e) => {
+  const row = e.target;
+  // 只管焦点正好在行上的时候：⋯ 按钮和重命名输入框里的按键归它们自己
+  if (!row.matches('summary, .req') || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  const box = row.matches('summary') ? row.parentElement : null;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const rows = treeRows();
+    rows[rows.indexOf(row) + (e.key === 'ArrowDown' ? 1 : -1)]?.focus();
+  } else if (e.key === 'ArrowRight' && box) box.open = true;
+  else if (e.key === 'ArrowLeft' && box) box.open = false;
+  // 重命名的对象闭包在名字的双击处理里（startRename），借它触发，不另建 行 → 对象 的映射
+  else if (e.key === 'F2') row.querySelector('.name')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  else return;
+  e.preventDefault();
+});
 
 /** 名称：正在重命名则显示输入框（Enter 提交 / Esc 取消 / 失焦提交）；双击也可重命名 */
 function nameNode(obj) {
@@ -550,7 +579,7 @@ function containerNode(c, parentArr, isFolder = false) {
   const dropOnContainer = (e) => { e.preventDefault(); e.currentTarget.classList.remove('dropping'); collapsed.delete(c.id); searchCollapsed.delete(c.id); moveDragged(c.requests, c.requests.length); };
   const set = q() ? searchCollapsed : collapsed;
   return h('details', { open: !set.has(c.id), ontoggle: (e) => { e.target.open ? set.delete(c.id) : set.add(c.id); } },
-    h('summary', { oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
+    h('summary', { 'data-id': c.id, oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
       ondragover: (e) => { if (dragging) { e.preventDefault(); e.currentTarget.classList.add('dropping'); } },
       ondragleave: (e) => e.currentTarget.classList.remove('dropping'), ondrop: dropOnContainer },
       nameNode(c), c.project_dir ? h('span', { class: 'proj', title: `Synced to ${c.project_dir}` }, '⎇') : null, btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
@@ -579,7 +608,7 @@ function requestRow(r, arr, drag = true) {
     ondragleave: (e) => e.currentTarget.classList.remove('dropping'),
     ondrop: (e) => { e.preventDefault(); e.stopPropagation(); moveDragged(arr, arr.indexOf(r)); },
   } : {};
-  return h('div', { class: 'req' + (r === current ? ' active' : '') + (selected.has(r) ? ' sel' : ''), role: 'button', tabindex: 0,
+  return h('div', { class: 'req' + (r === current ? ' active' : '') + (selected.has(r) ? ' sel' : ''), role: 'button', tabindex: 0, 'data-id': r.id,
     'aria-current': r === current || undefined, 'aria-selected': selected.has(r) || undefined, ...drops,
     onclick: (e) => { if (e.metaKey || e.ctrlKey) { selected.has(r) ? selected.delete(r) : selected.add(r); renderSidebar(); } else { selected.clear(); selectRequest(r); } },
     onkeydown: activate, oncontextmenu: rmenu },
