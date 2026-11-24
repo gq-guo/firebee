@@ -184,7 +184,7 @@ textarea[aria-invalid="true"] { box-shadow: 0 0 0 2px var(--err-bg), inset 0 0 0
 .tab:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
 .tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .tab .rename { flex: none; width: 140px; }
-.tab .method { min-width: 0; font-size: 10px; opacity: .85; }
+.tab .method { flex: none; min-width: 0; font-size: 10px; opacity: .85; } /* flex: none：名字长时 method 不能被挤窄，否则文字溢出盖到名字上 */
 .tab .close { width: 18px; height: 18px; padding: 0; border-radius: 4px; background: transparent; color: var(--text-2); opacity: 0; font-size: 13px; line-height: 1; }
 .tab:hover .close, .tab.active .close, .close:focus-visible { opacity: 1; }
 @media (hover: hover) { .tab .close:hover { background: var(--active); color: var(--text); } }
