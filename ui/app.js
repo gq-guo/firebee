@@ -1918,6 +1918,106 @@ const fmtSize = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 10
 
 const contentType = (r) => (r.headers.find(([k]) => k.toLowerCase() === 'content-type')?.[1] || '').toLowerCase();
 
+// ---------- 和上一次比 ----------
+/** 同一请求、留了响应体的历史，以及当前显示的这次响应在里面的下标（刚发完还没写进历史时 = 长度；对不上 = -1） */
+function historyOf(r) {
+  const list = data.history.filter((x) => x.request.id === current.id && x.response && (x.response.body || !x.response.size_bytes));
+  if (r.from_history) return [list, list.findIndex((x) => x.timestamp === r.from_history)];
+  // 新鲜响应：send() 写完历史才重绘，所以最后一条通常就是它
+  const last = list.at(-1)?.response;
+  const same = last && last.status === r.status && last.duration_ms === r.duration_ms && last.size_bytes === r.size_bytes;
+  return [list, same ? list.length - 1 : list.length];
+}
+const previousOf = (r) => { const [list, i] = historyOf(r); return i > 0 ? list[i - 1] : null; };
+
+/** 「Compare」标签：状态码、耗时、响应体逐行 diff（diff 在 Rust 侧算，有大小上限） */
+function compareView(r, prev) {
+  const p = prev.response, dt = r.duration_ms - p.duration_ms, cut = p.truncated || r.truncated;
+  const code = (s) => h('b', { class: `s${Math.floor(s / 100)}` }, s);
+  const note = h('div', { class: 'muted' }, 'Comparing…');
+  const wrap = h('div', { class: 'cmp' },
+    h('div', { class: 'cmp-head' },
+      h('span', { class: 'muted' }, `Previous: ${new Date(prev.timestamp).toLocaleString()}`),
+      h('span', {}, 'Status ', p.status === r.status ? code(r.status) : [code(p.status), ' → ', code(r.status)]),
+      h('span', {}, `Time ${p.duration_ms} → ${r.duration_ms} ms (${dt >= 0 ? '+' : '−'}${Math.abs(dt)} ms)`)),
+    cut ? h('div', { class: 'helper cmp-cut' }, '⚠ Incomplete: a body was cut to its first 64 KB when saved to history, so only the first 64 KB of each is compared.') : null,
+    note);
+  let [a, b] = [p.body, r.body || ''];
+  if (cut) { a = clipBytes(a, HISTORY_BODY_MAX)[0]; b = clipBytes(b, HISTORY_BODY_MAX)[0]; }
+  let json = [r, p].some((x) => contentType(x).includes('json'));
+  if (!json) try { JSON.parse(r.body); json = true; } catch { /* 不是 JSON，按原文逐行比 */ }
+  invoke('diff_bodies', { old: a, new: b, json }).then((d) => {
+    if (d.too_large) return put(note, `Too large to compare — ${d.too_large}.`);
+    if (!d.lines.length) return put(note, h('strong', {}, p.status === r.status ? 'No changes' : 'Body unchanged'),
+      p.status === r.status ? ' — same status and body as last time.' : ' — only the status changed.');
+    const mark = { add: '+', del: '−', same: ' ' };
+    put(note, h('span', { class: 'diff-n add' }, `+${d.added}`), ' ', h('span', { class: 'diff-n del' }, `−${d.removed}`), ` line${d.added + d.removed > 1 ? 's' : ''}`);
+    wrap.append(h('div', { class: 'diff' }, ...d.lines.map((l) => l.op === 'skip'
+      ? h('div', { class: 'diff-skip' }, `⋯ ${l.text} unchanged line${l.text > 1 ? 's' : ''}`)
+      : h('div', { class: `diff-${l.op}` }, h('span', { class: 'diff-mark' }, mark[l.op]), l.text))));
+  }, (e) => put(note, h('span', { class: 'error' }, String(e))));
+  return wrap;
+}
+
+// ---------- 401 / 403：这次带了什么凭据 ----------
+const AUTHISH = /^(authorization|proxy-authorization|cookie|api-?key|x-api-?key|.*[-_](api-?key|key|token|secret|auth))$/i;
+/** 凭据打码：只留方案（Bearer 等）和末 4 位，12 位以下连末位也不留；Basic 只留用户名（base64 的末几位就是密码）；
+ *  含 Secret 变量的值整个不显示 */
+function maskCred(v, scheme = false) {
+  const secrets = (activeEnv()?.variables || []).filter((x) => x.enabled && x.secret && x.value).map((x) => x.value);
+  const sp = scheme ? v.indexOf(' ') : -1;
+  const [s, cred] = sp > 0 ? [v.slice(0, sp + 1), v.slice(sp + 1).trim()] : ['', v];
+  if (!cred) return `${s}(empty)`;
+  let plain = cred;
+  if (/^basic $/i.test(s)) try { plain = new TextDecoder().decode(Uint8Array.from(atob(cred), (c) => c.charCodeAt(0))); } catch { /* 不是 base64：按普通值处理 */ }
+  if (secrets.some((x) => v.includes(x) || plain.includes(x))) return `${s}•••• (secret variable)`;
+  if (plain !== cred) return `${s}${plain.split(':')[0]}:••••`;
+  return `${s}••••${cred.length >= 12 ? cred.slice(-4) : ''}`;
+}
+function authHint(r) {
+  const own = current.auth, kind = authKind(own);
+  const eff = kind === 'Off' ? null : kind !== 'None' ? own : inheritedAuth(current);
+  const fromAuth = eff === own ? 'this request’s Auth tab' : 'inherited Auth (collection / folder)';
+  const apiKey = eff?.ApiKey;
+  const where = (k) => {
+    k = k.toLowerCase();
+    if (current.headers.some((x) => x.enabled && x.key.trim().toLowerCase() === k)) return 'this request’s Headers';
+    if (inheritedHeaders(current).some((x) => x.key.trim().toLowerCase() === k)) return 'inherited header (collection / folder)';
+    if ((k === 'authorization' && eff) || (apiKey && !apiKey.in_query && apiKey.key.trim().toLowerCase() === k)) return fromAuth;
+    return '—';
+  };
+  const box = h('div', { class: 'auth-hint' },
+    h('div', { class: 'row' }, h('strong', {}, `${r.status} — credentials this request carries`), h('span', { class: 'spacer' }),
+      btn('Open Preview', () => { reqTab = 'preview'; renderRequest(); }, 'small ghost')),
+    h('div', { class: 'muted' }, 'Checking…'));
+  // 打开的是历史里的响应、或发完又改过请求时，下面显示的是"现在会发的"，说清楚
+  const entry = r.from_history ? data.history.find((x) => x.timestamp === r.from_history) : data.history.findLast((x) => x.request.id === current.id);
+  const edited = entry && sentJson(entry.request) !== sentJson(current);
+  invoke('final_request', { request: current, env: activeEnv(), inherited: chainFor(current) || [] }).then((f) => {
+    const rows = [];
+    for (const [k, v] of f.headers) {
+      if (!AUTHISH.test(k) && !(apiKey && apiKey.key.trim().toLowerCase() === k.toLowerCase())) continue;
+      const shown = /^cookie$/i.test(k) ? `${v.split(/;\s*/).map((c) => c.split('=')[0]).join(', ')} (values hidden)` : maskCred(v, /authorization$/i.test(k));
+      rows.push([k, shown, where(k)]);
+    }
+    if (apiKey?.in_query) {
+      let v = null;
+      try { v = new URL(f.url).searchParams.get(apiKey.key); } catch { /* URL 不合法：下面按没带算 */ }
+      if (v !== null) rows.push([`?${apiKey.key}`, maskCred(v), `query parameter · ${fromAuth}`]);
+    }
+    if (f.cookies.length) rows.push(['Cookie', `${f.cookies.map((c) => c.split('=')[0]).join(', ')} (values hidden)`, 'session cookie jar']);
+    const missingVars = unresolvedVars(), noAuthz = !rows.some(([k]) => /^authorization$/i.test(k));
+    put(box, box.firstChild,
+      edited ? h('div', { class: 'helper' }, 'The request has changed since this response — showing what it would send now.') : null,
+      rows.length ? h('div', { class: 'ah-rows' }, ...rows.map(([k, v, src]) => h('div', {}, h('code', { class: 'k' }, k), h('code', {}, v), h('span', { class: 'muted' }, src))))
+        : h('div', {}, 'Nothing — no Authorization header, API key or cookie.'),
+      noAuthz && kind === 'Off' ? h('div', { class: 'helper' }, 'Auth is set to “No auth” on this request, so nothing inherited is sent.') : null,
+      noAuthz && eff?.OAuth2 ? h('div', { class: 'helper' }, 'OAuth 2.0 is set but no token is cached yet — the next Send fetches one.') : null,
+      missingVars.length ? h('div', { class: 'helper error' }, 'Unresolved: ', ...missingVars.flatMap((n, i) => [i ? ', ' : '', h('code', {}, `{{${n}}}`)]), ' — sent as literal text.') : null);
+  }, (e) => put(box, box.firstChild, h('div', { class: 'helper error' }, String(e))));
+  return box;
+}
+
 let waitTick = null;
 function renderResponse() {
   const meta = $('#resp-meta'), body = $('#resp-body'), tabs = $('#resp-tabs');
@@ -1966,6 +2066,7 @@ function renderResponse() {
       r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null),
     h('span', { class: 'actions' }, r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost')),
   );
+  if (r.status === 401 || r.status === 403) body.append(authHint(r));
   // 跟过的每一跳都列出来；3xx 说明停下了，说清为什么并给一键跟进
   if (r.asserts?.length) {
     const failed = r.asserts.filter((a) => !a.ok).length;
@@ -1991,12 +2092,17 @@ function renderResponse() {
   const previewTab = document.querySelector('[data-resp=preview]');
   previewTab.classList.toggle('hidden', !isHtml);
   if (respTab === 'preview' && !isHtml) respTab = 'body';
+  // 历史里有上一次的响应体才出现 Compare；没有时界面和原来一样
+  const prev = r.body_base64 ? null : previousOf(r);
+  document.querySelector('[data-resp=diff]').classList.toggle('hidden', !prev);
+  if (respTab === 'diff' && !prev) respTab = 'body';
   setTab('resp', respTab);
   put(document.querySelector('[data-resp=headers]'), 'Headers', h('span', { class: 'n' }, r.headers.length));
   if (respTab === 'headers') {
     body.append(h('table', { class: 'hdrs' }, ...r.headers.map(([k, v]) => h('tr', {}, h('td', {}, k), h('td', {}, v)))));
     return;
   }
+  if (respTab === 'diff') { body.append(compareView(r, prev)); return; }
   if (respTab === 'preview') {
     // 沙箱 iframe：无脚本、无同源、无表单提交
     body.append(h('iframe', { sandbox: '', srcdoc: r.body, title: 'HTML preview' }));

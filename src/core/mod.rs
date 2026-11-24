@@ -1,5 +1,6 @@
 pub mod assert;
 pub mod cookies;
+pub mod diff;
 pub mod export;
 pub mod http;
 pub mod import;

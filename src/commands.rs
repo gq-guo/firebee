@@ -375,6 +375,12 @@ pub fn check_asserts(
     )
 }
 
+/// 响应区「Compare」：上一次和这一次的响应体逐行 diff。async 让它跑在线程池上，不占主线程
+#[tauri::command]
+pub async fn diff_bodies(old: String, new: String, json: bool) -> crate::core::diff::BodyDiff {
+    crate::core::diff::diff_bodies(&old, &new, json)
+}
+
 #[tauri::command]
 pub fn clear_cookies(cookies: State<Cookies>, tokens: State<Tokens>) {
     cookies.0.clear();

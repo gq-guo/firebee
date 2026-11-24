@@ -44,6 +44,8 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - JSON 节点右键：复制值、复制 JSONPath，或直接拿这个节点建 Capture / Test，不用手写路径
 - 体内查找（⌘F，Enter / Shift+Enter 跳转）；可折叠树视图；超大响应先截断再按需全量
 - HTML 沙箱预览、图片预览、保存到文件
+- 401 / 403 时响应区顶部列出这次实际带了哪些凭据（Authorization、API Key 类头、Cookie）、各自来自请求本身 / 继承的集合或文件夹 / Cookie 罐，以及未解析的 `{{变量}}`；值一律打码（只留方案和末 4 位，Basic 只留用户名，用到 Secret 变量的整个不显示），一键跳到 Preview
+- Compare 标签：同一请求历史里有上一次的响应时出现，对比状态码、耗时和响应体逐行 diff（JSON 先统一缩进再比，`+` / `−` 标记增删，未变部分折叠）；上一次的响应体在历史里被截断时会提示只比了前 64 KB；单边超过 1 MB / 2 万行或改动超过 2000 行时提示太大、不比
 
 **变量与环境**
 - 环境变量可标 🔒 Secret：值存 macOS 钥匙串，不进 environments.json / 导出 / 项目目录 / 历史，界面遮罩
