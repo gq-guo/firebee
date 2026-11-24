@@ -1102,6 +1102,7 @@ function findById(id, nodes = data.collections) {
 /** 导出 curl / Python 到对话框 */
 async function exportCode(req, kind) {
   $('#export-text').textContent = await invoke('export_code', { request: req, env: activeEnv(), kind, inherited: chainFor(req) || [] });
+  $('#export-dialog strong').textContent = 'Export'; // 对话框也用来显示 Postman 脚本导入摘要
   $('#export-dialog').showModal();
 }
 const exportItems = (req) => [['Export as curl', () => exportCode(req, 'curl')], ['Export as Python', () => exportCode(req, 'python')]];
@@ -1240,8 +1241,11 @@ async function importFile() {
     if (r.collection) {
       const n = disarmCaptures(r.collection);
       data.collections.push(r.collection); dirty(); renderSidebar();
+      const s = r.scripts; // 只有 Postman 集合里真有脚本时才有
       toast(`Imported collection “${r.collection.name}”.`
-        + (n ? ` ${n} capture ${n === 1 ? 'rule was' : 'rules were'} turned off — they rewrite environment variables, so review them in a request's Capture tab before enabling.` : ''));
+        + (n ? ` ${n} capture ${n === 1 ? 'rule was' : 'rules were'} turned off — they rewrite environment variables, so review them in a request's Capture tab before enabling.` : '')
+        + (s ? ` ${scriptSummary(s)}` : ''),
+        s && (s.requests.length || s.containers.length) ? { action: ['Details', () => showScriptReport(s)] } : {});
     }
     if (r.environments.length) {
       data.environments.push(...r.environments); dirty(); renderTopbar();
@@ -1249,6 +1253,23 @@ async function importFile() {
         : `Imported ${r.environments.length} environments — pick one in the Environment menu.`);
     }
   } catch (e) { toast(String(e), { error: true }); }
+}
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+/** Postman 脚本转换摘要（一句话，进 toast） */
+function scriptSummary(s) {
+  const left = s.requests.length + s.containers.length;
+  return (s.tests || s.captures ? `Converted ${plural(s.tests, 'test')} and ${plural(s.captures, 'capture')} from its Postman scripts`
+      + (s.captures ? ' (captures are off until you enable them).' : '.') : 'No Postman script lines could be converted.')
+    + (left ? ` Some scripts weren't converted — see Details.` : '');
+}
+/** 没转完的请求 / 文件夹清单：复用导出对话框（可复制） */
+function showScriptReport(s) {
+  const list = (title, names) => (names.length ? `\n\n${title} (${names.length}):\n${names.map((x) => `  ${x}`).join('\n')}` : '');
+  $('#export-dialog strong').textContent = 'Postman scripts';
+  $('#export-text').textContent = `${scriptSummary(s).replace(/ Some scripts.*$/, '')}\nScripts are never run or kept; only common “save a value” and “assert” lines become Capture / Tests.`
+    + list('Requests with script lines that were not converted', s.requests)
+    + list('Folder / collection scripts (not converted)', s.containers);
+  $('#export-dialog').showModal();
 }
 
 /** 导入进来的 capture 规则一律先关掉，返回关掉的条数。
