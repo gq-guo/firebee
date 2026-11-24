@@ -7,7 +7,6 @@
 </head>
 <body>
 <header id="topbar">
-  <select id="env-select" aria-label="Active environment" title="Active environment"></select>
   <span class="spacer"></span>
   <button id="tls-off" class="hidden" title="Certificates are not verified for any request. Click to open Request settings.">TLS verification off</button>
   <button id="theme-btn" class="icon" aria-label="Appearance" title="Appearance" aria-expanded="false" aria-controls="appearance">
@@ -63,6 +62,7 @@
     <span class="bar-div"></span>
     <div class="url-wrap"><div id="url-mirror" aria-hidden="true"></div><input id="url" placeholder="Enter a URL — {{vars}} supported" aria-label="Request URL" spellcheck="false" autocomplete="off"><span id="flash" aria-hidden="true"></span></div>
   </div>
+  <select id="env-select" aria-label="Environment for this send" title="Environment"></select>
   <button id="send" class="primary send">Send</button>
   <button id="cancel" class="send hidden">Cancel</button>
   </div>

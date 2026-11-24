@@ -51,10 +51,6 @@ body {
 
 /* ---- app bar ---- */
 #topbar { grid-area: top; position: relative; z-index: 30; display: flex; align-items: center; gap: 12px; padding: 0 12px 0 10px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border); }
-#env-select { height: 28px; max-width: 260px; font-size: 13px; color: var(--text-2); background: transparent no-repeat right 8px center / 14px;
-  -webkit-appearance: none; appearance: none; padding: 0 28px 0 8px; border-radius: 6px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236E747B' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
-@media (hover: hover) { #env-select:hover { background-color: var(--hover); color: var(--text); } }
 /* 全局请求设置偏离默认值：设置按钮右上角一个点；关了证书校验再加常驻标签。标签用 border 不用 box-shadow，焦点环才不被盖掉 */
 #settings-btn { position: relative; }
 #settings-btn.changed::after { content: ""; position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
@@ -221,6 +217,23 @@ textarea[aria-invalid="true"] { box-shadow: 0 0 0 2px var(--err-bg), inset 0 0 0
 #flash.on { opacity: 1; }
 #flash.dim { opacity: .45; }
 #flash b { font-weight: 500; }
+/* 环境标签：紧挨 Send，发到哪儿一眼可见。着色时 --env 由 JS 从调色板设置；
+ * 调色板每个颜色上的白字 ≥ 5:1，标签本身对深 / 浅背景 ≥ 3.3:1，所以两个主题共用一套 */
+#env-select { height: 28px; max-width: 180px; flex: none; field-sizing: content; font-size: 12px; font-weight: 500; color: var(--text-2); cursor: pointer;
+  -webkit-appearance: none; appearance: none; padding: 0 24px 0 10px; border-radius: 999px; text-overflow: ellipsis;
+  box-shadow: inset 0 0 0 1px var(--border-strong); background: transparent no-repeat right 7px center / 12px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236E747B' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
+#env-select.set { color: var(--text); }
+#env-select.tinted { color: #fff; box-shadow: none; background-color: var(--env);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
+#env-select:focus-visible { box-shadow: 0 0 0 2px var(--focus); }
+#env-select option { color: var(--text); background: var(--bg-popover); }
+@media (hover: hover) { #env-select:not(.tinted):hover { background-color: var(--hover); color: var(--text); } #env-select.tinted:hover { filter: brightness(1.1); } }
+/* 受保护环境的二次确认：固定红底白字（5.6:1），不用 --err——它在深色主题下配白字不够 4.5:1 */
+button.confirm { background: #C62828; color: #fff; font-weight: 600; }
+@media (hover: hover) { button.confirm:hover { background: #C62828; opacity: .9; } }
+#send.confirm { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.tinted { background-color: var(--env); color: #fff; }
 button.send { min-width: 84px; height: 42px; flex: none; padding: 0 12px; border-radius: 6px; font-size: 14px; }
 #resolved { flex: none; display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; padding: 0 108px 4px 113px; font: 12px var(--font-mono); color: var(--muted); }
 #resolved .arrow { flex: none; margin-top: -6px; }
@@ -289,6 +302,9 @@ summary[data-drop=into] { background: var(--active); box-shadow: inset 0 0 0 1px
 .hist { display: grid; grid-template-columns: 40px 30px 1fr auto; gap: 6px; align-items: center; padding: 0 8px; height: 30px; cursor: pointer; border-radius: 5px; font: 12px var(--font-mono); white-space: nowrap; color: var(--text-2); }
 .hist > * { overflow: hidden; text-overflow: ellipsis; }
 .hist-label { font: 13px var(--font-body); color: var(--text); }
+.env-chip { display: inline-block; vertical-align: top; margin-top: 1px; max-width: 8ch; overflow: hidden; text-overflow: ellipsis; margin-right: 6px; padding: 0 5px; border-radius: 999px;
+  font: 500 10.5px/16px var(--font-body); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.env-chip.tinted { box-shadow: none; color: #fff; }
 /* 时间和 ⋯ 叠在同一格：⋯ 只在悬停时出现，常年给它留 28px 等于从名字里拿走四五个字符 */
 .hist .more, .hist-time { grid-area: 1 / 4; }
 .hist:hover .hist-time, .hist .more:focus-visible + .hist-time { visibility: hidden; }
@@ -355,6 +371,12 @@ dialog[open] { animation: dialog-in 150ms var(--ease); }
 #env-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 #env-editor .head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 #env-editor .head input { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; }
+#env-editor .env-opts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -4px 0 12px; font-size: 13px; }
+#env-editor .swatch { width: 20px; height: 20px; padding: 0; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--border-strong); background: transparent; }
+#env-editor .swatch.tinted { background: var(--env); box-shadow: none; }
+#env-editor .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--bg-popover), 0 0 0 4px var(--text-2); }
+#env-editor .env-opts label { display: flex; align-items: center; gap: 8px; margin-left: 16px; }
+#env-list .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
 #env-editor .vars { overflow: auto; flex: 1; min-height: 0; }
 #env-editor .vars-head { display: grid; grid-template-columns: 28px 40% 48px 1fr 28px; padding: 0 0 4px; font-size: 12px; color: var(--muted); }
 .dialog-foot { margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; }

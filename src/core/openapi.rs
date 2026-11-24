@@ -54,6 +54,8 @@ pub fn to_collection(v: &Value) -> (Collection, Option<Environment>) {
     };
     let env = base.map(|url| Environment {
         id: Uuid::new_v4(),
+        color: None,
+        protected: false,
         name: title,
         variables: vec![KeyValue::new("baseUrl", url)],
     });

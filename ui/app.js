@@ -136,6 +136,13 @@ const isGql = (r) => r.body_type === 'GraphQL';
 const newContainer = (name) => ({ id: crypto.randomUUID(), name, folders: [], requests: [], headers: [], auth: 'None' });
 const kv = () => ({ enabled: true, key: '', value: '' });
 const activeEnv = () => data.environments.find((e) => e.id === activeEnvId) || null;
+// 环境标签的调色板（存的是名字）。每个颜色上白字 ≥ 5:1，对深 / 浅两种背景都 ≥ 3.3:1，两个主题共用
+const ENV_COLORS = { red: '#C62828', orange: '#B45309', yellow: '#8A6100', green: '#15803D', blue: '#2563EB', purple: '#9333EA' };
+const envColor = (env) => ENV_COLORS[env?.color] || null;
+// 不改数据的方法：对受保护环境发它们不用确认
+const SAFE_METHODS = new Set(['Get', 'Head', 'Options']);
+let guarded = null; // 受保护环境的二次确认：点过一次 Send 后是 guardKey()，换了环境 / 请求 / 方法就作废
+const guardKey = () => { const env = activeEnv(); return env?.protected && !SAFE_METHODS.has(current.method) ? `${env.id} ${current.id} ${current.method}` : null; };
 
 // 防抖保存集合与环境（500ms）。成功无提示；失败必须让用户知道。
 function dirty() {
@@ -359,7 +366,7 @@ function renderUrlMirror() {
 /** URL 下方的"解析后"预览：环境变量换成值，$动态变量和未定义的原样（后者标红） */
 function renderResolved() {
   const env = activeEnv(), url = current.url;
-  const vals = new Map(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.secret ? '••••••' : v.value]) : []);
+  const { vals, sub, extra } = urlParts(current, env);
   const out = $('#resolved-url');
   out.replaceChildren();
   // enc：query 里的键值要按 URL 编码显示，复制出来才是能直接用的地址
@@ -373,14 +380,6 @@ function renderResolved() {
     }
     out.append(enc(str.slice(last)));
   };
-  // 与 core/http.rs 的 build_url 一致：启用且有键名的 param + query 型 ApiKey，
-  // 按 form 编码（空格是 +）追加在已有 query 之后、#fragment 之前
-  const sub = (str) => str.replace(VAR_RE, (m, n) => (vals.has(n) ? vals.get(n) : m));
-  const pairs = current.params.filter((p) => p.enabled && p.key).map((p) => [sub(p.key), sub(p.value)]);
-  const auth = current.auth === 'Off' ? null : current.auth !== 'None' ? current.auth : inheritedAuth(current);
-  const ak = auth?.ApiKey;
-  if (ak?.in_query && ak.key) pairs.push([sub(ak.key), sub(ak.value)]);
-  const extra = new URLSearchParams(pairs).toString();
   const hash = url.indexOf('#'), head = hash < 0 ? url : url.slice(0, hash);
   add(head);
   if (extra) out.append(head.includes('?') ? (/[?&]$/.test(head) ? '' : '&') : '?', extra);
@@ -397,18 +396,43 @@ function renderResolved() {
   $('#resolved').classList.toggle('empty', !url.trim());
   $('#resolved').title = env ? `Resolved with ${env.name}` : 'No environment active';
 }
+/** 变量值表、替换函数和要追加的 query。secret 的值一律换成 ••••••：URL 预览和存进历史的 URL 都走这里，
+ *  所以 secret 不会出现在 history.json 里（请求本身存的是 {{占位符}}，同样不含 secret） */
+function urlParts(req, env) {
+  const vals = new Map(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.secret ? '••••••' : v.value]) : []);
+  const sub = (str) => str.replace(VAR_RE, (m, n) => (vals.has(n) ? vals.get(n) : m));
+  // 与 core/http.rs 的 build_url 一致：启用且有键名的 param + query 型 ApiKey，
+  // 按 form 编码（空格是 +）追加在已有 query 之后、#fragment 之前
+  const pairs = req.params.filter((p) => p.enabled && p.key).map((p) => [sub(p.key), sub(p.value)]);
+  const auth = req.auth === 'Off' ? null : req.auth !== 'None' ? req.auth : inheritedAuth(req);
+  const ak = auth?.ApiKey;
+  if (ak?.in_query && ak.key) pairs.push([sub(ak.key), sub(ak.value)]);
+  return { vals, sub, extra: new URLSearchParams(pairs).toString() };
+}
+/** 存进历史的"当时的完整 URL"：文字和 URL 栏下那行预览一样（$动态变量、未定义的变量保留成 {{…}}） */
+function resolvedUrlText(req, env) {
+  const { sub, extra } = urlParts(req, env), url = req.url;
+  const hash = url.indexOf('#'), head = hash < 0 ? url : url.slice(0, hash);
+  return sub(head) + (extra ? (head.includes('?') ? (/[?&]$/.test(head) ? '' : '&') : '?') + extra : '') + (hash >= 0 ? sub(url.slice(hash)) : '');
+}
 /** 未解析变量提示：常驻在 Send 左侧的固定槽位，不撑开布局 */
 function renderMissing() {
-  const m = $('#missing'), list = unresolvedVars();
+  const m = $('#missing'), list = unresolvedVars(), env = activeEnv();
   const armed = list.length > 0 && JSON.stringify(missing) === JSON.stringify(list);
+  if (guarded !== guardKey()) guarded = null; // 换了环境 / 请求 / 方法：之前那次确认不算数
   // "再点一次才发送"要写在按钮上：只改旁边那行小字，第一次点击看起来就像没反应
-  $('#send').textContent = armed ? 'Send anyway' : 'Send';
+  $('#send').textContent = armed ? 'Send anyway' : guarded ? `Send to ${env.name}` : 'Send';
+  $('#send').classList.toggle('confirm', !!guarded);
+  $('#send').classList.toggle('primary', !guarded);
+  const msg = armed ? 'Send again to send with placeholders as-is'
+    : guarded ? `${env.name} is protected — Send again to ${current.method.toUpperCase()} there`
+    : list.length ? `${list.join(', ')} not defined${env ? ` in ${env.name}` : ''}` : '';
   // Preview 标签下 URL 栏下面那行只为这条提示留着，没有提示就整行收起
-  $('#resolved').classList.toggle('hidden', reqTab === 'preview' && !list.length);
-  m.classList.toggle('hidden', list.length === 0);
-  if (!list.length) { missing = []; return; }
-  m.textContent = armed ? 'Send again to send with placeholders as-is' : `${list.join(', ')} not defined${activeEnv() ? ` in ${activeEnv().name}` : ''}`;
-  m.title = armed ? '' : `Not defined in the active environment: ${list.join(', ')}`;
+  $('#resolved').classList.toggle('hidden', reqTab === 'preview' && !msg);
+  m.classList.toggle('hidden', !msg);
+  if (!list.length) missing = [];
+  m.textContent = msg;
+  m.title = !armed && !guarded && list.length ? `Not defined in the active environment: ${list.join(', ')}` : '';
 }
 
 /** 变量卡片：点 URL 里的 {{var}} 弹出，看当前值、原地改；没定义的直接定义进当前环境。
@@ -453,6 +477,16 @@ function renderTopbar() {
     h('option', { value: '__manage' }, 'Manage environments…'),
   );
   sel.value = activeEnvId || '';
+  const env = activeEnv(), c = envColor(env);
+  sel.classList.toggle('set', !!env);
+  sel.classList.toggle('tinted', !!c);
+  c ? sel.style.setProperty('--env', c) : sel.style.removeProperty('--env');
+  sel.title = env ? `Requests go to ${env.name}${env.protected ? ' — protected: anything but GET, HEAD or OPTIONS needs a second click' : ''}` : 'No environment — {{vars}} are not resolved';
+}
+/** History 行里的环境小标签；颜色按现在同名环境的颜色，环境删了 / 改名了就是中性色 */
+function envChip(name) {
+  const c = envColor(data.environments.find((e) => e.name === name));
+  return h('span', { class: 'env-chip' + (c ? ' tinted' : ''), style: c ? `--env: ${c}` : null, title: `Sent with ${name}` }, name);
 }
 
 // ---------- 侧边栏 ----------
@@ -528,11 +562,11 @@ function renderSidebar() {
       if (day !== lastDay) { lastDay = day; body.append(h('div', { class: 'hist-day' }, dayLabel(t))); }
       const label = histLabel(hist.request);
       body.append(h('div', { class: 'hist', role: 'button', tabindex: 0,
-        title: `${label === hist.request.name ? label + '\n' : ''}${hist.request.method.toUpperCase()} ${hist.request.url}`,
+        title: `${label === hist.request.name ? label + '\n' : ''}${hist.request.method.toUpperCase()} ${hist.resolved_url || hist.request.url}${hist.env_name ? `\nEnvironment: ${hist.env_name}` : ''}`,
         onclick: () => openFromHistory(hist), onkeydown: activate, oncontextmenu: hmenu },
         reqTag(hist.request),
         h('span', { class: hist.status ? `s${Math.floor(hist.status / 100)}` : 's0' }, hist.status ?? 'ERR'),
-        h('span', { class: 'hist-label' }, label), btn('⋯', hmenu, 'small more').withAttr('aria-label', 'History entry actions'),
+        h('span', { class: 'hist-label' }, hist.env_name ? envChip(hist.env_name) : null, label), btn('⋯', hmenu, 'small more').withAttr('aria-label', 'History entry actions'),
         h('span', { class: 'muted hist-time' }, hhmm)));
     }
     return;
@@ -1019,7 +1053,7 @@ function openFromHistory(hist) {
   const home = found ? null : homeCollection();
   if (!found) { home.requests.push(r); dirty(); }
   // 当时的响应还留着就放回响应面板，不用重发（重发 POST 是有副作用的）
-  if (hist.response) setResponse(r.id, { ok: { ...hist.response, body_base64: null, from_history: hist.timestamp } });
+  if (hist.response) setResponse(r.id, { ok: { ...hist.response, body_base64: null, from_history: hist.timestamp, from_env: hist.env_name, from_url: hist.resolved_url } });
   selectRequest(r);
   if (!found) {
     toast(`Restored deleted request “${r.name}” to “${home.name}”.`, { action: ['Undo', () => {
@@ -1109,7 +1143,19 @@ async function runCollection(container) {
   const rows = flat.map(({ r, path }) => h('div', { class: 'run-row', role: 'button', tabindex: 0, title: 'Open this request', onclick: () => openRow(r), onkeydown: activate },
     h('span', { class: 'st muted' }, '·'), h('span', { class: 'name' }, path), h('span', { class: 'meta muted' }, '')));
   put(list, ...rows); summary.textContent = `0 / ${flat.length}`; dlg.showModal();
-  const env = activeEnv();
+  const env = activeEnv(); // 整轮都发到开跑时的环境：跑到一半切环境不能绕过下面的确认
+  const writes = flat.filter(({ r }) => !SAFE_METHODS.has(r.method)).length;
+  if (env?.protected && writes) {
+    // 和 Send 一样：不另弹框，在运行窗口里多一步确认；关掉窗口 = 不跑
+    $('#run-stop').classList.add('hidden');
+    summary.textContent = `${env.name} is protected — ${writes} of ${flat.length} requests would change data there`;
+    const go = btn(`Run in ${env.name}`, null, 'small confirm');
+    $('#run-stop').before(go); go.focus();
+    const ok = await new Promise((resolve) => { go.onclick = () => resolve(true); dlg.addEventListener('close', () => resolve(false), { once: true }); });
+    go.remove();
+    if (!ok) { running = false; runKept = false; renderRunStatus(); return; }
+    $('#run-stop').classList.remove('hidden'); summary.textContent = `0 / ${flat.length}`;
+  }
   let pass = 0, fail = 0;
   const status = () => {
     $('#run-reopen').textContent = `${running ? 'Running' : 'Ran'} “${container.name}” · ${pass + fail} / ${flat.length}`
@@ -1126,7 +1172,7 @@ async function runCollection(container) {
     const unresolved = unresolvedVars(r);
     let ok, meta;
     try {
-      const dto = await invoke('send_request', { job_id: ++jobSeq, request: req, env: activeEnv(),
+      const dto = await invoke('send_request', { job_id: ++jobSeq, request: req, env,
         options: { timeout_secs: timeoutSecs, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
       const asserts = await runAsserts(req, dto);
       ok = asserts ? asserts.every((a) => a.ok) : dto.status < 400;
@@ -1645,12 +1691,16 @@ function authEditor(obj = current, rerender = renderRequest, container = false) 
 async function send() {
   if (isPending()) return;
   if (!current.url.trim()) { $('#url').focus(); return; }
+  // 受保护环境 + 会改数据的方法：同样是第一次点击只提示，再点一次才发
+  const g = guardKey();
+  if (g && g !== guarded) { guarded = g; renderMissing(); return; }
   const m = unresolvedVars();
   // 有未定义变量：第一次点击只提示（Send 旁的槽位变成"再点一次即发送"），第二次强制发送
   if (m.length && JSON.stringify(m) !== JSON.stringify(missing)) { missing = m; renderMissing(); return; }
-  missing = [];
+  missing = []; guarded = null;
   const id = ++jobSeq, rid = current.id, req = structuredClone(current), chain = chainFor(current) || [];
   const capEnv = activeEnv(); // 目标环境按发送时算：飞行中切环境不能把 dev 的 token 写进 prod
+  const sentUrl = resolvedUrlText(current, capEnv);
   pendings.set(rid, id); responses.delete(rid); sentAt.set(rid, performance.now()); flash(null);
   renderRequestHeader(); renderResponse(); renderSidebar(); renderTabs();
   let status = null, duration_ms = null, result;
@@ -1668,7 +1718,8 @@ async function send() {
     if (cap) toast(cap.ok || cap.error, { error: !cap.ok });
     if (cap?.ok) renderRequest();
   }
-  data.history.push({ timestamp: new Date().toISOString(), request: req, status, duration_ms, response: storedResponse(result.ok) });
+  data.history.push({ timestamp: new Date().toISOString(), request: req, status, duration_ms, response: storedResponse(result.ok),
+    env_name: capEnv?.name ?? null, resolved_url: sentUrl });
   if (data.history.length > HISTORY_LIMIT) data.history.splice(0, data.history.length - HISTORY_LIMIT);
   // 只有最近 HISTORY_BODIES 条留响应体
   for (let i = 0; i < data.history.length - HISTORY_BODIES; i++) data.history[i].response = null;
@@ -1892,8 +1943,8 @@ function renderResponse() {
     h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: r.ttfb_ms != null ? `Time to first byte ${r.ttfb_ms} ms (connect + server), then ${r.duration_ms - r.ttfb_ms} ms downloading` : 'Time from request start to last byte received' }, `${r.duration_ms} ms`),
     r.ttfb_ms != null && r.duration_ms - r.ttfb_ms >= 50 ? h('span', { class: 'meta muted', title: 'Time to first byte' }, `TTFB ${r.ttfb_ms} ms`) : null,
     h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: 'Body size' }, fmtSize(r.size_bytes)),
-    r.from_history ? h('span', { class: 'meta from-history', title: `Kept from ${new Date(r.from_history).toLocaleString()} — press Send for a fresh one` },
-      r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null),
+    r.from_history ? h('span', { class: 'meta from-history', title: `Kept from ${new Date(r.from_history).toLocaleString()}${r.from_url ? `\n${r.from_url}` : ''} — press Send for a fresh one` },
+      (r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') + (r.from_env ? ` · ${r.from_env}` : '')) : null),
     h('span', { class: 'actions' }, r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost')),
   );
   // 跟过的每一跳都列出来；3xx 说明停下了，说清为什么并给一键跟进
@@ -2186,12 +2237,12 @@ function renderEnvDialog() {
   };
   list.replaceChildren(
     ...data.environments.map((e) => h('button', { class: 'item' + (e === envSel ? ' active' : ''), onclick: () => { envSel = e; renderEnvDialog(); } },
-      h('span', { class: 'name' }, e.name),
+      h('span', { class: 'dot tinted', style: envColor(e) ? `--env: ${envColor(e)}` : 'visibility: hidden' }), h('span', { class: 'name' }, e.name),
       e.id === activeEnvId ? h('span', { class: 'badge' }, 'Active') : h('span', { class: 'meta muted' }, `${e.variables.filter((v) => v.key).length}`))),
     btn('+ New environment', newEnv, 'small ghost new'),
   );
   editor.replaceChildren();
-  if (!data.environments.length) { editor.append(emptyState('No environments yet', 'An environment is a named set of variables — dev, staging, production. Switch between them from the top bar.', ['Create environment', newEnv])); return; }
+  if (!data.environments.length) { editor.append(emptyState('No environments yet', 'An environment is a named set of variables — dev, staging, production. Switch between them next to the Send button.', ['Create environment', newEnv])); return; }
   if (!envSel) { editor.append(emptyState('Pick an environment', 'Select one on the left to edit its variables.')); return; }
   const env = envSel, isActive = env.id === activeEnvId;
   const del = () => {
@@ -2209,6 +2260,13 @@ function renderEnvDialog() {
       btn('Duplicate', () => { const d = structuredClone(env); d.id = crypto.randomUUID(); d.name += ' copy'; data.environments.splice(data.environments.indexOf(env) + 1, 0, d); envSel = d; dirty(); renderEnvDialog(); renderTopbar(); }),
       btn('Delete', del, 'small ghost'),
     ),
+    h('div', { class: 'env-opts' }, h('span', { class: 'muted' }, 'Color'),
+      ...[null, ...Object.keys(ENV_COLORS)].map((c) => h('button', { class: 'swatch' + (c ? ' tinted' : ''), style: c ? `--env: ${ENV_COLORS[c]}` : null,
+        title: c ? c[0].toUpperCase() + c.slice(1) : 'No color', 'aria-label': c ? `Color ${c}` : 'No color', 'aria-pressed': String((env.color || null) === c),
+        onclick: () => { env.color = c; dirty(); renderEnvDialog(); renderTopbar(); renderSidebar(); } })),
+      h('label', { title: 'Sending anything but GET, HEAD or OPTIONS to this environment takes a second click, in the Runner too' },
+        h('input', { type: 'checkbox', class: 'switch', checked: !!env.protected, onchange: (e) => { env.protected = e.target.checked; dirty(); renderTopbar(); renderMissing(); } }),
+        'Protected — confirm before changing data')),
     h('div', { class: 'vars-head' }, h('span'), h('span', {}, 'Name'), h('span'), h('span', {}, 'Value'), h('span')),
     h('div', { class: 'vars' }, kvTable(env.variables, 'e.g. base_url', 'e.g. https://api.example.com', renderEnvDialog, { secrets: true })),
     h('div', { class: 'helper' }, 'Locked values are secrets: kept in the macOS keychain, masked here, and left out of exports, project folders and history. The eye shows one temporarily; it stays secret.'),
@@ -2448,7 +2506,7 @@ function bind() {
   $('#env-select').onchange = (e) => {
     if (e.target.value === '__manage') { e.target.value = activeEnvId || ''; envSel = activeEnv(); renderEnvDialog(); $('#env-dialog').showModal(); return; }
     setActiveEnv(e.target.value);
-      missing = []; renderRequestHeader(); renderRequest();
+      missing = []; renderTopbar(); renderRequestHeader(); renderRequest();
   };
   // 原生菜单（macOS 菜单栏里可见快捷键）触发的动作
   window.__TAURI__.event?.listen('menu', ({ payload }) => {

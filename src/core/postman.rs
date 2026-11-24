@@ -198,6 +198,8 @@ pub fn to_collection(v: &Value) -> Collection {
 
 pub fn to_environment(v: &Value) -> Environment {
     Environment {
+        color: None,
+        protected: false,
         id: uuid::Uuid::new_v4(),
         name: {
             let n = s(&v["name"]);
