@@ -303,7 +303,19 @@ summary[data-drop=into] { background: var(--active); box-shadow: inset 0 0 0 1px
 .empty strong { color: var(--text-2); font-weight: 500; font-size: 14px; }
 /* 吸顶：搜索结果滚动时置顶区不跟着滚走；太多时自己滚，不把下面的树挤没 */
 details.pinned { position: sticky; top: 0; z-index: 2; max-height: 40vh; overflow-y: auto; background: var(--bg-sidebar); margin: 0 -8px 4px; padding: 0 8px 4px; border-bottom: 1px solid var(--border); }
-details.pinned > summary .name { flex: none; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+details.pinned > summary .name, details.recent > summary .name { flex: none; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+/* Recent 和 Pinned 一样的分区样式，但不吸顶：两个都吸在 top:0 会叠在一起 */
+details.recent { margin: 0 -8px 4px; padding: 0 8px 4px; border-bottom: 1px solid var(--border); }
+/* 搜索结果行：名字一行，下面路径、URL 各一行小字 */
+.req.result { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; grid-template-areas: "m n x" ". p p" ". u u"; column-gap: 6px; height: auto; padding: 4px 8px; contain-intrinsic-size: auto 52px; }
+.req.result > .method { grid-area: m; }
+.req.result > .name, .req.result > .rename { grid-area: n; }
+.req.result > .name { line-height: 18px; }
+.req.result > .more, .req.result > .spinner { grid-area: x; align-self: center; height: 18px; }
+.req.result > .sub { grid-area: p; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; line-height: 15px; color: var(--muted); }
+/* 路径太长时省略开头：最里层的文件夹最能区分重名请求，完整路径在行的 title 里 */
+.req.result > .sub:not(.url) { direction: rtl; text-align: left; }
+.req.result > .sub.url { grid-area: u; font-family: var(--font-mono); }
 .empty-hint { margin-left: 24px; padding: 2px 4px; color: var(--muted); font-size: 12px; }
 .hist .more { margin-left: auto; }
 
