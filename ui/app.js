@@ -111,7 +111,7 @@ let renaming = null;   // 正在重命名的对象（collection / folder / reque
 let envSel = null;     // env 对话框中选中的环境
 let saveTimer = null;
 let saving = Promise.resolve(); // 已经在写盘的那次保存；更新后重启前要等它写完
-let filter = '';       // 侧栏搜索关键字（匹配集合/文件夹/请求名、URL）
+let filter = '';       // 侧栏搜索关键字（Collections 下匹配请求名、路径、URL；History 下匹配名字、URL）
 let searchIdx = -1;    // 搜索框里 ↑/↓ 选中的是第几条可见结果；-1 = 没有高亮
 let respQuery = '';    // 响应区的查询框，跨请求保留：以 $ 开头是 JSONPath 过滤，否则是正文查找
 let bodyQuery = '';    // 请求体的查找框，跨请求保留
@@ -122,9 +122,6 @@ const selected = new Set();    // 侧栏多选（⌘点击 / Shift 点击）的�
 let anchor = null;             // 上次点击的请求：Shift 点击从它选到被点的那一行
 let dragging = null;           // { arr, r, kind } 正在拖动的请求；拖文件夹 / 集合时 kind 是 'folder' / 'collection'，r 是那个容器
 const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘时保持）
-// 搜索时默认全展开，但用户在搜索结果里手动收起的要记住——否则发送请求等任何重绘都会把它们全部弹开。
-// 换了关键字就清空：新结果按新结果展开
-const searchCollapsed = new Set();
 
 /** kind: 'http' | 'graphql'。GraphQL 请求固定 POST，body 存 query，变量在 graphql_variables */
 function newRequest(name = 'Untitled request', kind = 'http') {
@@ -542,11 +539,11 @@ function renderSidebar() {
     body.append(emptyState('No collections yet', 'A collection keeps the requests you want to reuse, in folders if you like.', ['Create a collection', addCol]));
     return;
   }
-  const shown = data.collections.filter((c) => filterView(c).show);
   const pins = pinnedNode();
   if (pins) body.append(pins);
-  if (q() && !shown.length) { body.append(emptyState(`Nothing matches “${filter.trim()}”`, 'Names of collections, folders and requests are searched, and request URLs.')); return; }
-  shown.forEach((c) => body.append(containerNode(c, data.collections)));
+  // 有关键字：扁平结果列表（Quick Open）；没有：Recent + 集合树
+  if (q()) body.append(...resultNodes());
+  else body.append(...[recentNode()].filter(Boolean), ...data.collections.map((c) => containerNode(c, data.collections)));
   // 重绘把原来聚焦的行换成了新节点：焦点还给同一行，方向键才能接着走
   if (focused) allRows().filter((el) => el.dataset.id === focused[0])[focused[1]]?.focus();
   body.querySelector('input.rename')?.focus();
@@ -558,12 +555,49 @@ function addCollection() { data.collections.push(newContainer(`Collection ${data
 // ---------- 搜索过滤 ----------
 const q = () => filter.trim().toLowerCase();
 const hit = (s) => !!q() && (s || '').toLowerCase().includes(q());
-/** 容器名命中 → 整个子树都显示；否则只显示命中的后代，且至少有一个才显示容器本身 */
-function filterView(c) {
-  if (!q() || hit(c.name)) return { folders: c.folders, requests: c.requests, show: true };
-  const folders = c.folders.filter((f) => filterView(f).show);
-  const requests = c.requests.filter((r) => hit(r.name) || hit(r.url));
-  return { folders, requests, show: folders.length + requests.length > 0 };
+const RESULT_LIMIT = 100; // 单字母能命中上千条，全画出来没人看，只会拖慢每次按键
+/** 所有请求连同所在路径（集合 › 文件夹 › …）。每次按键现算：1800 个请求约 1ms，不值得缓存再处理失效 */
+function requestIndex(nodes = data.collections, path = [], out = []) {
+  for (const n of nodes) {
+    const p = [...path, n.name];
+    n.requests.forEach((r) => out.push({ r, arr: n.requests, path: p.join(' › ') }));
+    requestIndex(n.folders, p, out);
+  }
+  return out;
+}
+/** 每个 request.id 的使用分：每次发送记 1 分，一周减半——发得多、发得近都靠前 */
+function usage() {
+  const now = Date.now(), m = new Map();
+  for (const x of data.history) {
+    const id = x.request?.id;
+    if (id) m.set(id, (m.get(id) || 0) + (0.5 ** ((now - Date.parse(x.timestamp)) / 6048e5) || 0));
+  }
+  return m;
+}
+/** 多词 AND、不分顺序，每个词在名字、路径、URL 任一处出现即可。
+ *  排序：使用分高的在前；同分时命中名字的词多的在前（名字命中优先于路径 / URL 命中）；再同就按树里的顺序 */
+function searchResults() {
+  const words = q().split(/\s+/), use = usage(), out = [];
+  for (const e of requestIndex()) {
+    const name = (e.r.name || '').toLowerCase(), path = e.path.toLowerCase(), url = (e.r.url || '').toLowerCase();
+    let names = 0;
+    if (words.every((w) => (name.includes(w) ? ++names : path.includes(w) || url.includes(w)))) out.push({ ...e, names, use: use.get(e.r.id) || 0 });
+  }
+  return out.sort((a, b) => b.use - a.use || b.names - a.names);
+}
+/** 结果行：复用请求行（点击、右键菜单、重命名都一样），下面多两行小字：路径和 URL——重名请求靠它们分清 */
+function resultNodes() {
+  const found = searchResults();
+  if (!found.length) return [emptyState(`Nothing matches “${filter.trim()}”`, 'Request names, folder paths and URLs are searched; words can be in any order.')];
+  const rows = found.slice(0, RESULT_LIMIT).map(({ r, arr, path }) => {
+    const row = requestRow(r, arr, false);
+    row.classList.add('result');
+    row.title = `${path}\n${r.method.toUpperCase()} ${r.url}`;
+    row.append(h('span', { class: 'sub' }, path), h('span', { class: 'sub url' }, urlPath(r.url) || r.url || '(no URL)'));
+    return row;
+  });
+  if (found.length > RESULT_LIMIT) rows.push(h('div', { class: 'empty-hint' }, `${found.length - RESULT_LIMIT} more — add a word to narrow it down`));
+  return rows;
 }
 
 /** 搜索框键盘导航能走到的行，按 DOM 顺序。收起的容器里的行还在 DOM 里，要排除；
@@ -671,12 +705,12 @@ function cloneContainer(c) {
 function containerNode(c, parentArr, isFolder = false) {
   const menu = (e) => openMenu(e, [
     ...[['http', 'New HTTP request'], ['graphql', 'New GraphQL request']].map(([kind, label]) =>
-      [label, () => { const r = newRequest(undefined, kind); c.requests.push(r); collapsed.delete(c.id); searchCollapsed.delete(c.id); dirty(); selectRequest(r); }]),
+      [label, () => { const r = newRequest(undefined, kind); c.requests.push(r); collapsed.delete(c.id); dirty(); selectRequest(r); }]),
     // 新文件夹放最上面，并直接进入重命名（放在末尾时文件夹多了要往下翻才找得到）
     ['New folder', () => {
       const f = newContainer('New folder'); c.folders.unshift(f); collapsed.delete(c.id);
       // 搜索中新文件夹会被过滤掉，重命名框出不来、还会留着等下次重绘抢焦点：先清掉搜索
-      if (filter) { filter = $('#search').value = ''; searchCollapsed.clear(); }
+      if (filter) filter = $('#search').value = '';
       renaming = f; dirty(); renderSidebar();
     }],
     '-',
@@ -694,7 +728,6 @@ function containerNode(c, parentArr, isFolder = false) {
     '-',
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
-  const view = filterView(c);
   // 拖到容器标题上：请求 → 追加到该容器末尾；文件夹 / 集合 → 看光标位置（boxDrop）
   const dropAt = (e) => (dragging?.kind ? boxDrop(e, c, isFolder) : dragging && 'into');
   const dropOnContainer = (e) => {
@@ -702,12 +735,11 @@ function containerNode(c, parentArr, isFolder = false) {
     e.preventDefault(); delete e.currentTarget.dataset.drop;
     if (!at) return;
     if (at !== 'into') return moveDragged(parentArr, parentArr.indexOf(c) + (at === 'after' ? 1 : 0));
-    collapsed.delete(c.id); searchCollapsed.delete(c.id);
+    collapsed.delete(c.id);
     const into = dragging.kind ? c.folders : c.requests;
     moveDragged(into, into.length);
   };
-  const set = q() ? searchCollapsed : collapsed;
-  return h('details', { open: !set.has(c.id), ontoggle: (e) => { e.target.open ? set.delete(c.id) : set.add(c.id); } },
+  return h('details', { open: !collapsed.has(c.id), ontoggle: (e) => { e.target.open ? collapsed.delete(c.id) : collapsed.add(c.id); } },
     h('summary', { 'data-id': c.id, oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
       draggable: renaming === c ? null : 'true', // 重命名时让出鼠标：输入框里要能拖选文字
       ondragstart: (e) => { dragging = { arr: parentArr, r: c, kind: isFolder ? 'folder' : 'collection' }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', c.name); },
@@ -715,9 +747,9 @@ function containerNode(c, parentArr, isFolder = false) {
       ondragover: (e) => { const at = dropAt(e); if (at) { e.preventDefault(); e.currentTarget.dataset.drop = at; } else delete e.currentTarget.dataset.drop; },
       ondragleave: (e) => { delete e.currentTarget.dataset.drop; }, ondrop: dropOnContainer },
       nameNode(c), c.project_dir ? h('span', { class: 'proj', title: `Synced to ${c.project_dir}` }, '⎇') : null, btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
-    !q() && !c.folders.length && !c.requests.length && h('div', { class: 'empty-hint' }, 'Empty — right-click to add a request, or paste a curl into the URL field'),
-    ...view.folders.map((f) => containerNode(f, c.folders, true)),
-    ...view.requests.map((r) => requestRow(r, c.requests)),
+    !c.folders.length && !c.requests.length && h('div', { class: 'empty-hint' }, 'Empty — right-click to add a request, or paste a curl into the URL field'),
+    ...c.folders.map((f) => containerNode(f, c.folders, true)),
+    ...c.requests.map((r) => requestRow(r, c.requests)),
   );
 }
 
@@ -754,9 +786,10 @@ function requestRow(r, arr, drag = true) {
 }
 
 /** Shift 点击：选中上次点击的行到这一行之间所有可见的请求。起点不在了（没点过、被收起或过滤掉）返回 false，按普通点击处理。
- *  只在被点的那个区里找（Pinned 区或集合树）：置顶的请求两边各有一行，混着算 id 不唯一 */
+ *  只在被点的那个区里找（Pinned / Recent 区或集合树）：同一个请求在几个区里各有一行，混着算 id 不唯一 */
 function selectRange(row) {
-  const rows = treeRows().filter((el) => el.matches('.req') && !el.closest('.pinned') === !row.closest('.pinned'));
+  const zone = (el) => el.closest('.pinned, .recent');
+  const rows = treeRows().filter((el) => el.matches('.req') && zone(el) === zone(row));
   const a = rows.findIndex((el) => el.dataset.id === anchor?.id), b = rows.indexOf(row);
   if (a < 0) return false;
   selected.clear();
@@ -780,6 +813,22 @@ function pinnedNode() {
       ontoggle: (e) => { e.target.open ? collapsed.delete('pinned') : collapsed.add('pinned'); } },
     h('summary', {}, h('span', { class: 'name' }, 'Pinned'), h('span', { class: 'muted' }, String(pins.length))),
     ...pins.map((r) => requestRow(r, locateArr(r) || [], false)));
+}
+
+const RECENT = 8;
+let recentOpen = pref('firebee.recentOpen', true);
+/** 侧栏顶部的 Recent 区：最近发过、还在集合里的请求，按 id 去重；没有时不占位。展开 / 收起记在本机 */
+function recentNode() {
+  const byId = new Map(allRequests().map((r) => [r.id, r])), seen = new Set(), rows = [];
+  for (let i = data.history.length - 1; i >= 0 && rows.length < RECENT; i--) {
+    const r = byId.get(data.history[i].request?.id);
+    if (r && !seen.has(r)) { seen.add(r); rows.push(r); }
+  }
+  if (!rows.length) return null;
+  return h('details', { class: 'recent', open: recentOpen,
+      ontoggle: (e) => { recentOpen = e.target.open; try { localStorage.setItem('firebee.recentOpen', recentOpen ? '1' : '0'); } catch { /* private mode */ } } },
+    h('summary', {}, h('span', { class: 'name' }, 'Recent')),
+    ...rows.map((r) => requestRow(r, locateArr(r) || [], false)));
 }
 Element.prototype.withAttr = function (k, v) { if (v !== undefined) this.setAttribute(k, v); return this; };
 
@@ -1061,7 +1110,7 @@ const exportItems = (req) => [['Export as curl', () => exportCode(req, 'curl')],
 async function importCurl(text, onError, into = null) {
   try {
     const r = await invoke('import_curl', { text });
-    if (into) { into.requests.push(r); collapsed.delete(into.id); searchCollapsed.delete(into.id); dirty(); selectRequest(r); return true; }
+    if (into) { into.requests.push(r); collapsed.delete(into.id); dirty(); selectRequest(r); return true; }
     const keepName = !isAutoName(current);
     const target = current, before = structuredClone(current);
     // import_curl 返回的是全新的 Request，captures / pinned 是空的——
@@ -2462,9 +2511,9 @@ function bind() {
   $('#env-dialog').addEventListener('close', renderRequestHeader); // 对话框里改过的变量要反映到 URL 预览
 
   document.querySelectorAll('[data-side]').forEach((b) => b.onclick = () => { sideTab = b.dataset.side; renderSidebar(); });
-  $('#search').oninput = (e) => { filter = e.target.value; searchIdx = q() ? 0 : -1; searchCollapsed.clear(); renderSidebar(); };
+  $('#search').oninput = (e) => { filter = e.target.value; searchIdx = q() ? 0 : -1; renderSidebar(); };
   $('#search').onkeydown = (e) => {
-    if (e.key === 'Escape' && filter) { e.stopPropagation(); filter = e.target.value = ''; searchIdx = -1; searchCollapsed.clear(); renderSidebar(); }
+    if (e.key === 'Escape' && filter) { e.stopPropagation(); filter = e.target.value = ''; searchIdx = -1; renderSidebar(); }
     // 输入法选词时的 ↑/↓/Enter 归输入法；WebKit 上确认选词的那次 keydown isComposing 已经是 false，只能看 229
     if (e.isComposing || e.keyCode === 229 || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); searchIdx = Math.max(0, searchIdx + (e.key === 'ArrowDown' ? 1 : -1)); markSearchHit(true); }
