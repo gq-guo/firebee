@@ -1848,6 +1848,47 @@ const fmtSize = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 10
 
 const contentType = (r) => (r.headers.find(([k]) => k.toLowerCase() === 'content-type')?.[1] || '').toLowerCase();
 
+// ---------- 和上一次比 ----------
+/** 同一请求、留了响应体的历史，以及当前显示的这次响应在里面的下标（刚发完还没写进历史时 = 长度；对不上 = -1） */
+function historyOf(r) {
+  const list = data.history.filter((x) => x.request.id === current.id && x.response && (x.response.body || !x.response.size_bytes));
+  if (r.from_history) return [list, list.findIndex((x) => x.timestamp === r.from_history)];
+  // 新鲜响应：send() 写完历史才重绘，所以最后一条通常就是它
+  const last = list.at(-1)?.response;
+  const same = last && last.status === r.status && last.duration_ms === r.duration_ms && last.size_bytes === r.size_bytes;
+  return [list, same ? list.length - 1 : list.length];
+}
+const previousOf = (r) => { const [list, i] = historyOf(r); return i > 0 ? list[i - 1] : null; };
+
+/** 「Compare」标签：状态码、耗时、响应体逐行 diff（diff 在 Rust 侧算，有大小上限） */
+function compareView(r, prev) {
+  const p = prev.response, dt = r.duration_ms - p.duration_ms, cut = p.truncated || r.truncated;
+  const code = (s) => h('b', { class: `s${Math.floor(s / 100)}` }, s);
+  const note = h('div', { class: 'muted' }, 'Comparing…');
+  const wrap = h('div', { class: 'cmp' },
+    h('div', { class: 'cmp-head' },
+      h('span', { class: 'muted' }, `Previous: ${new Date(prev.timestamp).toLocaleString()}`),
+      h('span', {}, 'Status ', p.status === r.status ? code(r.status) : [code(p.status), ' → ', code(r.status)]),
+      h('span', {}, `Time ${p.duration_ms} → ${r.duration_ms} ms (${dt >= 0 ? '+' : '−'}${Math.abs(dt)} ms)`)),
+    cut ? h('div', { class: 'helper cmp-cut' }, '⚠ Incomplete: a body was cut to its first 64 KB when saved to history, so only the first 64 KB of each is compared.') : null,
+    note);
+  let [a, b] = [p.body, r.body || ''];
+  if (cut) { a = clipBytes(a, HISTORY_BODY_MAX)[0]; b = clipBytes(b, HISTORY_BODY_MAX)[0]; }
+  let json = [r, p].some((x) => contentType(x).includes('json'));
+  if (!json) try { JSON.parse(r.body); json = true; } catch { /* 不是 JSON，按原文逐行比 */ }
+  invoke('diff_bodies', { old: a, new: b, json }).then((d) => {
+    if (d.too_large) return put(note, `Too large to compare — ${d.too_large}.`);
+    if (!d.lines.length) return put(note, h('strong', {}, p.status === r.status ? 'No changes' : 'Body unchanged'),
+      p.status === r.status ? ' — same status and body as last time.' : ' — only the status changed.');
+    const mark = { add: '+', del: '−', same: ' ' };
+    put(note, h('span', { class: 'diff-n add' }, `+${d.added}`), ' ', h('span', { class: 'diff-n del' }, `−${d.removed}`), ` line${d.added + d.removed > 1 ? 's' : ''}`);
+    wrap.append(h('div', { class: 'diff' }, ...d.lines.map((l) => l.op === 'skip'
+      ? h('div', { class: 'diff-skip' }, `⋯ ${l.text} unchanged line${l.text > 1 ? 's' : ''}`)
+      : h('div', { class: `diff-${l.op}` }, h('span', { class: 'diff-mark' }, mark[l.op]), l.text))));
+  }, (e) => put(note, h('span', { class: 'error' }, String(e))));
+  return wrap;
+}
+
 let waitTick = null;
 function renderResponse() {
   const meta = $('#resp-meta'), body = $('#resp-body'), tabs = $('#resp-tabs');
@@ -1921,12 +1962,17 @@ function renderResponse() {
   const previewTab = document.querySelector('[data-resp=preview]');
   previewTab.classList.toggle('hidden', !isHtml);
   if (respTab === 'preview' && !isHtml) respTab = 'body';
+  // 历史里有上一次的响应体才出现 Compare；没有时界面和原来一样
+  const prev = r.body_base64 ? null : previousOf(r);
+  document.querySelector('[data-resp=diff]').classList.toggle('hidden', !prev);
+  if (respTab === 'diff' && !prev) respTab = 'body';
   setTab('resp', respTab);
   put(document.querySelector('[data-resp=headers]'), 'Headers', h('span', { class: 'n' }, r.headers.length));
   if (respTab === 'headers') {
     body.append(h('table', { class: 'hdrs' }, ...r.headers.map(([k, v]) => h('tr', {}, h('td', {}, k), h('td', {}, v)))));
     return;
   }
+  if (respTab === 'diff') { body.append(compareView(r, prev)); return; }
   if (respTab === 'preview') {
     // 沙箱 iframe：无脚本、无同源、无表单提交
     body.append(h('iframe', { sandbox: '', srcdoc: r.body, title: 'HTML preview' }));
