@@ -366,6 +366,13 @@ fn effective(a: &Auth) -> bool {
 pub struct Environment {
     pub id: Uuid,
     pub name: String,
+    /// 标签颜色，界面调色板里的名字（"red"、"blue"…）；None = 不着色。
+    /// 用字符串不用枚举：以后加颜色，旧版读到不认识的值也不会把整个文件当成新版数据拒写
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// 受保护（production 之类）：发 GET / HEAD / OPTIONS 以外的请求要再点一次确认
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protected: bool,
     pub variables: Vec<KeyValue>,
 }
 
@@ -417,6 +424,12 @@ pub struct HistoryEntry {
     /// 老的 history.json 没有这个字段
     #[serde(default)]
     pub response: Option<StoredResponse>,
+    /// 发送时的环境名；没选环境 / 老历史是 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_name: Option<String>,
+    /// 变量替换后的 URL。secret 变量的值在前端就换成了 ••••••，不会落进 history.json
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_url: Option<String>,
 }
 
 #[cfg(test)]
@@ -760,6 +773,8 @@ mod tests {
     fn environment_var_map_filters() {
         let env = Environment {
             id: uuid::Uuid::new_v4(),
+            color: None,
+            protected: false,
             name: "dev".into(),
             variables: vec![
                 KeyValue::new("base_url", "https://dev.api.com"),
@@ -777,5 +792,53 @@ mod tests {
         assert_eq!(map.get("base_url").unwrap(), "https://dev.api.com");
         assert!(!map.contains_key("skip"));
         assert!(!map.contains_key(""));
+    }
+
+    #[test]
+    fn environment_without_color_or_protected_loads() {
+        // 0.6.1 及之前的 environments.json：没有 color / protected
+        let old = r#"{"id":"00000000-0000-0000-0000-000000000001","name":"prod","variables":[]}"#;
+        let e: Environment = serde_json::from_str(old).unwrap();
+        assert_eq!(e.color, None);
+        assert!(!e.protected);
+        // 没设的时候也不往文件里写，老版本读到的还是原样
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(
+            !json.contains("color") && !json.contains("protected"),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn environment_color_and_protected_roundtrip() {
+        let old = r#"{"id":"00000000-0000-0000-0000-000000000001","name":"prod","variables":[],
+            "color":"red","protected":true}"#;
+        let e: Environment = serde_json::from_str(old).unwrap();
+        assert_eq!(e.color.as_deref(), Some("red"));
+        assert!(e.protected);
+        let back: Environment = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+        assert_eq!(back.color.as_deref(), Some("red"));
+        assert!(back.protected);
+    }
+
+    #[test]
+    fn history_entry_without_env_fields_loads_and_new_fields_roundtrip() {
+        let old = r#"{"timestamp":"2026-01-01T10:00:00+08:00","request":{"id":"00000000-0000-0000-0000-000000000001",
+            "name":"a","method":"Post","url":"{{base}}/x","params":[],"headers":[],"body_type":"None","body":"",
+            "form":[],"auth":"None"},"status":401,"duration_ms":12}"#;
+        let mut h: HistoryEntry = serde_json::from_str(old).unwrap();
+        assert_eq!(h.env_name, None);
+        assert_eq!(h.resolved_url, None);
+        assert!(h.response.is_none());
+        h.env_name = Some("production".into());
+        h.resolved_url = Some("https://api.example.com/x?k=••••••".into());
+        let back: HistoryEntry = serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
+        assert_eq!(back.env_name.as_deref(), Some("production"));
+        assert_eq!(
+            back.resolved_url.as_deref(),
+            Some("https://api.example.com/x?k=••••••")
+        );
+        assert_eq!(back.request.url, "{{base}}/x");
+        assert_eq!(back.status, Some(401));
     }
 }

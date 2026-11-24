@@ -50,6 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 **变量与环境**
 - 环境变量可标 🔒 Secret：值存 macOS 钥匙串，不进 environments.json / 导出 / 项目目录 / 历史，界面遮罩
 - 多环境切换，`{{variable}}` 在 URL / 参数 / 头 / 体 / 认证中替换；URL 里的变量实时着色（可解析绿、未解析橙），Send 旁显示未解析数量，再点一次强制发送
+- 环境标签紧挨 Send：环境可设颜色（production 标红一眼可见），点标签切换；环境可标「受保护」，对它发 GET / HEAD / OPTIONS 以外的请求要再点一次 Send 确认，Runner 跑到它也要先确认
 - 点 URL 里的 `{{var}}` 弹出变量卡片：看当前值、原地改；没定义的直接定义进当前环境
 - 输入 `{{` 自动补全环境变量与动态变量
 - 动态变量：`{{$uuid}}`、`{{$timestamp}}`、`{{$randomEmail}}`、`{{$randomFullName}}` 等 29 个（名字与 Postman 一致），
@@ -62,6 +63,7 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - 没起过名字的请求按 URL 路径自动命名（`/v2/orders`），自己起的名字不会被改
 - 侧栏搜索（⌘K）：多个词不分顺序，在请求名、所在路径和 URL 里找，结果是一张扁平列表，每行带方法、路径（集合 › 文件夹 › …）和 URL，重名请求一眼分清；常发、最近发的排前面。↑ / ↓ 选结果，Enter 打开，Esc 清空
 - 侧栏顶部的 Recent 区：最近发过的几个请求（去重），可折叠，折叠状态记在本机
+- 历史每条记下发送时的环境和变量替换后的完整 URL（secret 显示为 ••••••，不落盘），列表里带环境小标签，分得清某次 401 是在哪个环境
 - 历史最近 500 条，点击回填；最近 100 条连响应体一起留着（单条上限 64KB），点回去直接看当时的返回，不用重发
 - 集合 / 文件夹可配公共 header 与 auth（右键 → Shared headers & auth…），下属请求自动带上；请求自己同名的覆盖它，选 **No auth** 则一条凭据都不带（含继承来的 Authorization 头）
 - 导入集合时，里面带的 capture 规则一律先关掉——它们会改写你的环境变量，看过再开

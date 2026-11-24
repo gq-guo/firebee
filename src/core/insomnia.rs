@@ -242,6 +242,8 @@ pub fn to_environments(v: &Value) -> Vec<Environment> {
     };
     let base = e["data"].as_object().cloned().unwrap_or_default();
     let env = |name: &Value, data: &serde_json::Map<String, Value>| Environment {
+        color: None,
+        protected: false,
         id: uuid::Uuid::new_v4(),
         name: match s(name) {
             n if n.is_empty() => "Imported environment".into(),

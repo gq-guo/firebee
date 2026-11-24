@@ -336,6 +336,8 @@ mod tests {
         tok.secret = true;
         let env = Environment {
             id: uuid::Uuid::new_v4(),
+            color: None,
+            protected: false,
             name: "dev".into(),
             variables: vec![KeyValue::new("base", "https://x"), tok],
         };
@@ -525,6 +527,8 @@ mod tests {
                 status: Some(200),
                 duration_ms: Some(1),
                 response: None,
+                env_name: None,
+                resolved_url: None,
             })
             .collect();
         s.save_history(&entries).unwrap();
