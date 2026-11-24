@@ -505,3 +505,11 @@ summary .proj { flex: none; margin-left: 4px; font-size: 11px; color: var(--mute
 .diff-del { background: var(--err-bg); } .diff-del .diff-mark { color: var(--err); }
 .diff-same { color: var(--text-2); }
 .diff .diff-skip { color: var(--muted); font: 12px/22px var(--font-body); padding-left: 2ch; text-indent: 0; border-block: 1px dashed var(--border); }
+
+/* 401 / 403：这次带了哪些凭据 */
+.auth-hint { margin: 0 0 8px; padding: 8px 10px; border-radius: 6px; font-size: 12px; border: 1px solid var(--border); background: var(--err-bg); }
+.auth-hint strong { color: var(--err); font-weight: 500; }
+.auth-hint .ah-rows { margin-top: 6px; }
+.auth-hint .ah-rows > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 4px 0; border-top: 1px solid var(--border); }
+.auth-hint .ah-rows code { font-size: 12px; } .auth-hint .ah-rows .k { color: var(--text); font-weight: 600; }
+.auth-hint .helper { margin: 6px 0 0; }

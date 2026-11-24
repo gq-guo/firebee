@@ -1889,6 +1889,65 @@ function compareView(r, prev) {
   return wrap;
 }
 
+// ---------- 401 / 403：这次带了什么凭据 ----------
+const AUTHISH = /^(authorization|proxy-authorization|cookie|api-?key|x-api-?key|.*[-_](api-?key|key|token|secret|auth))$/i;
+/** 凭据打码：只留方案（Bearer 等）和末 4 位，12 位以下连末位也不留；Basic 只留用户名（base64 的末几位就是密码）；
+ *  含 Secret 变量的值整个不显示 */
+function maskCred(v, scheme = false) {
+  const secrets = (activeEnv()?.variables || []).filter((x) => x.enabled && x.secret && x.value).map((x) => x.value);
+  const sp = scheme ? v.indexOf(' ') : -1;
+  const [s, cred] = sp > 0 ? [v.slice(0, sp + 1), v.slice(sp + 1).trim()] : ['', v];
+  if (!cred) return `${s}(empty)`;
+  let plain = cred;
+  if (/^basic $/i.test(s)) try { plain = new TextDecoder().decode(Uint8Array.from(atob(cred), (c) => c.charCodeAt(0))); } catch { /* 不是 base64：按普通值处理 */ }
+  if (secrets.some((x) => v.includes(x) || plain.includes(x))) return `${s}•••• (secret variable)`;
+  if (plain !== cred) return `${s}${plain.split(':')[0]}:••••`;
+  return `${s}••••${cred.length >= 12 ? cred.slice(-4) : ''}`;
+}
+function authHint(r) {
+  const own = current.auth, kind = authKind(own);
+  const eff = kind === 'Off' ? null : kind !== 'None' ? own : inheritedAuth(current);
+  const fromAuth = eff === own ? 'this request’s Auth tab' : 'inherited Auth (collection / folder)';
+  const apiKey = eff?.ApiKey;
+  const where = (k) => {
+    k = k.toLowerCase();
+    if (current.headers.some((x) => x.enabled && x.key.trim().toLowerCase() === k)) return 'this request’s Headers';
+    if (inheritedHeaders(current).some((x) => x.key.trim().toLowerCase() === k)) return 'inherited header (collection / folder)';
+    if ((k === 'authorization' && eff) || (apiKey && !apiKey.in_query && apiKey.key.trim().toLowerCase() === k)) return fromAuth;
+    return '—';
+  };
+  const box = h('div', { class: 'auth-hint' },
+    h('div', { class: 'row' }, h('strong', {}, `${r.status} — credentials this request carries`), h('span', { class: 'spacer' }),
+      btn('Open Preview', () => { reqTab = 'preview'; renderRequest(); }, 'small ghost')),
+    h('div', { class: 'muted' }, 'Checking…'));
+  // 打开的是历史里的响应、或发完又改过请求时，下面显示的是"现在会发的"，说清楚
+  const entry = r.from_history ? data.history.find((x) => x.timestamp === r.from_history) : data.history.findLast((x) => x.request.id === current.id);
+  const edited = entry && sentJson(entry.request) !== sentJson(current);
+  invoke('final_request', { request: current, env: activeEnv(), inherited: chainFor(current) || [] }).then((f) => {
+    const rows = [];
+    for (const [k, v] of f.headers) {
+      if (!AUTHISH.test(k) && !(apiKey && apiKey.key.trim().toLowerCase() === k.toLowerCase())) continue;
+      const shown = /^cookie$/i.test(k) ? `${v.split(/;\s*/).map((c) => c.split('=')[0]).join(', ')} (values hidden)` : maskCred(v, /authorization$/i.test(k));
+      rows.push([k, shown, where(k)]);
+    }
+    if (apiKey?.in_query) {
+      let v = null;
+      try { v = new URL(f.url).searchParams.get(apiKey.key); } catch { /* URL 不合法：下面按没带算 */ }
+      if (v !== null) rows.push([`?${apiKey.key}`, maskCred(v), `query parameter · ${fromAuth}`]);
+    }
+    if (f.cookies.length) rows.push(['Cookie', `${f.cookies.map((c) => c.split('=')[0]).join(', ')} (values hidden)`, 'session cookie jar']);
+    const missingVars = unresolvedVars(), noAuthz = !rows.some(([k]) => /^authorization$/i.test(k));
+    put(box, box.firstChild,
+      edited ? h('div', { class: 'helper' }, 'The request has changed since this response — showing what it would send now.') : null,
+      rows.length ? h('div', { class: 'ah-rows' }, ...rows.map(([k, v, src]) => h('div', {}, h('code', { class: 'k' }, k), h('code', {}, v), h('span', { class: 'muted' }, src))))
+        : h('div', {}, 'Nothing — no Authorization header, API key or cookie.'),
+      noAuthz && kind === 'Off' ? h('div', { class: 'helper' }, 'Auth is set to “No auth” on this request, so nothing inherited is sent.') : null,
+      noAuthz && eff?.OAuth2 ? h('div', { class: 'helper' }, 'OAuth 2.0 is set but no token is cached yet — the next Send fetches one.') : null,
+      missingVars.length ? h('div', { class: 'helper error' }, 'Unresolved: ', ...missingVars.flatMap((n, i) => [i ? ', ' : '', h('code', {}, `{{${n}}}`)]), ' — sent as literal text.') : null);
+  }, (e) => put(box, box.firstChild, h('div', { class: 'helper error' }, String(e))));
+  return box;
+}
+
 let waitTick = null;
 function renderResponse() {
   const meta = $('#resp-meta'), body = $('#resp-body'), tabs = $('#resp-tabs');
@@ -1937,6 +1996,7 @@ function renderResponse() {
       r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null),
     h('span', { class: 'actions' }, r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost')),
   );
+  if (r.status === 401 || r.status === 403) body.append(authHint(r));
   // 跟过的每一跳都列出来；3xx 说明停下了，说清为什么并给一键跟进
   if (r.asserts?.length) {
     const failed = r.asserts.filter((a) => !a.ok).length;
