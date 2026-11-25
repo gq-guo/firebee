@@ -231,12 +231,14 @@ function showToast(text, { error = false, action = null } = {}) {
 function hideToast() { clearTimeout(toastTimer); pendingUndo = null; toastQueue.length = 0; $('#toast').classList.add('hidden'); }
 
 /** 右键 / ⋯ 菜单：items = [[label, fn, {danger, kbd}], ...]，其中的 '-' 是分隔线；点击任意处或 Esc 关闭 */
-function openMenu(e, items) {
+/** anchor：菜单贴在这个元素下方并右对齐（不跟着鼠标位置走） */
+function openMenu(e, items, anchor) {
   e.preventDefault(); e.stopPropagation();
   // 这里 stopPropagation 了，document 上关设置弹窗的监听收不到，手动关
   $('#req-settings').classList.add('hidden'); $('#settings-btn').setAttribute('aria-expanded', 'false');
   $('#appearance').classList.add('hidden'); $('#theme-btn').setAttribute('aria-expanded', 'false');
   const menu = $('#menu');
+  menu.classList.toggle('env-menu', anchor?.id === 'env-select'); // 样式要在量宽度之前就位
   items = items.filter(Boolean);
   // '-' 解构出来 label 也是 '-'
   menu.replaceChildren(...items.map(([label, fn, opt = {}]) => (label === '-' ? h('div', { class: 'menu-sep', role: 'separator' }) :
@@ -244,11 +246,13 @@ function openMenu(e, items) {
       onclick: (ev) => { ev.stopPropagation(); menu.classList.add('hidden'); fn(ev); } },
       label, opt.kbd && h('span', { class: 'kbd' }, opt.kbd)))));
   // 鼠标事件在光标处打开；按钮/键盘触发时贴按钮下方并右对齐
-  const rect = e.currentTarget?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
-  const x = e.clientX || Math.max(8, rect.right - 170), y = e.clientY || rect.bottom + 4;
+  const rect = (anchor || e.currentTarget)?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
+  const x = (!anchor && e.clientX) || Math.max(8, rect.right - 170), y = (!anchor && e.clientY) || rect.bottom + 4;
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
   menu.style.top = `${Math.min(y, window.innerHeight - items.reduce((s, it) => s + (it === '-' ? 9 : 30), 0) - 12)}px`;
   menu.classList.remove('hidden');
+  // 显示后才量得到真实宽度：名字长的项会把菜单撑宽，按实际宽度再收回窗口内
+  menu.style.left = `${Math.max(8, Math.min(anchor ? rect.right - menu.offsetWidth : x, window.innerWidth - menu.offsetWidth - 8))}px`;
   menu.firstElementChild?.focus();
 }
 document.addEventListener('click', () => $('#menu').classList.add('hidden'));
@@ -468,19 +472,17 @@ function hideVarCard() { $('#var-card').classList.add('hidden'); }
 // ---------- 顶栏 ----------
 function renderTopbar() {
   const sel = $('#env-select');
-  // 管理入口放在列表最下方，选中即打开对话框并恢复原选择
-  sel.replaceChildren(
-    h('option', { value: '' }, 'No environment'),
-    ...data.environments.map((e) => h('option', { value: e.id }, e.name)),
-    h('option', { disabled: true }, '──────────'),
-    h('option', { value: '__manage' }, 'Manage environments…'),
-  );
-  sel.value = activeEnvId || '';
   const env = activeEnv(), c = envColor(env);
   sel.classList.toggle('set', !!env);
   sel.classList.toggle('tinted', !!c);
   c ? sel.style.setProperty('--env', c) : sel.style.removeProperty('--env');
+  put(sel, c ? h('span', { class: 'dot' }) : null, h('span', { class: 'name' }, env ? env.name : 'No environment'));
   sel.title = env ? `Requests go to ${env.name}${env.protected ? ' — protected: anything but GET, HEAD or OPTIONS needs a second click' : ''}` : 'No environment — {{vars}} are not resolved';
+  // 选择器在标签行右端，离 Send 远：设了颜色的环境在 URL 下面那行再报一次名字
+  const tag = $('#resolved-env');
+  tag.classList.toggle('hidden', !c); tag.classList.toggle('tinted', !!c);
+  tag.textContent = c ? env.name : ''; tag.title = sel.title;
+  c ? tag.style.setProperty('--env', c) : tag.style.removeProperty('--env');
 }
 /** History 行里的环境小标签；颜色按现在同名环境的颜色，环境删了 / 改名了就是中性色 */
 function envChip(name) {
@@ -855,16 +857,22 @@ const RECENT = 8;
 let recentOpen = pref('firebee.recentOpen', true);
 /** 侧栏顶部的 Recent 区：最近发过、还在集合里的请求，按 id 去重；没有时不占位。展开 / 收起记在本机 */
 function recentNode() {
-  const byId = new Map(allRequests().map((r) => [r.id, r])), seen = new Set(), rows = [];
+  const byId = new Map(requestIndex().map((e) => [e.r.id, e])), seen = new Set(), rows = [];
   for (let i = data.history.length - 1; i >= 0 && rows.length < RECENT; i--) {
-    const r = byId.get(data.history[i].request?.id);
-    if (r && !seen.has(r)) { seen.add(r); rows.push(r); }
+    const e = byId.get(data.history[i].request?.id);
+    if (e && !seen.has(e)) { seen.add(e); rows.push(e); }
   }
   if (!rows.length) return null;
   return h('details', { class: 'recent', open: recentOpen,
       ontoggle: (e) => { recentOpen = e.target.open; try { localStorage.setItem('firebee.recentOpen', recentOpen ? '1' : '0'); } catch { /* private mode */ } } },
     h('summary', {}, h('span', { class: 'name' }, 'Recent')),
-    ...rows.map((r) => requestRow(r, locateArr(r) || [], false)));
+    ...rows.map(({ r, arr, path }) => {
+      const row = requestRow(r, arr, false);
+      row.title = `${path}\n${r.method.toUpperCase()} ${r.url}`;
+      // 区里有重名的才多一行路径：平时保持一行一个请求
+      if (rows.some((x) => x.r !== r && x.r.name === r.name)) { row.classList.add('result'); row.append(h('span', { class: 'sub' }, path)); }
+      return row;
+    }));
 }
 Element.prototype.withAttr = function (k, v) { if (v !== undefined) this.setAttribute(k, v); return this; };
 
@@ -1986,13 +1994,16 @@ const previousOf = (r) => { const [list, i] = historyOf(r); return i > 0 ? list[
 /** 「Compare」标签：状态码、耗时、响应体逐行 diff（diff 在 Rust 侧算，有大小上限） */
 function compareView(r, prev) {
   const p = prev.response, dt = r.duration_ms - p.duration_ms, cut = p.truncated || r.truncated;
+  // 两次发在不同环境时，差异多半来自环境而不是接口——必须说出来。老历史没记环境，不猜
+  const [list, i] = historyOf(r), wasEnv = prev.env_name, nowEnv = r.from_history ? r.from_env : (list[i]?.env_name ?? activeEnv()?.name);
   const code = (s) => h('b', { class: `s${Math.floor(s / 100)}` }, s);
   const note = h('div', { class: 'muted' }, 'Comparing…');
   const wrap = h('div', { class: 'cmp' },
     h('div', { class: 'cmp-head' },
-      h('span', { class: 'muted' }, `Previous: ${new Date(prev.timestamp).toLocaleString()}`),
+      h('span', { class: 'muted' }, `Previous: ${new Date(prev.timestamp).toLocaleString()}`, wasEnv ? [' ', envChip(wasEnv)] : null),
       h('span', {}, 'Status ', p.status === r.status ? code(r.status) : [code(p.status), ' → ', code(r.status)]),
       h('span', {}, `Time ${p.duration_ms} → ${r.duration_ms} ms (${dt >= 0 ? '+' : '−'}${Math.abs(dt)} ms)`)),
+    wasEnv && nowEnv && wasEnv !== nowEnv ? h('div', { class: 'helper cmp-cut' }, `⚠ Different environments: the previous response came from ${wasEnv}, this one from ${nowEnv}.`) : null,
     cut ? h('div', { class: 'helper cmp-cut' }, '⚠ Incomplete: a body was cut to its first 64 KB when saved to history, so only the first 64 KB of each is compared.') : null,
     note);
   let [a, b] = [p.body, r.body || ''];
@@ -2420,7 +2431,7 @@ function renderEnvDialog() {
     btn('+ New environment', newEnv, 'small ghost new'),
   );
   editor.replaceChildren();
-  if (!data.environments.length) { editor.append(emptyState('No environments yet', 'An environment is a named set of variables — dev, staging, production. Switch between them next to the Send button.', ['Create environment', newEnv])); return; }
+  if (!data.environments.length) { editor.append(emptyState('No environments yet', 'An environment is a named set of variables — dev, staging, production. Switch between them at the top right.', ['Create environment', newEnv])); return; }
   if (!envSel) { editor.append(emptyState('Pick an environment', 'Select one on the left to edit its variables.')); return; }
   const env = envSel, isActive = env.id === activeEnvId;
   const del = () => {
@@ -2681,10 +2692,16 @@ function bind() {
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pendings.get(current.id) });
   $('#export-copy').onclick = (e) => copyText($('#export-text').textContent, e.currentTarget);
   $('#export-close').onclick = () => $('#export-dialog').close();
-  $('#env-select').onchange = (e) => {
-    if (e.target.value === '__manage') { e.target.value = activeEnvId || ''; envSel = activeEnv(); renderEnvDialog(); $('#env-dialog').showModal(); return; }
-    setActiveEnv(e.target.value);
-      missing = []; renderTopbar(); renderRequestHeader(); renderRequest();
+  // 自己的菜单而不是原生 <select>：原生下拉会把选中项对齐到控件上，控件在窗口顶端时上面的选项会冲出窗口
+  $('#env-select').onclick = (e) => {
+    const pick = (id) => () => { setActiveEnv(id); missing = []; renderTopbar(); renderRequestHeader(); renderRequest(); };
+    const item = (id, name, c) => [[h('span', { class: 'dot', style: c ? `--env: ${c}` : null }), h('span', { class: 'name' }, name)], pick(id), { kbd: (activeEnvId || '') === id ? '✓' : null }];
+    openMenu(e, [
+      item('', 'No environment'),
+      ...data.environments.map((x) => item(x.id, x.name, envColor(x))),
+      '-',
+      ['Manage environments…', () => { envSel = activeEnv(); renderEnvDialog(); $('#env-dialog').showModal(); }],
+    ], e.currentTarget);
   };
   // 原生菜单（macOS 菜单栏里可见快捷键）触发的动作
   window.__TAURI__.event?.listen('menu', ({ payload }) => {

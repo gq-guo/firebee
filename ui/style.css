@@ -45,17 +45,19 @@
 html, body { overflow: clip; }
 body {
   margin: 0; height: 100vh; background: var(--bg-canvas); color: var(--text);
-  display: grid; grid-template-columns: var(--side-w, 260px) 1px minmax(0, 1fr); grid-template-rows: 44px minmax(0, 1fr);
-  grid-template-areas: "top top top" "side split main";
+  display: grid; grid-template-columns: var(--side-w, 260px) 1px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "side split main";
 }
 
 /* ---- app bar ---- */
-#topbar { grid-area: top; position: relative; z-index: 30; display: flex; align-items: center; gap: 12px; padding: 0 12px 0 10px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border); }
+/* 外观 / 请求设置两个按钮：接在标签行右端，不单独占一行 */
+.tabrow { display: flex; flex: none; min-width: 0; }
+#topbar { flex: none; position: relative; z-index: 30; display: flex; align-items: center; gap: 4px; padding: 0 8px 0 4px; }
 /* 全局请求设置偏离默认值：设置按钮右上角一个点；关了证书校验再加常驻标签。标签用 border 不用 box-shadow，焦点环才不被盖掉 */
 #settings-btn { position: relative; }
 #settings-btn.changed::after { content: ""; position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
 #tls-off { height: 22px; padding: 0 8px; border: 1px solid currentColor; border-radius: 11px; background: none; color: var(--err); font-size: 12px; }
-.popover { position: absolute; top: 40px; right: 12px; width: 300px; padding: 16px; display: flex; flex-direction: column; gap: 14px; z-index: var(--z-dropdown);
+.popover { position: absolute; top: 34px; right: 8px; width: 300px; padding: 16px; display: flex; flex-direction: column; gap: 14px; z-index: var(--z-dropdown);
   background: var(--bg-popover); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); font-size: 13px; animation: menu-in 150ms var(--ease); }
 .popover strong { font-size: 14px; }
 .popover .muted { font-size: 12px; margin-top: 4px; }
@@ -174,7 +176,7 @@ textarea[aria-invalid="true"] { box-shadow: 0 0 0 2px var(--err-bg), inset 0 0 0
 .tabs button .n.dot { display: inline-block; width: 5px; height: 5px; border-radius: 999px; background: var(--text-2); font-size: 0; }
 
 /* ---- 打开的请求标签页 ---- */
-#tabs { height: 36px; flex: none; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: none; padding: 0 8px; }
+#tabs { height: 36px; flex: 1; min-width: 0; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: none; padding: 0 8px; }
 #tabs::-webkit-scrollbar { display: none; }
 #tabs:empty { display: none; }
 .tab { position: relative; flex: none; max-width: 220px; display: flex; align-items: center; gap: 6px; padding: 0 6px 0 10px; cursor: pointer; color: var(--text-2); transition: background-color 120ms; }
@@ -217,18 +219,20 @@ textarea[aria-invalid="true"] { box-shadow: 0 0 0 2px var(--err-bg), inset 0 0 0
 #flash.on { opacity: 1; }
 #flash.dim { opacity: .45; }
 #flash b { font-weight: 500; }
-/* 环境标签：紧挨 Send，发到哪儿一眼可见。着色时 --env 由 JS 从调色板设置；
- * 调色板每个颜色上的白字 ≥ 5:1，标签本身对深 / 浅背景 ≥ 3.3:1，所以两个主题共用一套 */
-#env-select { height: 28px; max-width: 180px; flex: none; field-sizing: content; font-size: 12px; font-weight: 500; color: var(--text-2); cursor: pointer;
-  -webkit-appearance: none; appearance: none; padding: 0 24px 0 10px; border-radius: 999px; text-overflow: ellipsis;
-  box-shadow: inset 0 0 0 1px var(--border-strong); background: transparent no-repeat right 7px center / 12px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236E747B' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
+/* 环境选择器：全局设置，和外观 / 请求设置一起放在标签行右端，形状跟旁边的图标按钮一致（28px 高、6px 圆角、无边框）。
+ * 是按钮 + 应用自己的菜单，不是原生 <select>。
+ * 设了颜色的环境在名字前带一个色点（--env 由 JS 从调色板设置）；发到哪儿的提示在 URL 下面那行和 Send 按钮上 */
+#env-select { height: 28px; max-width: 220px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 22px 0 8px; border-radius: 6px;
+  font-size: 12px; font-weight: 500; color: var(--text-2); background: transparent no-repeat right 6px center / 12px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236E747B' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
 #env-select.set { color: var(--text); }
-#env-select.tinted { color: #fff; box-shadow: none; background-color: var(--env);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
-#env-select:focus-visible { box-shadow: 0 0 0 2px var(--focus); }
-#env-select option { color: var(--text); background: var(--bg-popover); }
-@media (hover: hover) { #env-select:not(.tinted):hover { background-color: var(--hover); color: var(--text); } #env-select.tinted:hover { filter: brightness(1.1); } }
+#env-select .name, .env-menu .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#env-select .dot, .env-menu .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--env, transparent); }
+@media (hover: hover) { #env-select:hover { background-color: var(--hover); color: var(--text); } }
+/* 环境菜单：色点和名字挨着（普通菜单项的 16px 间距是给右侧快捷键留的），太多环境时在窗口内滚动 */
+#menu.env-menu { max-width: 320px; max-height: calc(100vh - 48px); overflow-y: auto; }
+.env-menu .menu-item { gap: 8px; flex: none; }
+/* URL 下面那行开头的环境名：只有设了颜色的环境才出现，按 Send 前最后看到的就是它 */
+#resolved-env { flex: none; max-width: 24ch; margin: 0; background: var(--env); }
 /* 受保护环境的二次确认：固定红底白字（5.6:1），不用 --err——它在深色主题下配白字不够 4.5:1 */
 button.confirm { background: #C62828; color: #fff; font-weight: 600; }
 @media (hover: hover) { button.confirm:hover { background: #C62828; opacity: .9; } }
@@ -302,7 +306,7 @@ summary[data-drop=into] { background: var(--active); box-shadow: inset 0 0 0 1px
 .hist { display: grid; grid-template-columns: 40px 30px 1fr auto; gap: 6px; align-items: center; padding: 0 8px; height: 30px; cursor: pointer; border-radius: 5px; font: 12px var(--font-mono); white-space: nowrap; color: var(--text-2); }
 .hist > * { overflow: hidden; text-overflow: ellipsis; }
 .hist-label { font: 13px var(--font-body); color: var(--text); }
-.env-chip { display: inline-block; vertical-align: top; margin-top: 1px; max-width: 8ch; overflow: hidden; text-overflow: ellipsis; margin-right: 6px; padding: 0 5px; border-radius: 999px;
+.env-chip { display: inline-block; vertical-align: top; margin-top: 1px; max-width: 8ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 6px; padding: 0 5px; border-radius: 999px;
   font: 500 10.5px/16px var(--font-body); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--border-strong); }
 .env-chip.tinted { box-shadow: none; color: #fff; }
 /* 时间和 ⋯ 叠在同一格：⋯ 只在悬停时出现，常年给它留 28px 等于从名字里拿走四五个字符 */
@@ -332,6 +336,8 @@ details.recent { margin: 0 -8px 4px; padding: 0 8px 4px; border-bottom: 1px soli
 /* 路径太长时省略开头：最里层的文件夹最能区分重名请求，完整路径在行的 title 里 */
 .req.result > .sub:not(.url) { direction: rtl; text-align: left; }
 .req.result > .sub.url { grid-area: u; font-family: var(--font-mono); }
+/* Recent 区里带路径的行：左缩进和同区的普通行对齐 */
+details.recent > .req.result { padding-left: 24px; }
 .empty-hint { margin-left: 24px; padding: 2px 4px; color: var(--muted); font-size: 12px; }
 .hist .more { margin-left: auto; }
 
@@ -528,7 +534,9 @@ summary .proj { flex: none; margin-left: 4px; font-size: 11px; color: var(--mute
 .fill textarea, .editor .hl, .editor .tint, #resp-body pre, .tree { font-family: var(--font-code); font-size: var(--code-size); line-height: var(--code-lh); }
 
 /* 响应区 Compare：+ / − 标记和底色同时表达增删，不只靠颜色 */
-.cmp-head { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; margin: 0 0 8px; }
+.cmp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; font-size: 12px; margin: 0 0 8px; }
+/* 这里有地方：环境名写全，不像 History 行那样截到 8 个字符 */
+.cmp-head .env-chip { max-width: 24ch; margin: 0 0 0 4px; vertical-align: middle; }
 .cmp-cut { color: var(--warn); }
 .cmp > .muted { font-size: 12px; margin-bottom: 6px; }
 .diff-n.add { color: var(--ok); } .diff-n.del { color: var(--err); }

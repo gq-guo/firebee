@@ -50,7 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 **变量与环境**
 - 环境变量可标 🔒 Secret：值存 macOS 钥匙串，不进 environments.json / 导出 / 项目目录 / 历史，界面遮罩
 - 多环境切换，`{{variable}}` 在 URL / 参数 / 头 / 体 / 认证中替换；URL 里的变量实时着色（可解析绿、未解析橙），Send 旁显示未解析数量，再点一次强制发送
-- 环境标签紧挨 Send：环境可设颜色（production 标红一眼可见），点标签切换；环境可标「受保护」，对它发 GET / HEAD / OPTIONS 以外的请求要再点一次 Send 确认，Runner 跑到它也要先确认
+- 环境在右上角切换；环境可设颜色，设了颜色的环境名会带色显示在 URL 下面那行（production 标红，按 Send 前一眼可见）；环境可标「受保护」，对它发 GET / HEAD / OPTIONS 以外的请求要再点一次 Send 确认，Runner 跑到它也要先确认
 - 点 URL 里的 `{{var}}` 弹出变量卡片：看当前值、原地改；没定义的直接定义进当前环境
 - 输入 `{{` 自动补全环境变量与动态变量
 - 动态变量：`{{$uuid}}`、`{{$timestamp}}`、`{{$randomEmail}}`、`{{$randomFullName}}` 等 29 个（名字与 Postman 一致），

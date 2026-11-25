@@ -6,8 +6,30 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
+<aside id="sidebar">
+  <nav class="tabs" role="tablist">
+    <button data-side="collections" class="active" role="tab" aria-selected="true">Collections</button>
+    <button data-side="history" role="tab" aria-selected="false">History</button>
+    <span class="spacer"></span>
+    <button id="side-add" class="icon" aria-label="New request, collection or import" title="New request, collection or import">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+    </button>
+  </nav>
+  <div class="search">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+    <input id="search" type="search" placeholder="Search requests…" aria-label="Filter collections and history" spellcheck="false">
+    <span class="hint" aria-hidden="true"></span>
+  </div>
+  <div id="side-body"></div>
+</aside>
+<div class="splitter" id="split-side" role="separator" aria-orientation="vertical" title="Drag to resize · double-click to reset"></div>
+
+<main>
+  <div class="tabrow">
+  <div id="tabs" role="tablist" aria-label="Open requests"></div>
 <header id="topbar">
-  <span class="spacer"></span>
+  <button id="env-select" aria-haspopup="menu" aria-label="Active environment" title="Environment"></button>
   <button id="tls-off" class="hidden" title="Certificates are not verified for any request. Click to open Request settings.">TLS verification off</button>
   <button id="theme-btn" class="icon" aria-label="Appearance" title="Appearance" aria-expanded="false" aria-controls="appearance">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
@@ -35,39 +57,19 @@
     <label class="setting" title="mTLS: one PEM file containing the client certificate and its private key.">Client certificate <span id="cert-file" class="file-pick"></span></label>
   </div>
 </header>
-
-<aside id="sidebar">
-  <nav class="tabs" role="tablist">
-    <button data-side="collections" class="active" role="tab" aria-selected="true">Collections</button>
-    <button data-side="history" role="tab" aria-selected="false">History</button>
-    <span class="spacer"></span>
-    <button id="side-add" class="icon" aria-label="New request, collection or import" title="New request, collection or import">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-    </button>
-  </nav>
-  <div class="search">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-    <input id="search" type="search" placeholder="Search requests…" aria-label="Filter collections and history" spellcheck="false">
-    <span class="hint" aria-hidden="true"></span>
   </div>
-  <div id="side-body"></div>
-</aside>
-<div class="splitter" id="split-side" role="separator" aria-orientation="vertical" title="Drag to resize · double-click to reset"></div>
-
-<main>
-  <div id="tabs" role="tablist" aria-label="Open requests"></div>
   <div class="toolbar">
   <div class="bar">
     <select id="method" aria-label="HTTP method"></select>
     <span class="bar-div"></span>
     <div class="url-wrap"><div id="url-mirror" aria-hidden="true"></div><input id="url" placeholder="Enter a URL — {{vars}} supported" aria-label="Request URL" spellcheck="false" autocomplete="off"><span id="flash" aria-hidden="true"></span></div>
   </div>
-  <select id="env-select" aria-label="Environment for this send" title="Environment"></select>
   <button id="send" class="primary send">Send</button>
   <button id="cancel" class="send hidden">Cancel</button>
   </div>
   <div id="resolved">
     <svg class="arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 10 5 5-5 5"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>
+    <span id="resolved-env" class="env-chip hidden"></span>
     <span id="resolved-url"></span>
     <span id="missing" class="warn hidden" role="status"></span>
     <button id="copy-resolved" class="icon" aria-label="Copy resolved URL" title="Copy resolved URL">
