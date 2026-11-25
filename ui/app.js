@@ -160,6 +160,8 @@ function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === 'class') el.className = v;
+    // CSP 是 style-src 'self'：style="…" 属性会被拦掉，走 CSSOM 才生效
+    else if (k === 'style') { if (v) el.style.cssText = v; }
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else if (v !== null && v !== undefined && v !== false) el.setAttribute(k, v === true ? '' : v);
   }
