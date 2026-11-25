@@ -112,7 +112,9 @@ pub fn debug_build() -> bool {
     cfg!(debug_assertions)
 }
 
-#[tauri::command]
+/// async：不在主线程上跑。读 secret 时 macOS 可能弹钥匙串授权（每次重新编译的开发版都会弹），
+/// 在主线程上等它，窗口连骨架都画不出来，看起来就是白屏
+#[tauri::command(async)]
 pub fn load_data(storage: State<Storage>) -> AppData {
     AppData {
         collections: storage.load_collections(),
