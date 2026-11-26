@@ -111,7 +111,7 @@ let renaming = null;   // 正在重命名的对象（collection / folder / reque
 let envSel = null;     // env 对话框中选中的环境
 let saveTimer = null;
 let saving = Promise.resolve(); // 已经在写盘的那次保存；更新后重启前要等它写完
-let filter = '';       // 侧栏搜索关键字（匹配集合/文件夹/请求名、URL）
+let filter = '';       // 侧栏搜索关键字（Collections 下匹配请求名、路径、URL；History 下匹配名字、URL）
 let searchIdx = -1;    // 搜索框里 ↑/↓ 选中的是第几条可见结果；-1 = 没有高亮
 let respQuery = '';    // 响应区的查询框，跨请求保留：以 $ 开头是 JSONPath 过滤，否则是正文查找
 let bodyQuery = '';    // 请求体的查找框，跨请求保留
@@ -122,9 +122,6 @@ const selected = new Set();    // 侧栏多选（⌘点击 / Shift 点击）的�
 let anchor = null;             // 上次点击的请求：Shift 点击从它选到被点的那一行
 let dragging = null;           // { arr, r, kind } 正在拖动的请求；拖文件夹 / 集合时 kind 是 'folder' / 'collection'，r 是那个容器
 const collapsed = new Set(); // 用户折叠过的 collection/folder id（重绘时保持）
-// 搜索时默认全展开，但用户在搜索结果里手动收起的要记住——否则发送请求等任何重绘都会把它们全部弹开。
-// 换了关键字就清空：新结果按新结果展开
-const searchCollapsed = new Set();
 
 /** kind: 'http' | 'graphql'。GraphQL 请求固定 POST，body 存 query，变量在 graphql_variables */
 function newRequest(name = 'Untitled request', kind = 'http') {
@@ -136,6 +133,13 @@ const isGql = (r) => r.body_type === 'GraphQL';
 const newContainer = (name) => ({ id: crypto.randomUUID(), name, folders: [], requests: [], headers: [], auth: 'None' });
 const kv = () => ({ enabled: true, key: '', value: '' });
 const activeEnv = () => data.environments.find((e) => e.id === activeEnvId) || null;
+// 环境标签的调色板（存的是名字）。每个颜色上白字 ≥ 5:1，对深 / 浅两种背景都 ≥ 3.3:1，两个主题共用
+const ENV_COLORS = { red: '#C62828', orange: '#B45309', yellow: '#8A6100', green: '#15803D', blue: '#2563EB', purple: '#9333EA' };
+const envColor = (env) => ENV_COLORS[env?.color] || null;
+// 不改数据的方法：对受保护环境发它们不用确认
+const SAFE_METHODS = new Set(['Get', 'Head', 'Options']);
+let guarded = null; // 受保护环境的二次确认：点过一次 Send 后是 guardKey()，换了环境 / 请求 / 方法就作废
+const guardKey = () => { const env = activeEnv(); return env?.protected && !SAFE_METHODS.has(current.method) ? `${env.id} ${current.id} ${current.method}` : null; };
 
 // 防抖保存集合与环境（500ms）。成功无提示；失败必须让用户知道。
 function dirty() {
@@ -156,6 +160,8 @@ function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === 'class') el.className = v;
+    // CSP 是 style-src 'self'：style="…" 属性会被拦掉，走 CSSOM 才生效
+    else if (k === 'style') { if (v) el.style.cssText = v; }
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else if (v !== null && v !== undefined && v !== false) el.setAttribute(k, v === true ? '' : v);
   }
@@ -225,12 +231,14 @@ function showToast(text, { error = false, action = null } = {}) {
 function hideToast() { clearTimeout(toastTimer); pendingUndo = null; toastQueue.length = 0; $('#toast').classList.add('hidden'); }
 
 /** 右键 / ⋯ 菜单：items = [[label, fn, {danger, kbd}], ...]，其中的 '-' 是分隔线；点击任意处或 Esc 关闭 */
-function openMenu(e, items) {
+/** anchor：菜单贴在这个元素下方并右对齐（不跟着鼠标位置走） */
+function openMenu(e, items, anchor) {
   e.preventDefault(); e.stopPropagation();
   // 这里 stopPropagation 了，document 上关设置弹窗的监听收不到，手动关
   $('#req-settings').classList.add('hidden'); $('#settings-btn').setAttribute('aria-expanded', 'false');
   $('#appearance').classList.add('hidden'); $('#theme-btn').setAttribute('aria-expanded', 'false');
   const menu = $('#menu');
+  menu.classList.toggle('env-menu', anchor?.id === 'env-select'); // 样式要在量宽度之前就位
   items = items.filter(Boolean);
   // '-' 解构出来 label 也是 '-'
   menu.replaceChildren(...items.map(([label, fn, opt = {}]) => (label === '-' ? h('div', { class: 'menu-sep', role: 'separator' }) :
@@ -238,11 +246,13 @@ function openMenu(e, items) {
       onclick: (ev) => { ev.stopPropagation(); menu.classList.add('hidden'); fn(ev); } },
       label, opt.kbd && h('span', { class: 'kbd' }, opt.kbd)))));
   // 鼠标事件在光标处打开；按钮/键盘触发时贴按钮下方并右对齐
-  const rect = e.currentTarget?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
-  const x = e.clientX || Math.max(8, rect.right - 170), y = e.clientY || rect.bottom + 4;
+  const rect = (anchor || e.currentTarget)?.getBoundingClientRect?.() || e.target.getBoundingClientRect();
+  const x = (!anchor && e.clientX) || Math.max(8, rect.right - 170), y = (!anchor && e.clientY) || rect.bottom + 4;
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
   menu.style.top = `${Math.min(y, window.innerHeight - items.reduce((s, it) => s + (it === '-' ? 9 : 30), 0) - 12)}px`;
   menu.classList.remove('hidden');
+  // 显示后才量得到真实宽度：名字长的项会把菜单撑宽，按实际宽度再收回窗口内
+  menu.style.left = `${Math.max(8, Math.min(anchor ? rect.right - menu.offsetWidth : x, window.innerWidth - menu.offsetWidth - 8))}px`;
   menu.firstElementChild?.focus();
 }
 document.addEventListener('click', () => $('#menu').classList.add('hidden'));
@@ -359,7 +369,7 @@ function renderUrlMirror() {
 /** URL 下方的"解析后"预览：环境变量换成值，$动态变量和未定义的原样（后者标红） */
 function renderResolved() {
   const env = activeEnv(), url = current.url;
-  const vals = new Map(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.secret ? '••••••' : v.value]) : []);
+  const { vals, sub, extra } = urlParts(current, env);
   const out = $('#resolved-url');
   out.replaceChildren();
   // enc：query 里的键值要按 URL 编码显示，复制出来才是能直接用的地址
@@ -373,14 +383,6 @@ function renderResolved() {
     }
     out.append(enc(str.slice(last)));
   };
-  // 与 core/http.rs 的 build_url 一致：启用且有键名的 param + query 型 ApiKey，
-  // 按 form 编码（空格是 +）追加在已有 query 之后、#fragment 之前
-  const sub = (str) => str.replace(VAR_RE, (m, n) => (vals.has(n) ? vals.get(n) : m));
-  const pairs = current.params.filter((p) => p.enabled && p.key).map((p) => [sub(p.key), sub(p.value)]);
-  const auth = current.auth === 'Off' ? null : current.auth !== 'None' ? current.auth : inheritedAuth(current);
-  const ak = auth?.ApiKey;
-  if (ak?.in_query && ak.key) pairs.push([sub(ak.key), sub(ak.value)]);
-  const extra = new URLSearchParams(pairs).toString();
   const hash = url.indexOf('#'), head = hash < 0 ? url : url.slice(0, hash);
   add(head);
   if (extra) out.append(head.includes('?') ? (/[?&]$/.test(head) ? '' : '&') : '?', extra);
@@ -397,18 +399,43 @@ function renderResolved() {
   $('#resolved').classList.toggle('empty', !url.trim());
   $('#resolved').title = env ? `Resolved with ${env.name}` : 'No environment active';
 }
+/** 变量值表、替换函数和要追加的 query。secret 的值一律换成 ••••••：URL 预览和存进历史的 URL 都走这里，
+ *  所以 secret 不会出现在 history.json 里（请求本身存的是 {{占位符}}，同样不含 secret） */
+function urlParts(req, env) {
+  const vals = new Map(env ? env.variables.filter((v) => v.enabled && v.key).map((v) => [v.key, v.secret ? '••••••' : v.value]) : []);
+  const sub = (str) => str.replace(VAR_RE, (m, n) => (vals.has(n) ? vals.get(n) : m));
+  // 与 core/http.rs 的 build_url 一致：启用且有键名的 param + query 型 ApiKey，
+  // 按 form 编码（空格是 +）追加在已有 query 之后、#fragment 之前
+  const pairs = req.params.filter((p) => p.enabled && p.key).map((p) => [sub(p.key), sub(p.value)]);
+  const auth = req.auth === 'Off' ? null : req.auth !== 'None' ? req.auth : inheritedAuth(req);
+  const ak = auth?.ApiKey;
+  if (ak?.in_query && ak.key) pairs.push([sub(ak.key), sub(ak.value)]);
+  return { vals, sub, extra: new URLSearchParams(pairs).toString() };
+}
+/** 存进历史的"当时的完整 URL"：文字和 URL 栏下那行预览一样（$动态变量、未定义的变量保留成 {{…}}） */
+function resolvedUrlText(req, env) {
+  const { sub, extra } = urlParts(req, env), url = req.url;
+  const hash = url.indexOf('#'), head = hash < 0 ? url : url.slice(0, hash);
+  return sub(head) + (extra ? (head.includes('?') ? (/[?&]$/.test(head) ? '' : '&') : '?') + extra : '') + (hash >= 0 ? sub(url.slice(hash)) : '');
+}
 /** 未解析变量提示：常驻在 Send 左侧的固定槽位，不撑开布局 */
 function renderMissing() {
-  const m = $('#missing'), list = unresolvedVars();
+  const m = $('#missing'), list = unresolvedVars(), env = activeEnv();
   const armed = list.length > 0 && JSON.stringify(missing) === JSON.stringify(list);
+  if (guarded !== guardKey()) guarded = null; // 换了环境 / 请求 / 方法：之前那次确认不算数
   // "再点一次才发送"要写在按钮上：只改旁边那行小字，第一次点击看起来就像没反应
-  $('#send').textContent = armed ? 'Send anyway' : 'Send';
+  $('#send').textContent = armed ? 'Send anyway' : guarded ? `Send to ${env.name}` : 'Send';
+  $('#send').classList.toggle('confirm', !!guarded);
+  $('#send').classList.toggle('primary', !guarded);
+  const msg = armed ? 'Send again to send with placeholders as-is'
+    : guarded ? `${env.name} is protected — Send again to ${current.method.toUpperCase()} there`
+    : list.length ? `${list.join(', ')} not defined${env ? ` in ${env.name}` : ''}` : '';
   // Preview 标签下 URL 栏下面那行只为这条提示留着，没有提示就整行收起
-  $('#resolved').classList.toggle('hidden', reqTab === 'preview' && !list.length);
-  m.classList.toggle('hidden', list.length === 0);
-  if (!list.length) { missing = []; return; }
-  m.textContent = armed ? 'Send again to send with placeholders as-is' : `${list.join(', ')} not defined${activeEnv() ? ` in ${activeEnv().name}` : ''}`;
-  m.title = armed ? '' : `Not defined in the active environment: ${list.join(', ')}`;
+  $('#resolved').classList.toggle('hidden', reqTab === 'preview' && !msg);
+  m.classList.toggle('hidden', !msg);
+  if (!list.length) missing = [];
+  m.textContent = msg;
+  m.title = !armed && !guarded && list.length ? `Not defined in the active environment: ${list.join(', ')}` : '';
 }
 
 /** 变量卡片：点 URL 里的 {{var}} 弹出，看当前值、原地改；没定义的直接定义进当前环境。
@@ -445,14 +472,22 @@ function hideVarCard() { $('#var-card').classList.add('hidden'); }
 // ---------- 顶栏 ----------
 function renderTopbar() {
   const sel = $('#env-select');
-  // 管理入口放在列表最下方，选中即打开对话框并恢复原选择
-  sel.replaceChildren(
-    h('option', { value: '' }, 'No environment'),
-    ...data.environments.map((e) => h('option', { value: e.id }, e.name)),
-    h('option', { disabled: true }, '──────────'),
-    h('option', { value: '__manage' }, 'Manage environments…'),
-  );
-  sel.value = activeEnvId || '';
+  const env = activeEnv(), c = envColor(env);
+  sel.classList.toggle('set', !!env);
+  sel.classList.toggle('tinted', !!c);
+  c ? sel.style.setProperty('--env', c) : sel.style.removeProperty('--env');
+  put(sel, c ? h('span', { class: 'dot' }) : null, h('span', { class: 'name' }, env ? env.name : 'No environment'));
+  sel.title = env ? `Requests go to ${env.name}${env.protected ? ' — protected: anything but GET, HEAD or OPTIONS needs a second click' : ''}` : 'No environment — {{vars}} are not resolved';
+  // 选择器在标签行右端，离 Send 远：设了颜色的环境在 URL 下面那行再报一次名字
+  const tag = $('#resolved-env');
+  tag.classList.toggle('hidden', !c); tag.classList.toggle('tinted', !!c);
+  tag.textContent = c ? env.name : ''; tag.title = sel.title;
+  c ? tag.style.setProperty('--env', c) : tag.style.removeProperty('--env');
+}
+/** History 行里的环境小标签；颜色按现在同名环境的颜色，环境删了 / 改名了就是中性色 */
+function envChip(name) {
+  const c = envColor(data.environments.find((e) => e.name === name));
+  return h('span', { class: 'env-chip' + (c ? ' tinted' : ''), style: c ? `--env: ${c}` : null, title: `Sent with ${name}` }, name);
 }
 
 // ---------- 侧边栏 ----------
@@ -528,11 +563,11 @@ function renderSidebar() {
       if (day !== lastDay) { lastDay = day; body.append(h('div', { class: 'hist-day' }, dayLabel(t))); }
       const label = histLabel(hist.request);
       body.append(h('div', { class: 'hist', role: 'button', tabindex: 0,
-        title: `${label === hist.request.name ? label + '\n' : ''}${hist.request.method.toUpperCase()} ${hist.request.url}`,
+        title: `${label === hist.request.name ? label + '\n' : ''}${hist.request.method.toUpperCase()} ${hist.resolved_url || hist.request.url}${hist.env_name ? `\nEnvironment: ${hist.env_name}` : ''}`,
         onclick: () => openFromHistory(hist), onkeydown: activate, oncontextmenu: hmenu },
         reqTag(hist.request),
         h('span', { class: hist.status ? `s${Math.floor(hist.status / 100)}` : 's0' }, hist.status ?? 'ERR'),
-        h('span', { class: 'hist-label' }, label), btn('⋯', hmenu, 'small more').withAttr('aria-label', 'History entry actions'),
+        h('span', { class: 'hist-label' }, hist.env_name ? envChip(hist.env_name) : null, label), btn('⋯', hmenu, 'small more').withAttr('aria-label', 'History entry actions'),
         h('span', { class: 'muted hist-time' }, hhmm)));
     }
     return;
@@ -542,11 +577,11 @@ function renderSidebar() {
     body.append(emptyState('No collections yet', 'A collection keeps the requests you want to reuse, in folders if you like.', ['Create a collection', addCol]));
     return;
   }
-  const shown = data.collections.filter((c) => filterView(c).show);
   const pins = pinnedNode();
   if (pins) body.append(pins);
-  if (q() && !shown.length) { body.append(emptyState(`Nothing matches “${filter.trim()}”`, 'Names of collections, folders and requests are searched, and request URLs.')); return; }
-  shown.forEach((c) => body.append(containerNode(c, data.collections)));
+  // 有关键字：扁平结果列表（Quick Open）；没有：Recent + 集合树
+  if (q()) body.append(...resultNodes());
+  else body.append(...[recentNode()].filter(Boolean), ...data.collections.map((c) => containerNode(c, data.collections)));
   // 重绘把原来聚焦的行换成了新节点：焦点还给同一行，方向键才能接着走
   if (focused) allRows().filter((el) => el.dataset.id === focused[0])[focused[1]]?.focus();
   body.querySelector('input.rename')?.focus();
@@ -558,12 +593,49 @@ function addCollection() { data.collections.push(newContainer(`Collection ${data
 // ---------- 搜索过滤 ----------
 const q = () => filter.trim().toLowerCase();
 const hit = (s) => !!q() && (s || '').toLowerCase().includes(q());
-/** 容器名命中 → 整个子树都显示；否则只显示命中的后代，且至少有一个才显示容器本身 */
-function filterView(c) {
-  if (!q() || hit(c.name)) return { folders: c.folders, requests: c.requests, show: true };
-  const folders = c.folders.filter((f) => filterView(f).show);
-  const requests = c.requests.filter((r) => hit(r.name) || hit(r.url));
-  return { folders, requests, show: folders.length + requests.length > 0 };
+const RESULT_LIMIT = 100; // 单字母能命中上千条，全画出来没人看，只会拖慢每次按键
+/** 所有请求连同所在路径（集合 › 文件夹 › …）。每次按键现算：1800 个请求约 1ms，不值得缓存再处理失效 */
+function requestIndex(nodes = data.collections, path = [], out = []) {
+  for (const n of nodes) {
+    const p = [...path, n.name];
+    n.requests.forEach((r) => out.push({ r, arr: n.requests, path: p.join(' › ') }));
+    requestIndex(n.folders, p, out);
+  }
+  return out;
+}
+/** 每个 request.id 的使用分：每次发送记 1 分，一周减半——发得多、发得近都靠前 */
+function usage() {
+  const now = Date.now(), m = new Map();
+  for (const x of data.history) {
+    const id = x.request?.id;
+    if (id) m.set(id, (m.get(id) || 0) + (0.5 ** ((now - Date.parse(x.timestamp)) / 6048e5) || 0));
+  }
+  return m;
+}
+/** 多词 AND、不分顺序，每个词在名字、路径、URL 任一处出现即可。
+ *  排序：使用分高的在前；同分时命中名字的词多的在前（名字命中优先于路径 / URL 命中）；再同就按树里的顺序 */
+function searchResults() {
+  const words = q().split(/\s+/), use = usage(), out = [];
+  for (const e of requestIndex()) {
+    const name = (e.r.name || '').toLowerCase(), path = e.path.toLowerCase(), url = (e.r.url || '').toLowerCase();
+    let names = 0;
+    if (words.every((w) => (name.includes(w) ? ++names : path.includes(w) || url.includes(w)))) out.push({ ...e, names, use: use.get(e.r.id) || 0 });
+  }
+  return out.sort((a, b) => b.use - a.use || b.names - a.names);
+}
+/** 结果行：复用请求行（点击、右键菜单、重命名都一样），下面多两行小字：路径和 URL——重名请求靠它们分清 */
+function resultNodes() {
+  const found = searchResults();
+  if (!found.length) return [emptyState(`Nothing matches “${filter.trim()}”`, 'Request names, folder paths and URLs are searched; words can be in any order.')];
+  const rows = found.slice(0, RESULT_LIMIT).map(({ r, arr, path }) => {
+    const row = requestRow(r, arr, false);
+    row.classList.add('result');
+    row.title = `${path}\n${r.method.toUpperCase()} ${r.url}`;
+    row.append(h('span', { class: 'sub' }, path), h('span', { class: 'sub url' }, urlPath(r.url) || r.url || '(no URL)'));
+    return row;
+  });
+  if (found.length > RESULT_LIMIT) rows.push(h('div', { class: 'empty-hint' }, `${found.length - RESULT_LIMIT} more — add a word to narrow it down`));
+  return rows;
 }
 
 /** 搜索框键盘导航能走到的行，按 DOM 顺序。收起的容器里的行还在 DOM 里，要排除；
@@ -671,12 +743,12 @@ function cloneContainer(c) {
 function containerNode(c, parentArr, isFolder = false) {
   const menu = (e) => openMenu(e, [
     ...[['http', 'New HTTP request'], ['graphql', 'New GraphQL request']].map(([kind, label]) =>
-      [label, () => { const r = newRequest(undefined, kind); c.requests.push(r); collapsed.delete(c.id); searchCollapsed.delete(c.id); dirty(); selectRequest(r); }]),
+      [label, () => { const r = newRequest(undefined, kind); c.requests.push(r); collapsed.delete(c.id); dirty(); selectRequest(r); }]),
     // 新文件夹放最上面，并直接进入重命名（放在末尾时文件夹多了要往下翻才找得到）
     ['New folder', () => {
       const f = newContainer('New folder'); c.folders.unshift(f); collapsed.delete(c.id);
       // 搜索中新文件夹会被过滤掉，重命名框出不来、还会留着等下次重绘抢焦点：先清掉搜索
-      if (filter) { filter = $('#search').value = ''; searchCollapsed.clear(); }
+      if (filter) filter = $('#search').value = '';
       renaming = f; dirty(); renderSidebar();
     }],
     '-',
@@ -694,7 +766,6 @@ function containerNode(c, parentArr, isFolder = false) {
     '-',
     ['Delete', remove(parentArr, c, isFolder ? 'folder' : 'collection'), { danger: true }],
   ]);
-  const view = filterView(c);
   // 拖到容器标题上：请求 → 追加到该容器末尾；文件夹 / 集合 → 看光标位置（boxDrop）
   const dropAt = (e) => (dragging?.kind ? boxDrop(e, c, isFolder) : dragging && 'into');
   const dropOnContainer = (e) => {
@@ -702,12 +773,11 @@ function containerNode(c, parentArr, isFolder = false) {
     e.preventDefault(); delete e.currentTarget.dataset.drop;
     if (!at) return;
     if (at !== 'into') return moveDragged(parentArr, parentArr.indexOf(c) + (at === 'after' ? 1 : 0));
-    collapsed.delete(c.id); searchCollapsed.delete(c.id);
+    collapsed.delete(c.id);
     const into = dragging.kind ? c.folders : c.requests;
     moveDragged(into, into.length);
   };
-  const set = q() ? searchCollapsed : collapsed;
-  return h('details', { open: !set.has(c.id), ontoggle: (e) => { e.target.open ? set.delete(c.id) : set.add(c.id); } },
+  return h('details', { open: !collapsed.has(c.id), ontoggle: (e) => { e.target.open ? collapsed.delete(c.id) : collapsed.add(c.id); } },
     h('summary', { 'data-id': c.id, oncontextmenu: menu, onclick: (e) => { if (renaming === c) e.preventDefault(); },
       draggable: renaming === c ? null : 'true', // 重命名时让出鼠标：输入框里要能拖选文字
       ondragstart: (e) => { dragging = { arr: parentArr, r: c, kind: isFolder ? 'folder' : 'collection' }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', c.name); },
@@ -715,9 +785,9 @@ function containerNode(c, parentArr, isFolder = false) {
       ondragover: (e) => { const at = dropAt(e); if (at) { e.preventDefault(); e.currentTarget.dataset.drop = at; } else delete e.currentTarget.dataset.drop; },
       ondragleave: (e) => { delete e.currentTarget.dataset.drop; }, ondrop: dropOnContainer },
       nameNode(c), c.project_dir ? h('span', { class: 'proj', title: `Synced to ${c.project_dir}` }, '⎇') : null, btn('⋯', menu, 'small more').withAttr('aria-label', `${isFolder ? 'Folder' : 'Collection'} actions`)),
-    !q() && !c.folders.length && !c.requests.length && h('div', { class: 'empty-hint' }, 'Empty — right-click to add a request, or paste a curl into the URL field'),
-    ...view.folders.map((f) => containerNode(f, c.folders, true)),
-    ...view.requests.map((r) => requestRow(r, c.requests)),
+    !c.folders.length && !c.requests.length && h('div', { class: 'empty-hint' }, 'Empty — right-click to add a request, or paste a curl into the URL field'),
+    ...c.folders.map((f) => containerNode(f, c.folders, true)),
+    ...c.requests.map((r) => requestRow(r, c.requests)),
   );
 }
 
@@ -754,9 +824,10 @@ function requestRow(r, arr, drag = true) {
 }
 
 /** Shift 点击：选中上次点击的行到这一行之间所有可见的请求。起点不在了（没点过、被收起或过滤掉）返回 false，按普通点击处理。
- *  只在被点的那个区里找（Pinned 区或集合树）：置顶的请求两边各有一行，混着算 id 不唯一 */
+ *  只在被点的那个区里找（Pinned / Recent 区或集合树）：同一个请求在几个区里各有一行，混着算 id 不唯一 */
 function selectRange(row) {
-  const rows = treeRows().filter((el) => el.matches('.req') && !el.closest('.pinned') === !row.closest('.pinned'));
+  const zone = (el) => el.closest('.pinned, .recent');
+  const rows = treeRows().filter((el) => el.matches('.req') && zone(el) === zone(row));
   const a = rows.findIndex((el) => el.dataset.id === anchor?.id), b = rows.indexOf(row);
   if (a < 0) return false;
   selected.clear();
@@ -780,6 +851,28 @@ function pinnedNode() {
       ontoggle: (e) => { e.target.open ? collapsed.delete('pinned') : collapsed.add('pinned'); } },
     h('summary', {}, h('span', { class: 'name' }, 'Pinned'), h('span', { class: 'muted' }, String(pins.length))),
     ...pins.map((r) => requestRow(r, locateArr(r) || [], false)));
+}
+
+const RECENT = 8;
+let recentOpen = pref('firebee.recentOpen', true);
+/** 侧栏顶部的 Recent 区：最近发过、还在集合里的请求，按 id 去重；没有时不占位。展开 / 收起记在本机 */
+function recentNode() {
+  const byId = new Map(requestIndex().map((e) => [e.r.id, e])), seen = new Set(), rows = [];
+  for (let i = data.history.length - 1; i >= 0 && rows.length < RECENT; i--) {
+    const e = byId.get(data.history[i].request?.id);
+    if (e && !seen.has(e)) { seen.add(e); rows.push(e); }
+  }
+  if (!rows.length) return null;
+  return h('details', { class: 'recent', open: recentOpen,
+      ontoggle: (e) => { recentOpen = e.target.open; try { localStorage.setItem('firebee.recentOpen', recentOpen ? '1' : '0'); } catch { /* private mode */ } } },
+    h('summary', {}, h('span', { class: 'name' }, 'Recent')),
+    ...rows.map(({ r, arr, path }) => {
+      const row = requestRow(r, arr, false);
+      row.title = `${path}\n${r.method.toUpperCase()} ${r.url}`;
+      // 区里有重名的才多一行路径：平时保持一行一个请求
+      if (rows.some((x) => x.r !== r && x.r.name === r.name)) { row.classList.add('result'); row.append(h('span', { class: 'sub' }, path)); }
+      return row;
+    }));
 }
 Element.prototype.withAttr = function (k, v) { if (v !== undefined) this.setAttribute(k, v); return this; };
 
@@ -1019,7 +1112,7 @@ function openFromHistory(hist) {
   const home = found ? null : homeCollection();
   if (!found) { home.requests.push(r); dirty(); }
   // 当时的响应还留着就放回响应面板，不用重发（重发 POST 是有副作用的）
-  if (hist.response) setResponse(r.id, { ok: { ...hist.response, body_base64: null, from_history: hist.timestamp } });
+  if (hist.response) setResponse(r.id, { ok: { ...hist.response, body_base64: null, from_history: hist.timestamp, from_env: hist.env_name, from_url: hist.resolved_url } });
   selectRequest(r);
   if (!found) {
     toast(`Restored deleted request “${r.name}” to “${home.name}”.`, { action: ['Undo', () => {
@@ -1053,6 +1146,7 @@ function findById(id, nodes = data.collections) {
 /** 导出 curl / Python 到对话框 */
 async function exportCode(req, kind) {
   $('#export-text').textContent = await invoke('export_code', { request: req, env: activeEnv(), kind, inherited: chainFor(req) || [] });
+  $('#export-dialog strong').textContent = 'Export'; // 对话框也用来显示 Postman 脚本导入摘要
   $('#export-dialog').showModal();
 }
 const exportItems = (req) => [['Export as curl', () => exportCode(req, 'curl')], ['Export as Python', () => exportCode(req, 'python')]];
@@ -1061,7 +1155,7 @@ const exportItems = (req) => [['Export as curl', () => exportCode(req, 'curl')],
 async function importCurl(text, onError, into = null) {
   try {
     const r = await invoke('import_curl', { text });
-    if (into) { into.requests.push(r); collapsed.delete(into.id); searchCollapsed.delete(into.id); dirty(); selectRequest(r); return true; }
+    if (into) { into.requests.push(r); collapsed.delete(into.id); dirty(); selectRequest(r); return true; }
     const keepName = !isAutoName(current);
     const target = current, before = structuredClone(current);
     // import_curl 返回的是全新的 Request，captures / pinned 是空的——
@@ -1109,7 +1203,19 @@ async function runCollection(container) {
   const rows = flat.map(({ r, path }) => h('div', { class: 'run-row', role: 'button', tabindex: 0, title: 'Open this request', onclick: () => openRow(r), onkeydown: activate },
     h('span', { class: 'st muted' }, '·'), h('span', { class: 'name' }, path), h('span', { class: 'meta muted' }, '')));
   put(list, ...rows); summary.textContent = `0 / ${flat.length}`; dlg.showModal();
-  const env = activeEnv();
+  const env = activeEnv(); // 整轮都发到开跑时的环境：跑到一半切环境不能绕过下面的确认
+  const writes = flat.filter(({ r }) => !SAFE_METHODS.has(r.method)).length;
+  if (env?.protected && writes) {
+    // 和 Send 一样：不另弹框，在运行窗口里多一步确认；关掉窗口 = 不跑
+    $('#run-stop').classList.add('hidden');
+    summary.textContent = `${env.name} is protected — ${writes} of ${flat.length} requests would change data there`;
+    const go = btn(`Run in ${env.name}`, null, 'small confirm');
+    $('#run-stop').before(go); go.focus();
+    const ok = await new Promise((resolve) => { go.onclick = () => resolve(true); dlg.addEventListener('close', () => resolve(false), { once: true }); });
+    go.remove();
+    if (!ok) { running = false; runKept = false; renderRunStatus(); return; }
+    $('#run-stop').classList.remove('hidden'); summary.textContent = `0 / ${flat.length}`;
+  }
   let pass = 0, fail = 0;
   const status = () => {
     $('#run-reopen').textContent = `${running ? 'Running' : 'Ran'} “${container.name}” · ${pass + fail} / ${flat.length}`
@@ -1126,7 +1232,7 @@ async function runCollection(container) {
     const unresolved = unresolvedVars(r);
     let ok, meta;
     try {
-      const dto = await invoke('send_request', { job_id: ++jobSeq, request: req, env: activeEnv(),
+      const dto = await invoke('send_request', { job_id: ++jobSeq, request: req, env,
         options: { timeout_secs: timeoutSecs, inherited: chain, net: { ...net, follow_redirects: followRedirects, insecure } } });
       const asserts = await runAsserts(req, dto);
       ok = asserts ? asserts.every((a) => a.ok) : dto.status < 400;
@@ -1191,8 +1297,11 @@ async function importFile() {
     if (r.collection) {
       const n = disarmCaptures(r.collection);
       data.collections.push(r.collection); dirty(); renderSidebar();
+      const s = r.scripts; // 只有 Postman 集合里真有脚本时才有
       toast(`Imported collection “${r.collection.name}”.`
-        + (n ? ` ${n} capture ${n === 1 ? 'rule was' : 'rules were'} turned off — they rewrite environment variables, so review them in a request's Capture tab before enabling.` : ''));
+        + (n ? ` ${n} capture ${n === 1 ? 'rule was' : 'rules were'} turned off — they rewrite environment variables, so review them in a request's Capture tab before enabling.` : '')
+        + (s ? ` ${scriptSummary(s)}` : ''),
+        s && (s.requests.length || s.containers.length) ? { action: ['Details', () => showScriptReport(s)] } : {});
     }
     if (r.environments.length) {
       data.environments.push(...r.environments); dirty(); renderTopbar();
@@ -1200,6 +1309,23 @@ async function importFile() {
         : `Imported ${r.environments.length} environments — pick one in the Environment menu.`);
     }
   } catch (e) { toast(String(e), { error: true }); }
+}
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+/** Postman 脚本转换摘要（一句话，进 toast） */
+function scriptSummary(s) {
+  const left = s.requests.length + s.containers.length;
+  return (s.tests || s.captures ? `Converted ${plural(s.tests, 'test')} and ${plural(s.captures, 'capture')} from its Postman scripts`
+      + (s.captures ? ' (captures are off until you enable them).' : '.') : 'No Postman script lines could be converted.')
+    + (left ? ` Some scripts weren't converted — see Details.` : '');
+}
+/** 没转完的请求 / 文件夹清单：复用导出对话框（可复制） */
+function showScriptReport(s) {
+  const list = (title, names) => (names.length ? `\n\n${title} (${names.length}):\n${names.map((x) => `  ${x}`).join('\n')}` : '');
+  $('#export-dialog strong').textContent = 'Postman scripts';
+  $('#export-text').textContent = `${scriptSummary(s).replace(/ Some scripts.*$/, '')}\nScripts are never run or kept; only common “save a value” and “assert” lines become Capture / Tests.`
+    + list('Requests with script lines that were not converted', s.requests)
+    + list('Folder / collection scripts (not converted)', s.containers);
+  $('#export-dialog').showModal();
 }
 
 /** 导入进来的 capture 规则一律先关掉，返回关掉的条数。
@@ -1645,12 +1771,16 @@ function authEditor(obj = current, rerender = renderRequest, container = false) 
 async function send() {
   if (isPending()) return;
   if (!current.url.trim()) { $('#url').focus(); return; }
+  // 受保护环境 + 会改数据的方法：同样是第一次点击只提示，再点一次才发
+  const g = guardKey();
+  if (g && g !== guarded) { guarded = g; renderMissing(); return; }
   const m = unresolvedVars();
   // 有未定义变量：第一次点击只提示（Send 旁的槽位变成"再点一次即发送"），第二次强制发送
   if (m.length && JSON.stringify(m) !== JSON.stringify(missing)) { missing = m; renderMissing(); return; }
-  missing = [];
+  missing = []; guarded = null;
   const id = ++jobSeq, rid = current.id, req = structuredClone(current), chain = chainFor(current) || [];
   const capEnv = activeEnv(); // 目标环境按发送时算：飞行中切环境不能把 dev 的 token 写进 prod
+  const sentUrl = resolvedUrlText(current, capEnv);
   pendings.set(rid, id); responses.delete(rid); sentAt.set(rid, performance.now()); flash(null);
   renderRequestHeader(); renderResponse(); renderSidebar(); renderTabs();
   let status = null, duration_ms = null, result;
@@ -1668,7 +1798,8 @@ async function send() {
     if (cap) toast(cap.ok || cap.error, { error: !cap.ok });
     if (cap?.ok) renderRequest();
   }
-  data.history.push({ timestamp: new Date().toISOString(), request: req, status, duration_ms, response: storedResponse(result.ok) });
+  data.history.push({ timestamp: new Date().toISOString(), request: req, status, duration_ms, response: storedResponse(result.ok),
+    env_name: capEnv?.name ?? null, resolved_url: sentUrl });
   if (data.history.length > HISTORY_LIMIT) data.history.splice(0, data.history.length - HISTORY_LIMIT);
   // 只有最近 HISTORY_BODIES 条留响应体
   for (let i = 0; i < data.history.length - HISTORY_BODIES; i++) data.history[i].response = null;
@@ -1848,6 +1979,109 @@ const fmtSize = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 10
 
 const contentType = (r) => (r.headers.find(([k]) => k.toLowerCase() === 'content-type')?.[1] || '').toLowerCase();
 
+// ---------- 和上一次比 ----------
+/** 同一请求、留了响应体的历史，以及当前显示的这次响应在里面的下标（刚发完还没写进历史时 = 长度；对不上 = -1） */
+function historyOf(r) {
+  const list = data.history.filter((x) => x.request.id === current.id && x.response && (x.response.body || !x.response.size_bytes));
+  if (r.from_history) return [list, list.findIndex((x) => x.timestamp === r.from_history)];
+  // 新鲜响应：send() 写完历史才重绘，所以最后一条通常就是它
+  const last = list.at(-1)?.response;
+  const same = last && last.status === r.status && last.duration_ms === r.duration_ms && last.size_bytes === r.size_bytes;
+  return [list, same ? list.length - 1 : list.length];
+}
+const previousOf = (r) => { const [list, i] = historyOf(r); return i > 0 ? list[i - 1] : null; };
+
+/** 「Compare」标签：状态码、耗时、响应体逐行 diff（diff 在 Rust 侧算，有大小上限） */
+function compareView(r, prev) {
+  const p = prev.response, dt = r.duration_ms - p.duration_ms, cut = p.truncated || r.truncated;
+  // 两次发在不同环境时，差异多半来自环境而不是接口——必须说出来。老历史没记环境，不猜
+  const [list, i] = historyOf(r), wasEnv = prev.env_name, nowEnv = r.from_history ? r.from_env : (list[i]?.env_name ?? activeEnv()?.name);
+  const code = (s) => h('b', { class: `s${Math.floor(s / 100)}` }, s);
+  const note = h('div', { class: 'muted' }, 'Comparing…');
+  const wrap = h('div', { class: 'cmp' },
+    h('div', { class: 'cmp-head' },
+      h('span', { class: 'muted' }, `Previous: ${new Date(prev.timestamp).toLocaleString()}`, wasEnv ? [' ', envChip(wasEnv)] : null),
+      h('span', {}, 'Status ', p.status === r.status ? code(r.status) : [code(p.status), ' → ', code(r.status)]),
+      h('span', {}, `Time ${p.duration_ms} → ${r.duration_ms} ms (${dt >= 0 ? '+' : '−'}${Math.abs(dt)} ms)`)),
+    wasEnv && nowEnv && wasEnv !== nowEnv ? h('div', { class: 'helper cmp-cut' }, `⚠ Different environments: the previous response came from ${wasEnv}, this one from ${nowEnv}.`) : null,
+    cut ? h('div', { class: 'helper cmp-cut' }, '⚠ Incomplete: a body was cut to its first 64 KB when saved to history, so only the first 64 KB of each is compared.') : null,
+    note);
+  let [a, b] = [p.body, r.body || ''];
+  if (cut) { a = clipBytes(a, HISTORY_BODY_MAX)[0]; b = clipBytes(b, HISTORY_BODY_MAX)[0]; }
+  let json = [r, p].some((x) => contentType(x).includes('json'));
+  if (!json) try { JSON.parse(r.body); json = true; } catch { /* 不是 JSON，按原文逐行比 */ }
+  invoke('diff_bodies', { old: a, new: b, json }).then((d) => {
+    if (d.too_large) return put(note, `Too large to compare — ${d.too_large}.`);
+    if (!d.lines.length) return put(note, h('strong', {}, p.status === r.status ? 'No changes' : 'Body unchanged'),
+      p.status === r.status ? ' — same status and body as last time.' : ' — only the status changed.');
+    const mark = { add: '+', del: '−', same: ' ' };
+    put(note, h('span', { class: 'diff-n add' }, `+${d.added}`), ' ', h('span', { class: 'diff-n del' }, `−${d.removed}`), ` line${d.added + d.removed > 1 ? 's' : ''}`);
+    wrap.append(h('div', { class: 'diff' }, ...d.lines.map((l) => l.op === 'skip'
+      ? h('div', { class: 'diff-skip' }, `⋯ ${l.text} unchanged line${l.text > 1 ? 's' : ''}`)
+      : h('div', { class: `diff-${l.op}` }, h('span', { class: 'diff-mark' }, mark[l.op]), l.text))));
+  }, (e) => put(note, h('span', { class: 'error' }, String(e))));
+  return wrap;
+}
+
+// ---------- 401 / 403：这次带了什么凭据 ----------
+const AUTHISH = /^(authorization|proxy-authorization|cookie|api-?key|x-api-?key|.*[-_](api-?key|key|token|secret|auth))$/i;
+/** 凭据打码：只留方案（Bearer 等）和末 4 位，12 位以下连末位也不留；Basic 只留用户名（base64 的末几位就是密码）；
+ *  含 Secret 变量的值整个不显示 */
+function maskCred(v, scheme = false) {
+  const secrets = (activeEnv()?.variables || []).filter((x) => x.enabled && x.secret && x.value).map((x) => x.value);
+  const sp = scheme ? v.indexOf(' ') : -1;
+  const [s, cred] = sp > 0 ? [v.slice(0, sp + 1), v.slice(sp + 1).trim()] : ['', v];
+  if (!cred) return `${s}(empty)`;
+  let plain = cred;
+  if (/^basic $/i.test(s)) try { plain = new TextDecoder().decode(Uint8Array.from(atob(cred), (c) => c.charCodeAt(0))); } catch { /* 不是 base64：按普通值处理 */ }
+  if (secrets.some((x) => v.includes(x) || plain.includes(x))) return `${s}•••• (secret variable)`;
+  if (plain !== cred) return `${s}${plain.split(':')[0]}:••••`;
+  return `${s}••••${cred.length >= 12 ? cred.slice(-4) : ''}`;
+}
+function authHint(r) {
+  const own = current.auth, kind = authKind(own);
+  const eff = kind === 'Off' ? null : kind !== 'None' ? own : inheritedAuth(current);
+  const fromAuth = eff === own ? 'this request’s Auth tab' : 'inherited Auth (collection / folder)';
+  const apiKey = eff?.ApiKey;
+  const where = (k) => {
+    k = k.toLowerCase();
+    if (current.headers.some((x) => x.enabled && x.key.trim().toLowerCase() === k)) return 'this request’s Headers';
+    if (inheritedHeaders(current).some((x) => x.key.trim().toLowerCase() === k)) return 'inherited header (collection / folder)';
+    if ((k === 'authorization' && eff) || (apiKey && !apiKey.in_query && apiKey.key.trim().toLowerCase() === k)) return fromAuth;
+    return '—';
+  };
+  const box = h('div', { class: 'auth-hint' },
+    h('div', { class: 'row' }, h('strong', {}, `${r.status} — credentials this request carries`), h('span', { class: 'spacer' }),
+      btn('Open Preview', () => { reqTab = 'preview'; renderRequest(); }, 'small ghost')),
+    h('div', { class: 'muted' }, 'Checking…'));
+  // 打开的是历史里的响应、或发完又改过请求时，下面显示的是"现在会发的"，说清楚
+  const entry = r.from_history ? data.history.find((x) => x.timestamp === r.from_history) : data.history.findLast((x) => x.request.id === current.id);
+  const edited = entry && sentJson(entry.request) !== sentJson(current);
+  invoke('final_request', { request: current, env: activeEnv(), inherited: chainFor(current) || [] }).then((f) => {
+    const rows = [];
+    for (const [k, v] of f.headers) {
+      if (!AUTHISH.test(k) && !(apiKey && apiKey.key.trim().toLowerCase() === k.toLowerCase())) continue;
+      const shown = /^cookie$/i.test(k) ? `${v.split(/;\s*/).map((c) => c.split('=')[0]).join(', ')} (values hidden)` : maskCred(v, /authorization$/i.test(k));
+      rows.push([k, shown, where(k)]);
+    }
+    if (apiKey?.in_query) {
+      let v = null;
+      try { v = new URL(f.url).searchParams.get(apiKey.key); } catch { /* URL 不合法：下面按没带算 */ }
+      if (v !== null) rows.push([`?${apiKey.key}`, maskCred(v), `query parameter · ${fromAuth}`]);
+    }
+    if (f.cookies.length) rows.push(['Cookie', `${f.cookies.map((c) => c.split('=')[0]).join(', ')} (values hidden)`, 'session cookie jar']);
+    const missingVars = unresolvedVars(), noAuthz = !rows.some(([k]) => /^authorization$/i.test(k));
+    put(box, box.firstChild,
+      edited ? h('div', { class: 'helper' }, 'The request has changed since this response — showing what it would send now.') : null,
+      rows.length ? h('div', { class: 'ah-rows' }, ...rows.map(([k, v, src]) => h('div', {}, h('code', { class: 'k' }, k), h('code', {}, v), h('span', { class: 'muted' }, src))))
+        : h('div', {}, 'Nothing — no Authorization header, API key or cookie.'),
+      noAuthz && kind === 'Off' ? h('div', { class: 'helper' }, 'Auth is set to “No auth” on this request, so nothing inherited is sent.') : null,
+      noAuthz && eff?.OAuth2 ? h('div', { class: 'helper' }, 'OAuth 2.0 is set but no token is cached yet — the next Send fetches one.') : null,
+      missingVars.length ? h('div', { class: 'helper error' }, 'Unresolved: ', ...missingVars.flatMap((n, i) => [i ? ', ' : '', h('code', {}, `{{${n}}}`)]), ' — sent as literal text.') : null);
+  }, (e) => put(box, box.firstChild, h('div', { class: 'helper error' }, String(e))));
+  return box;
+}
+
 let waitTick = null;
 function renderResponse() {
   const meta = $('#resp-meta'), body = $('#resp-body'), tabs = $('#resp-tabs');
@@ -1892,10 +2126,11 @@ function renderResponse() {
     h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: r.ttfb_ms != null ? `Time to first byte ${r.ttfb_ms} ms (connect + server), then ${r.duration_ms - r.ttfb_ms} ms downloading` : 'Time from request start to last byte received' }, `${r.duration_ms} ms`),
     r.ttfb_ms != null && r.duration_ms - r.ttfb_ms >= 50 ? h('span', { class: 'meta muted', title: 'Time to first byte' }, `TTFB ${r.ttfb_ms} ms`) : null,
     h('span', { class: 'sep' }, '·'), h('span', { class: 'meta', title: 'Body size' }, fmtSize(r.size_bytes)),
-    r.from_history ? h('span', { class: 'meta from-history', title: `Kept from ${new Date(r.from_history).toLocaleString()} — press Send for a fresh one` },
-      r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') : null),
+    r.from_history ? h('span', { class: 'meta from-history', title: `Kept from ${new Date(r.from_history).toLocaleString()}${r.from_url ? `\n${r.from_url}` : ''} — press Send for a fresh one` },
+      (r.truncated ? 'from history · first 64 KB' : !r.body && r.size_bytes ? 'from history · body not kept' : 'from history') + (r.from_env ? ` · ${r.from_env}` : '')) : null),
     h('span', { class: 'actions' }, r.body_base64 ? null : copy, btn('Save…', () => saveBody(r, ct), 'small ghost')),
   );
+  if (r.status === 401 || r.status === 403) body.append(authHint(r));
   // 跟过的每一跳都列出来；3xx 说明停下了，说清为什么并给一键跟进
   if (r.asserts?.length) {
     const failed = r.asserts.filter((a) => !a.ok).length;
@@ -1921,12 +2156,17 @@ function renderResponse() {
   const previewTab = document.querySelector('[data-resp=preview]');
   previewTab.classList.toggle('hidden', !isHtml);
   if (respTab === 'preview' && !isHtml) respTab = 'body';
+  // 历史里有上一次的响应体才出现 Compare；没有时界面和原来一样
+  const prev = r.body_base64 ? null : previousOf(r);
+  document.querySelector('[data-resp=diff]').classList.toggle('hidden', !prev);
+  if (respTab === 'diff' && !prev) respTab = 'body';
   setTab('resp', respTab);
   put(document.querySelector('[data-resp=headers]'), 'Headers', h('span', { class: 'n' }, r.headers.length));
   if (respTab === 'headers') {
     body.append(h('table', { class: 'hdrs' }, ...r.headers.map(([k, v]) => h('tr', {}, h('td', {}, k), h('td', {}, v)))));
     return;
   }
+  if (respTab === 'diff') { body.append(compareView(r, prev)); return; }
   if (respTab === 'preview') {
     // 沙箱 iframe：无脚本、无同源、无表单提交
     body.append(h('iframe', { sandbox: '', srcdoc: r.body, title: 'HTML preview' }));
@@ -2186,12 +2426,12 @@ function renderEnvDialog() {
   };
   list.replaceChildren(
     ...data.environments.map((e) => h('button', { class: 'item' + (e === envSel ? ' active' : ''), onclick: () => { envSel = e; renderEnvDialog(); } },
-      h('span', { class: 'name' }, e.name),
+      h('span', { class: 'dot tinted', style: envColor(e) ? `--env: ${envColor(e)}` : 'visibility: hidden' }), h('span', { class: 'name' }, e.name),
       e.id === activeEnvId ? h('span', { class: 'badge' }, 'Active') : h('span', { class: 'meta muted' }, `${e.variables.filter((v) => v.key).length}`))),
     btn('+ New environment', newEnv, 'small ghost new'),
   );
   editor.replaceChildren();
-  if (!data.environments.length) { editor.append(emptyState('No environments yet', 'An environment is a named set of variables — dev, staging, production. Switch between them from the top bar.', ['Create environment', newEnv])); return; }
+  if (!data.environments.length) { editor.append(emptyState('No environments yet', 'An environment is a named set of variables — dev, staging, production. Switch between them at the top right.', ['Create environment', newEnv])); return; }
   if (!envSel) { editor.append(emptyState('Pick an environment', 'Select one on the left to edit its variables.')); return; }
   const env = envSel, isActive = env.id === activeEnvId;
   const del = () => {
@@ -2209,6 +2449,13 @@ function renderEnvDialog() {
       btn('Duplicate', () => { const d = structuredClone(env); d.id = crypto.randomUUID(); d.name += ' copy'; data.environments.splice(data.environments.indexOf(env) + 1, 0, d); envSel = d; dirty(); renderEnvDialog(); renderTopbar(); }),
       btn('Delete', del, 'small ghost'),
     ),
+    h('div', { class: 'env-opts' }, h('span', { class: 'muted' }, 'Color'),
+      ...[null, ...Object.keys(ENV_COLORS)].map((c) => h('button', { class: 'swatch' + (c ? ' tinted' : ''), style: c ? `--env: ${ENV_COLORS[c]}` : null,
+        title: c ? c[0].toUpperCase() + c.slice(1) : 'No color', 'aria-label': c ? `Color ${c}` : 'No color', 'aria-pressed': String((env.color || null) === c),
+        onclick: () => { env.color = c; dirty(); renderEnvDialog(); renderTopbar(); renderSidebar(); } })),
+      h('label', { title: 'Sending anything but GET, HEAD or OPTIONS to this environment takes a second click, in the Runner too' },
+        h('input', { type: 'checkbox', class: 'switch', checked: !!env.protected, onchange: (e) => { env.protected = e.target.checked; dirty(); renderTopbar(); renderMissing(); } }),
+        'Protected — confirm before changing data')),
     h('div', { class: 'vars-head' }, h('span'), h('span', {}, 'Name'), h('span'), h('span', {}, 'Value'), h('span')),
     h('div', { class: 'vars' }, kvTable(env.variables, 'e.g. base_url', 'e.g. https://api.example.com', renderEnvDialog, { secrets: true })),
     h('div', { class: 'helper' }, 'Locked values are secrets: kept in the macOS keychain, masked here, and left out of exports, project folders and history. The eye shows one temporarily; it stays secret.'),
@@ -2445,10 +2692,16 @@ function bind() {
   $('#cancel').onclick = () => invoke('cancel_request', { job_id: pendings.get(current.id) });
   $('#export-copy').onclick = (e) => copyText($('#export-text').textContent, e.currentTarget);
   $('#export-close').onclick = () => $('#export-dialog').close();
-  $('#env-select').onchange = (e) => {
-    if (e.target.value === '__manage') { e.target.value = activeEnvId || ''; envSel = activeEnv(); renderEnvDialog(); $('#env-dialog').showModal(); return; }
-    setActiveEnv(e.target.value);
-      missing = []; renderRequestHeader(); renderRequest();
+  // 自己的菜单而不是原生 <select>：原生下拉会把选中项对齐到控件上，控件在窗口顶端时上面的选项会冲出窗口
+  $('#env-select').onclick = (e) => {
+    const pick = (id) => () => { setActiveEnv(id); missing = []; renderTopbar(); renderRequestHeader(); renderRequest(); };
+    const item = (id, name, c) => [[h('span', { class: 'dot', style: c ? `--env: ${c}` : null }), h('span', { class: 'name' }, name)], pick(id), { kbd: (activeEnvId || '') === id ? '✓' : null }];
+    openMenu(e, [
+      item('', 'No environment'),
+      ...data.environments.map((x) => item(x.id, x.name, envColor(x))),
+      '-',
+      ['Manage environments…', () => { envSel = activeEnv(); renderEnvDialog(); $('#env-dialog').showModal(); }],
+    ], e.currentTarget);
   };
   // 原生菜单（macOS 菜单栏里可见快捷键）触发的动作
   window.__TAURI__.event?.listen('menu', ({ payload }) => {
@@ -2462,9 +2715,9 @@ function bind() {
   $('#env-dialog').addEventListener('close', renderRequestHeader); // 对话框里改过的变量要反映到 URL 预览
 
   document.querySelectorAll('[data-side]').forEach((b) => b.onclick = () => { sideTab = b.dataset.side; renderSidebar(); });
-  $('#search').oninput = (e) => { filter = e.target.value; searchIdx = q() ? 0 : -1; searchCollapsed.clear(); renderSidebar(); };
+  $('#search').oninput = (e) => { filter = e.target.value; searchIdx = q() ? 0 : -1; renderSidebar(); };
   $('#search').onkeydown = (e) => {
-    if (e.key === 'Escape' && filter) { e.stopPropagation(); filter = e.target.value = ''; searchIdx = -1; searchCollapsed.clear(); renderSidebar(); }
+    if (e.key === 'Escape' && filter) { e.stopPropagation(); filter = e.target.value = ''; searchIdx = -1; renderSidebar(); }
     // 输入法选词时的 ↑/↓/Enter 归输入法；WebKit 上确认选词的那次 keydown isComposing 已经是 false，只能看 229
     if (e.isComposing || e.keyCode === 229 || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); searchIdx = Math.max(0, searchIdx + (e.key === 'ArrowDown' ? 1 : -1)); markSearchHit(true); }

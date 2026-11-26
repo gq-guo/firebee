@@ -45,21 +45,19 @@
 html, body { overflow: clip; }
 body {
   margin: 0; height: 100vh; background: var(--bg-canvas); color: var(--text);
-  display: grid; grid-template-columns: var(--side-w, 260px) 1px minmax(0, 1fr); grid-template-rows: 44px minmax(0, 1fr);
-  grid-template-areas: "top top top" "side split main";
+  display: grid; grid-template-columns: var(--side-w, 260px) 1px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "side split main";
 }
 
 /* ---- app bar ---- */
-#topbar { grid-area: top; position: relative; z-index: 30; display: flex; align-items: center; gap: 12px; padding: 0 12px 0 10px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border); }
-#env-select { height: 28px; max-width: 260px; font-size: 13px; color: var(--text-2); background: transparent no-repeat right 8px center / 14px;
-  -webkit-appearance: none; appearance: none; padding: 0 28px 0 8px; border-radius: 6px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236E747B' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
-@media (hover: hover) { #env-select:hover { background-color: var(--hover); color: var(--text); } }
+/* 外观 / 请求设置两个按钮：接在标签行右端，不单独占一行 */
+.tabrow { display: flex; flex: none; min-width: 0; }
+#topbar { flex: none; position: relative; z-index: 30; display: flex; align-items: center; gap: 4px; padding: 0 8px 0 4px; }
 /* 全局请求设置偏离默认值：设置按钮右上角一个点；关了证书校验再加常驻标签。标签用 border 不用 box-shadow，焦点环才不被盖掉 */
 #settings-btn { position: relative; }
 #settings-btn.changed::after { content: ""; position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
 #tls-off { height: 22px; padding: 0 8px; border: 1px solid currentColor; border-radius: 11px; background: none; color: var(--err); font-size: 12px; }
-.popover { position: absolute; top: 40px; right: 12px; width: 300px; padding: 16px; display: flex; flex-direction: column; gap: 14px; z-index: var(--z-dropdown);
+.popover { position: absolute; top: 34px; right: 8px; width: 300px; padding: 16px; display: flex; flex-direction: column; gap: 14px; z-index: var(--z-dropdown);
   background: var(--bg-popover); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); font-size: 13px; animation: menu-in 150ms var(--ease); }
 .popover strong { font-size: 14px; }
 .popover .muted { font-size: 12px; margin-top: 4px; }
@@ -178,7 +176,7 @@ textarea[aria-invalid="true"] { box-shadow: 0 0 0 2px var(--err-bg), inset 0 0 0
 .tabs button .n.dot { display: inline-block; width: 5px; height: 5px; border-radius: 999px; background: var(--text-2); font-size: 0; }
 
 /* ---- 打开的请求标签页 ---- */
-#tabs { height: 36px; flex: none; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: none; padding: 0 8px; }
+#tabs { height: 36px; flex: 1; min-width: 0; display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: none; padding: 0 8px; }
 #tabs::-webkit-scrollbar { display: none; }
 #tabs:empty { display: none; }
 .tab { position: relative; flex: none; max-width: 220px; display: flex; align-items: center; gap: 6px; padding: 0 6px 0 10px; cursor: pointer; color: var(--text-2); transition: background-color 120ms; }
@@ -188,7 +186,7 @@ textarea[aria-invalid="true"] { box-shadow: 0 0 0 2px var(--err-bg), inset 0 0 0
 .tab:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
 .tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .tab .rename { flex: none; width: 140px; }
-.tab .method { min-width: 0; font-size: 10px; opacity: .85; }
+.tab .method { flex: none; min-width: 0; font-size: 10px; opacity: .85; } /* flex: none：名字长时 method 不能被挤窄，否则文字溢出盖到名字上 */
 .tab .close { width: 18px; height: 18px; padding: 0; border-radius: 4px; background: transparent; color: var(--text-2); opacity: 0; font-size: 13px; line-height: 1; }
 .tab:hover .close, .tab.active .close, .close:focus-visible { opacity: 1; }
 @media (hover: hover) { .tab .close:hover { background: var(--active); color: var(--text); } }
@@ -221,6 +219,25 @@ textarea[aria-invalid="true"] { box-shadow: 0 0 0 2px var(--err-bg), inset 0 0 0
 #flash.on { opacity: 1; }
 #flash.dim { opacity: .45; }
 #flash b { font-weight: 500; }
+/* 环境选择器：全局设置，和外观 / 请求设置一起放在标签行右端，形状跟旁边的图标按钮一致（28px 高、6px 圆角、无边框）。
+ * 是按钮 + 应用自己的菜单，不是原生 <select>。
+ * 设了颜色的环境在名字前带一个色点（--env 由 JS 从调色板设置）；发到哪儿的提示在 URL 下面那行和 Send 按钮上 */
+#env-select { height: 28px; max-width: 220px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 22px 0 8px; border-radius: 6px;
+  font-size: 12px; font-weight: 500; color: var(--text-2); background: transparent no-repeat right 6px center / 12px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236E747B' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); }
+#env-select.set { color: var(--text); }
+#env-select .name, .env-menu .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#env-select .dot, .env-menu .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--env, transparent); }
+@media (hover: hover) { #env-select:hover { background-color: var(--hover); color: var(--text); } }
+/* 环境菜单：色点和名字挨着（普通菜单项的 16px 间距是给右侧快捷键留的），太多环境时在窗口内滚动 */
+#menu.env-menu { max-width: 320px; max-height: calc(100vh - 48px); overflow-y: auto; }
+.env-menu .menu-item { gap: 8px; flex: none; }
+/* URL 下面那行开头的环境名：只有设了颜色的环境才出现，按 Send 前最后看到的就是它 */
+#resolved-env { flex: none; max-width: 24ch; margin: 0; background: var(--env); }
+/* 受保护环境的二次确认：固定红底白字（5.6:1），不用 --err——它在深色主题下配白字不够 4.5:1 */
+button.confirm { background: #C62828; color: #fff; font-weight: 600; }
+@media (hover: hover) { button.confirm:hover { background: #C62828; opacity: .9; } }
+#send.confirm { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.tinted { background-color: var(--env); color: #fff; }
 button.send { min-width: 84px; height: 42px; flex: none; padding: 0 12px; border-radius: 6px; font-size: 14px; }
 #resolved { flex: none; display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; padding: 0 108px 4px 113px; font: 12px var(--font-mono); color: var(--muted); }
 #resolved .arrow { flex: none; margin-top: -6px; }
@@ -289,6 +306,9 @@ summary[data-drop=into] { background: var(--active); box-shadow: inset 0 0 0 1px
 .hist { display: grid; grid-template-columns: 40px 30px 1fr auto; gap: 6px; align-items: center; padding: 0 8px; height: 30px; cursor: pointer; border-radius: 5px; font: 12px var(--font-mono); white-space: nowrap; color: var(--text-2); }
 .hist > * { overflow: hidden; text-overflow: ellipsis; }
 .hist-label { font: 13px var(--font-body); color: var(--text); }
+.env-chip { display: inline-block; vertical-align: top; margin-top: 1px; max-width: 8ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 6px; padding: 0 5px; border-radius: 999px;
+  font: 500 10.5px/16px var(--font-body); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.env-chip.tinted { box-shadow: none; color: #fff; }
 /* 时间和 ⋯ 叠在同一格：⋯ 只在悬停时出现，常年给它留 28px 等于从名字里拿走四五个字符 */
 .hist .more, .hist-time { grid-area: 1 / 4; }
 .hist:hover .hist-time, .hist .more:focus-visible + .hist-time { visibility: hidden; }
@@ -303,7 +323,21 @@ summary[data-drop=into] { background: var(--active); box-shadow: inset 0 0 0 1px
 .empty strong { color: var(--text-2); font-weight: 500; font-size: 14px; }
 /* 吸顶：搜索结果滚动时置顶区不跟着滚走；太多时自己滚，不把下面的树挤没 */
 details.pinned { position: sticky; top: 0; z-index: 2; max-height: 40vh; overflow-y: auto; background: var(--bg-sidebar); margin: 0 -8px 4px; padding: 0 8px 4px; border-bottom: 1px solid var(--border); }
-details.pinned > summary .name { flex: none; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+details.pinned > summary .name, details.recent > summary .name { flex: none; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+/* Recent 和 Pinned 一样的分区样式，但不吸顶：两个都吸在 top:0 会叠在一起 */
+details.recent { margin: 0 -8px 4px; padding: 0 8px 4px; border-bottom: 1px solid var(--border); }
+/* 搜索结果行：名字一行，下面路径、URL 各一行小字 */
+.req.result { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; grid-template-areas: "m n x" ". p p" ". u u"; column-gap: 6px; height: auto; padding: 4px 8px; contain-intrinsic-size: auto 52px; }
+.req.result > .method { grid-area: m; }
+.req.result > .name, .req.result > .rename { grid-area: n; }
+.req.result > .name { line-height: 18px; }
+.req.result > .more, .req.result > .spinner { grid-area: x; align-self: center; height: 18px; }
+.req.result > .sub { grid-area: p; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; line-height: 15px; color: var(--muted); }
+/* 路径太长时省略开头：最里层的文件夹最能区分重名请求，完整路径在行的 title 里 */
+.req.result > .sub:not(.url) { direction: rtl; text-align: left; }
+.req.result > .sub.url { grid-area: u; font-family: var(--font-mono); }
+/* Recent 区里带路径的行：左缩进和同区的普通行对齐 */
+details.recent > .req.result { padding-left: 24px; }
 .empty-hint { margin-left: 24px; padding: 2px 4px; color: var(--muted); font-size: 12px; }
 .hist .more { margin-left: auto; }
 
@@ -355,6 +389,12 @@ dialog[open] { animation: dialog-in 150ms var(--ease); }
 #env-editor { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 #env-editor .head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 #env-editor .head input { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; }
+#env-editor .env-opts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -4px 0 12px; font-size: 13px; }
+#env-editor .swatch { width: 20px; height: 20px; padding: 0; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--border-strong); background: transparent; }
+#env-editor .swatch.tinted { background: var(--env); box-shadow: none; }
+#env-editor .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--bg-popover), 0 0 0 4px var(--text-2); }
+#env-editor .env-opts label { display: flex; align-items: center; gap: 8px; margin-left: 16px; }
+#env-list .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
 #env-editor .vars { overflow: auto; flex: 1; min-height: 0; }
 #env-editor .vars-head { display: grid; grid-template-columns: 28px 40% 48px 1fr 28px; padding: 0 0 4px; font-size: 12px; color: var(--muted); }
 .dialog-foot { margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; }
@@ -492,3 +532,26 @@ summary .proj { flex: none; margin-left: 4px; font-size: 11px; color: var(--mute
 
 /* 外观里选的字体 / 字号：请求体和响应体 */
 .fill textarea, .editor .hl, .editor .tint, #resp-body pre, .tree { font-family: var(--font-code); font-size: var(--code-size); line-height: var(--code-lh); }
+
+/* 响应区 Compare：+ / − 标记和底色同时表达增删，不只靠颜色 */
+.cmp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; font-size: 12px; margin: 0 0 8px; }
+/* 这里有地方：环境名写全，不像 History 行那样截到 8 个字符 */
+.cmp-head .env-chip { max-width: 24ch; margin: 0 0 0 4px; vertical-align: middle; }
+.cmp-cut { color: var(--warn); }
+.cmp > .muted { font-size: 12px; margin-bottom: 6px; }
+.diff-n.add { color: var(--ok); } .diff-n.del { color: var(--err); }
+.diff { font: var(--code-size)/var(--code-lh) var(--font-code); border-top: 1px solid var(--border); }
+.diff > div { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: 2ch; text-indent: -2ch; }
+.diff-mark { display: inline-block; width: 2ch; text-indent: 0; text-align: center; user-select: none; -webkit-user-select: none; font-weight: 600; }
+.diff-add { background: color-mix(in oklch, var(--ok) 15%, transparent); } .diff-add .diff-mark { color: var(--ok); }
+.diff-del { background: var(--err-bg); } .diff-del .diff-mark { color: var(--err); }
+.diff-same { color: var(--text-2); }
+.diff .diff-skip { color: var(--muted); font: 12px/22px var(--font-body); padding-left: 2ch; text-indent: 0; border-block: 1px dashed var(--border); }
+
+/* 401 / 403：这次带了哪些凭据 */
+.auth-hint { margin: 0 0 8px; padding: 8px 10px; border-radius: 6px; font-size: 12px; border: 1px solid var(--border); background: var(--err-bg); }
+.auth-hint strong { color: var(--err); font-weight: 500; }
+.auth-hint .ah-rows { margin-top: 6px; }
+.auth-hint .ah-rows > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 4px 0; border-top: 1px solid var(--border); }
+.auth-hint .ah-rows code { font-size: 12px; } .auth-hint .ah-rows .k { color: var(--text); font-weight: 600; }
+.auth-hint .helper { margin: 6px 0 0; }

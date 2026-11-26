@@ -44,10 +44,13 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - JSON 节点右键：复制值、复制 JSONPath，或直接拿这个节点建 Capture / Test，不用手写路径
 - 体内查找（⌘F，Enter / Shift+Enter 跳转）；可折叠树视图；超大响应先截断再按需全量
 - HTML 沙箱预览、图片预览、保存到文件
+- 401 / 403 时响应区顶部列出这次实际带了哪些凭据（Authorization、API Key 类头、Cookie）、各自来自请求本身 / 继承的集合或文件夹 / Cookie 罐，以及未解析的 `{{变量}}`；值一律打码（只留方案和末 4 位，Basic 只留用户名，用到 Secret 变量的整个不显示），一键跳到 Preview
+- Compare 标签：同一请求历史里有上一次的响应时出现，对比状态码、耗时和响应体逐行 diff（JSON 先统一缩进再比，`+` / `−` 标记增删，未变部分折叠）；上一次的响应体在历史里被截断时会提示只比了前 64 KB；单边超过 1 MB / 2 万行或改动超过 2000 行时提示太大、不比
 
 **变量与环境**
 - 环境变量可标 🔒 Secret：值存 macOS 钥匙串，不进 environments.json / 导出 / 项目目录 / 历史，界面遮罩
 - 多环境切换，`{{variable}}` 在 URL / 参数 / 头 / 体 / 认证中替换；URL 里的变量实时着色（可解析绿、未解析橙），Send 旁显示未解析数量，再点一次强制发送
+- 环境在右上角切换；环境可设颜色，设了颜色的环境名会带色显示在 URL 下面那行（production 标红，按 Send 前一眼可见）；环境可标「受保护」，对它发 GET / HEAD / OPTIONS 以外的请求要再点一次 Send 确认，Runner 跑到它也要先确认
 - 点 URL 里的 `{{var}}` 弹出变量卡片：看当前值、原地改；没定义的直接定义进当前环境
 - 输入 `{{` 自动补全环境变量与动态变量
 - 动态变量：`{{$uuid}}`、`{{$timestamp}}`、`{{$randomEmail}}`、`{{$randomFullName}}` 等 29 个（名字与 Postman 一致），
@@ -58,10 +61,13 @@ curl -fsSL https://raw.githubusercontent.com/gq-guo/firebee/master/scripts/insta
 - 拖拽排序与跨文件夹移动；⌘点击多选，批量删除
 - 请求可 Pin，置顶到侧栏 Pinned 区，常用接口不用再翻文件夹
 - 没起过名字的请求按 URL 路径自动命名（`/v2/orders`），自己起的名字不会被改
-- 侧栏搜索：按集合 / 文件夹 / 请求名和 URL 过滤（⌘K 聚焦；↑ / ↓ 选结果，Enter 打开）
+- 侧栏搜索（⌘K）：多个词不分顺序，在请求名、所在路径和 URL 里找，结果是一张扁平列表，每行带方法、路径（集合 › 文件夹 › …）和 URL，重名请求一眼分清；常发、最近发的排前面。↑ / ↓ 选结果，Enter 打开，Esc 清空
+- 侧栏顶部的 Recent 区：最近发过的几个请求（去重），可折叠，折叠状态记在本机
+- 历史每条记下发送时的环境和变量替换后的完整 URL（secret 显示为 ••••••，不落盘），列表里带环境小标签，分得清某次 401 是在哪个环境
 - 历史最近 500 条，点击回填；最近 100 条连响应体一起留着（单条上限 64KB），点回去直接看当时的返回，不用重发
 - 集合 / 文件夹可配公共 header 与 auth（右键 → Shared headers & auth…），下属请求自动带上；请求自己同名的覆盖它，选 **No auth** 则一条凭据都不带（含继承来的 Authorization 头）
 - 导入集合时，里面带的 capture 规则一律先关掉——它们会改写你的环境变量，看过再开
+- 导入 Postman 集合时，请求 Tests 脚本里最常见的写法按模式匹配转成声明式规则（不执行、不保存脚本原文）：`pm.environment / collectionVariables / globals.set("x", json.a.b)`、`postman.setEnvironmentVariable(...)` 转成 Capture（同样先关掉）；`pm.response.to.have.status(200)`、`pm.expect(json.a).to.eql(1)`、`pm.expect(pm.response.responseTime).to.be.below(500)`、响应头 / body 的 `include`、旧式 `tests["…"] = responseCode.code === 200` 转成 Tests。认不得的语句、`if` 等条件块里的语句、pre-request 脚本和文件夹 / 集合级脚本一律不转，导入完成后提示转了多少条，Details 里列出没转完的请求
 - 导入：把 curl 粘贴到 URL 框即覆盖到当前请求（保留名字）；集合菜单可导入为新请求；文件导入 Firebee 导出 / Postman Collection v2.x / Postman Environment / Insomnia v5 导出（YAML 或 JSON：`{{ _.x }}` 变 `{{x}}`，Base + 每个 sub environment 各成一个环境，oauth1 等不支持的认证按不带凭据处理）/ OpenAPI 3.x 与 Swagger 2.0（JSON 或 YAML：按 tag 分文件夹，path 参数变 `{{var}}`，body 按 schema 生成示例，servers[0] 落到环境变量 `baseUrl`，安全方案落到集合级 auth）
 - 导出：curl（JSON 压成一行，方便粘贴终端）、Python (requests)；集合导出为 Firebee JSON
 

@@ -112,7 +112,9 @@ pub fn debug_build() -> bool {
     cfg!(debug_assertions)
 }
 
-#[tauri::command]
+/// async：不在主线程上跑。读 secret 时 macOS 可能弹钥匙串授权（每次重新编译的开发版都会弹），
+/// 在主线程上等它，窗口连骨架都画不出来，看起来就是白屏
+#[tauri::command(async)]
 pub fn load_data(storage: State<Storage>) -> AppData {
     AppData {
         collections: storage.load_collections(),
@@ -375,6 +377,12 @@ pub fn check_asserts(
     )
 }
 
+/// 响应区「Compare」：上一次和这一次的响应体逐行 diff。async 让它跑在线程池上，不占主线程
+#[tauri::command]
+pub async fn diff_bodies(old: String, new: String, json: bool) -> crate::core::diff::BodyDiff {
+    crate::core::diff::diff_bodies(&old, &new, json)
+}
+
 #[tauri::command]
 pub fn clear_cookies(cookies: State<Cookies>, tokens: State<Tokens>) {
     cookies.0.clear();
@@ -429,6 +437,9 @@ pub fn export_collection(collection: Collection, path: String) -> Result<(), Str
 pub struct Imported {
     collection: Option<Collection>,
     environments: Vec<Environment>,
+    /// Postman 脚本转 Capture / Tests 的摘要；集合里没有脚本时不出现
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scripts: Option<crate::core::postman::ScriptReport>,
 }
 
 /// 导入文件：Firebee 导出、Postman Collection v2.x / Environment、Insomnia v5 导出、OpenAPI
@@ -453,8 +464,10 @@ pub fn import_file(path: String) -> Result<Imported, String> {
         });
     }
     if crate::core::postman::is_collection(&v) {
+        let (collection, report) = crate::core::postman::to_collection(&v);
         return Ok(Imported {
-            collection: Some(crate::core::postman::to_collection(&v)),
+            collection: Some(collection),
+            scripts: (!report.is_empty()).then_some(report),
             ..Default::default()
         });
     }
@@ -471,6 +484,7 @@ pub fn import_file(path: String) -> Result<Imported, String> {
                 .get("collection")
                 .map(|_| crate::core::insomnia::to_collection(&v)),
             environments: crate::core::insomnia::to_environments(&v),
+            ..Default::default()
         });
     }
     if crate::core::openapi::is_openapi(&v) {
@@ -478,6 +492,7 @@ pub fn import_file(path: String) -> Result<Imported, String> {
         return Ok(Imported {
             collection: Some(collection),
             environments: environment.into_iter().collect(),
+            ..Default::default()
         });
     }
     Err("Unrecognised file — expected a Firebee export, a Postman collection (v2.x) / environment, an Insomnia v5 export, or an OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML)".into())
